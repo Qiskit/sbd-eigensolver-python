@@ -30,7 +30,7 @@ Device switching (CPU/GPU) within the same process:
 import os
 import subprocess
 
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 
 # ---------------------------------------------------------------------------
 # Backend registry — eagerly load all available backends at import time.
