@@ -1,0 +1,19 @@
+include LICENSE.txt
+include README.md
+include pyproject.toml
+include setup.py
+
+# C++ sources and headers under python/. setuptools ships the .py files in
+# the `sbd` package automatically but not these.
+include python/bindings.cpp
+include python/sbd_nvhpc_compat.h
+
+# Vendored upstream SBD library (git submodule vendor/sbd-upstream).
+# setuptools does not traverse submodules, so this must be explicit or the
+# sdist cannot compile. Header-only, so include/ is all that is needed.
+# Upstream's LICENSE.txt travels with it, per Apache-2.0 section 4.
+recursive-include vendor/sbd-upstream/include *.h
+include vendor/sbd-upstream/LICENSE.txt
+
+# Example scripts and notebook, referenced by the README.
+recursive-include python/examples *.py *.ipynb *.md
