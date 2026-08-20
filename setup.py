@@ -55,6 +55,22 @@ def _mpi_config_from_mpicc():
     return include_dirs, library_dirs, libraries
 
 
+def _building_extensions():
+    """True if this invocation will actually compile the C++ extensions.
+
+    Creating an sdist, or generating metadata for one, imports this file but
+    never runs a compiler, so a missing MPI or a missing vendored submodule
+    must not be fatal there -- otherwise `python -m build --sdist` fails on
+    any machine without an MPI toolchain, and the sdist can never be built
+    for release. Compilation commands still hard-fail as before.
+
+    Scan all of argv rather than argv[1]: setuptools' build_meta backend
+    prepends global options (-q/-v, plus anything from --global-option)
+    ahead of the command, so the command's position is not fixed.
+    """
+    return not {'sdist', 'egg_info'}.intersection(sys.argv[1:])
+
+
 def get_mpi_config():
     # Prefer MPI_HOME, but only trust it if mpi.h actually lives at
     # $MPI_HOME/include. Distros that split MPI into a -devel package
@@ -83,6 +99,11 @@ def get_mpi_config():
               f"{mpi_include}/mpi.h and unusable mpicc.")
         return [os.path.join(mpi_home, 'include')], \
                [os.path.join(mpi_home, 'lib')], ['mpi']
+
+    if not _building_extensions():
+        print("Notice: Could not detect MPI, but no extension is being "
+              "compiled; continuing without MPI flags.")
+        return [], [], ['mpi']
 
     print("Error: Could not detect MPI. Please set MPI_HOME environment "
           "variable, or ensure mpicc is on PATH.")
@@ -204,7 +225,7 @@ if not mpi4py_inc:
 # SBD's C++ headers come from the vendored upstream submodule.
 # After cloning the parent repo, run:  git submodule update --init --recursive
 SBD_UPSTREAM_INCLUDE = os.path.join('vendor', 'sbd-upstream', 'include')
-if not os.path.isdir(SBD_UPSTREAM_INCLUDE):
+if not os.path.isdir(SBD_UPSTREAM_INCLUDE) and _building_extensions():
     print(f"Error: {SBD_UPSTREAM_INCLUDE} not found.")
     print("Run: git submodule update --init --recursive")
     sys.exit(1)
