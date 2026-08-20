@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sbd-eigensolver"
-version = "1.6.0"
+version = "1.6.1"
 description = "Python bindings for Selected Basis Diagonalization (SBD) library"
 readme = "README.md"
 requires-python = ">=3.10"
