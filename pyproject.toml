@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=77", "wheel", "pybind11>=2.6.0", "mpi4py>=3.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sbd-eigensolver"
+version = "1.6.0"
+description = "Python bindings for Selected Basis Diagonalization (SBD) library"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE.txt"]
+keywords = ["quantum chemistry", "diagonalization", "tensor product basis", "MPI"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: C++",
+]
+dependencies = [
+    "pybind11>=2.6.0",
+    "mpi4py>=3.0.0",
+    "numpy>=1.19.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Qiskit/sbd-eigensolver-python"
+Documentation = "https://github.com/Qiskit/sbd-eigensolver-python"
+Repository = "https://github.com/Qiskit/sbd-eigensolver-python"
+Issues = "https://github.com/Qiskit/sbd-eigensolver-python/issues"
+
+[tool.setuptools]
+# The extension modules (and their MPI/BLAS/NVHPC build logic) are declared
+# imperatively in setup.py; everything else lives in [project] above.
+packages = ["sbd"]
+package-dir = {sbd = "python"}
+zip-safe = false
