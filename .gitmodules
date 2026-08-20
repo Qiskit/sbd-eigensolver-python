@@ -1,0 +1,4 @@
+[submodule "vendor/sbd-upstream"]
+	path = vendor/sbd-upstream
+	url = https://github.com/r-ccs-cms/sbd.git
+	branch = main
