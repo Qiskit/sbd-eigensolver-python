@@ -43,8 +43,6 @@ nbtest = [
     "nbmake>=1.5.0",
 ]
 notebook-dependencies = [
-    # 0.13.1 rather than 0.13: the 0.13.0 that a minimum-version pin would resolve to
-    # was never released.
     "qiskit-addon-sqd>=0.13.1",
     "pyscf>=2.9",
 ]
