@@ -1,0 +1,56 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+      - 'stable/**'
+  pull_request:
+    branches:
+      - main
+      - 'stable/**'
+  schedule:
+    - cron: '0 1 * * *'
+
+jobs:
+  tests:
+    name: latest version tests (${{ matrix.os }}, ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      max-parallel: 4
+      matrix:
+        # Only Linux for now: the extension modules must compile against an MPI
+        # implementation and a BLAS, and the apt packages installed below are
+        # Debian/Ubuntu specific. macOS would additionally need libomp, since Apple
+        # clang ships without OpenMP support.
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The reference energies the tests check against come from data in the
+          # vendored upstream checkout, and setup.py needs its headers to compile.
+          submodules: recursive
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install MPI and BLAS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libopenblas-dev
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install tox
+      - name: Test using tox environments
+        shell: bash
+        # One invocation rather than two, so that the extension is compiled once and
+        # the resulting wheel is installed into both environments. Running `tox -e py`
+        # and `tox -e mpi` as separate commands would compile it twice.
+        #
+        # Not --parallel: the two environments would then race to install the same
+        # wheel, and the MPI tests want the runner's cores to themselves.
+        run: |
+          tox -e py,mpi
