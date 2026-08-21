@@ -25,13 +25,29 @@ In addition to TPB, this package also contains experimental support for SBD's **
 
 **Optional (GPU):** NVIDIA HPC SDK (nvc++), CUDA-capable GPU, CUDA-aware MPI.
 
-### Get the SBD C++ source
+Either install path compiles the C++ extension on the target machine;
+no pre-built wheels are published.  The resulting binary depends on
+the local MPI and BLAS, so an MPI toolchain (`mpicc` on `PATH`, or
+`MPI_HOME` set) and BLAS must be installed first; see
+[Environment Variables](#environment-variables).
 
-The SBD C++ headers and apps come from upstream
+### Install from PyPI
+
+```bash
+pip install sbd-eigensolver
+```
+
+The published source distribution (sdist) bundles the sbd header
+files, so this needs no git checkout and no submodule step.
+
+### Install from git checkout
+
+Here the headers come from upstream
 [r-ccs-cms/sbd](https://github.com/r-ccs-cms/sbd) via a git submodule at
-`vendor/sbd-upstream/`, **pinned at a specific upstream commit** — currently
-`f119a33` (`v1.1.0-170`), the same revision the companion SBD fork builds
-against. Run `git submodule status` to see the pinned SHA.
+`vendor/sbd-upstream/`, **pinned at a specific upstream commit**. Run `git submodule status` to see the pinned SHA.
+
+When installing from a git checkout, it is important to make sure the
+sbd submodule is cloned, too:
 
 ```bash
 git clone --recurse-submodules https://github.com/Qiskit/sbd-eigensolver-python.git
