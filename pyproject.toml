@@ -31,9 +31,22 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = [
+basetest = [
     "pytest>=8.0",
+]
+test = [
+    "sbd-eigensolver[basetest]",
     "pytest-mpi>=0.6",
+]
+nbtest = [
+    "sbd-eigensolver[basetest]",
+    "nbmake>=1.5.0",
+]
+notebook-dependencies = [
+    # 0.13.1 rather than 0.13: the 0.13.0 that a minimum-version pin would resolve to
+    # was never released.
+    "qiskit-addon-sqd>=0.13.1",
+    "pyscf>=2.9",
 ]
 
 [project.urls]
