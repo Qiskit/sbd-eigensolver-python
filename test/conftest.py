@@ -63,6 +63,20 @@ def data_dir() -> Path:
     return DATA_DIR
 
 
+def pytest_report_header():
+    """Record which backends were compiled, and which of them is under test.
+
+    Without this, a run gives no indication of what it actually exercised: setup.py
+    builds the GPU backends only when nvc++ is present, so the same command tests CPU
+    only on one machine and CPU plus GPU on another. A passing run should say which.
+    """
+    import sbd
+
+    available = sbd.available_backends()
+    requested = os.environ.get("SBD_TEST_DEVICE") or "default"
+    return f"sbd {sbd.__version__}: backends built {available}, testing {requested}"
+
+
 @pytest.fixture(scope="session")
 def backend():
     """The SBD backend to test, honoring SBD_TEST_DEVICE if it is set.
