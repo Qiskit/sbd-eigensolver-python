@@ -46,11 +46,11 @@ jobs:
           pip install tox
       - name: Test using tox environments
         shell: bash
-        # One invocation rather than two, so that the extension is compiled once and
-        # the resulting wheel is installed into both environments. Running `tox -e py`
-        # and `tox -e mpi` as separate commands would compile it twice.
+        # One invocation rather than several, so that the extension is compiled once and
+        # the resulting wheel is installed into each environment. Running them as
+        # separate commands would compile it once per environment.
         #
-        # Not --parallel: the two environments would then race to install the same
-        # wheel, and the MPI tests want the runner's cores to themselves.
+        # Not --parallel: the environments would then race to install the same wheel,
+        # and the MPI tests want the runner's cores to themselves.
         run: |
-          tox -e py,mpi
+          tox -e py,notebook,mpi
