@@ -51,3 +51,8 @@ zip-safe = false
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
+# -rs lists the skipped tests and why, which matters here because most of the suite
+# skips by default: a bare count of skips would not distinguish "this case is slow" or
+# "this backend was not built" from "the reference data is missing". --durations shows
+# where the time goes, the cases differing by orders of magnitude in cost.
+addopts = "-rs --durations=10"
