@@ -259,18 +259,29 @@ print(f"RPATH will be set to: {library_dirs}")
 gpu_compiler, has_nvhpc = find_nvidia_hpc_sdk()
 
 # Determine which backends to build.
-#   auto                  : cpu + thrust GPU (if nvc++ present)
+#   auto                  : all backends nvc++ can build (cpu + thrust +
+#                           omp-offload) when NVHPC is present; cpu only otherwise
 #   cpu                   : cpu only
 #   gpu | gpu_thrust      : thrust GPU only
 #   both                  : cpu + thrust
+#   all                   : cpu + thrust + omp-offload (requires NVHPC)
 #   gpu_omp_offload       : OpenMP target offload only (nvc++ -mp=gpu)
 #
-# gpu_omp_offload is built ALONE — it uses a different OpenMP runtime
-# (libnvomp) than cpu (libgomp/libomp) and Thrust GPU (CPU OMP via -mp),
-# and loading two backends with different OMP runtimes in one Python
-# process produces "Another OpenMP runtime library has been detected"
-# warnings and can deadlock at first OMP region. Build it into its own
-# venv / install dir.
+# Co-loading all three backends in ONE Python process is SAFE, because since
+# v1.6 all three compile with nvc++ and therefore link the SAME OpenMP runtime
+# (NVHPC's libnvomp): cpu via -fopenmp (nvc++ treats it as -mp), Thrust via
+# -mp -cuda, and offload via -mp=gpu. `import sbd` eagerly loads every
+# _core_*.so beside it and they coexist without conflict (verified: cpu, omp5,
+# thrust all agree bit-for-bit in a single process on NVHPC 26.3).
+#
+# The historical "Another OpenMP runtime library has been detected" deadlock
+# came from the pre-v1.6 LLVM/clang offload backend (libomp), or from a CPU
+# backend compiled with a NON-nvc++ toolchain (gcc -> libgomp) being mixed with
+# an nvc++ offload backend (libnvomp) in separate installs. To keep the
+# co-loadable guarantee, whenever the CPU backend is built ALONGSIDE a GPU
+# backend it is routed through nvc++ (see the _route_build_through_nvhpc call
+# below), so it links libnvomp too. A standalone `cpu` build may use gcc
+# (libgomp); that is fine because nothing else is loaded beside it.
 build_backend = os.environ.get('SBD_BUILD_BACKEND', 'auto').lower()
 
 build_cpu = False
@@ -280,8 +291,10 @@ build_gpu_omp_offload = False
 if build_backend == 'auto':
     build_cpu = True
     build_gpu_thrust = has_nvhpc
-    if build_gpu_thrust:
-        print("\nAuto-detected nvc++ - will build both CPU and Thrust GPU backends")
+    build_gpu_omp_offload = has_nvhpc
+    if has_nvhpc:
+        print("\nAuto-detected nvc++ - will build ALL backends "
+              "(CPU + Thrust + OMP-offload)")
     else:
         print("\nnvc++ not found - will build CPU backend only")
 elif build_backend == 'cpu':
@@ -298,9 +311,19 @@ elif build_backend == 'both':
     print("\nBuilding both CPU and Thrust GPU backends (SBD_BUILD_BACKEND=both)")
     if not has_nvhpc:
         print("Warning: nvc++ not found, GPU build may fail")
+elif build_backend == 'all':
+    build_cpu = True
+    build_gpu_thrust = True
+    build_gpu_omp_offload = True
+    print("\nBuilding ALL backends: CPU + Thrust + OMP-offload "
+          "(SBD_BUILD_BACKEND=all)")
+    if not has_nvhpc:
+        print("Error: SBD_BUILD_BACKEND=all requires NVHPC_HOME / nvc++.")
+        sys.exit(1)
 elif build_backend == 'gpu_omp_offload':
-    # Stand-alone build: this mode only emits _core_gpu_omp_offload.so.
-    # See note above on the OpenMP-runtime exclusivity constraint.
+    # Standalone offload build. Since v1.6 this links libnvomp (nvc++), the
+    # same runtime as cpu/thrust, so co-installing all three is supported via
+    # SBD_BUILD_BACKEND=all; this mode remains for building offload alone.
     build_gpu_omp_offload = True
     print("\nBuilding GPU OpenMP target-offload backend only "
           "(SBD_BUILD_BACKEND=gpu_omp_offload)")
@@ -309,8 +332,17 @@ elif build_backend == 'gpu_omp_offload':
         sys.exit(1)
 else:
     print(f"Error: Invalid SBD_BUILD_BACKEND='{build_backend}'")
-    print("Valid values: auto, cpu, gpu (alias gpu_thrust), both, gpu_omp_offload")
+    print("Valid values: auto, cpu, gpu (alias gpu_thrust), both, all, "
+          "gpu_omp_offload")
     sys.exit(1)
+
+# Co-load safety: if the CPU backend is built together with any GPU backend,
+# route the whole build through nvc++ up front so the CPU extension links
+# libnvomp (matching the GPU backends) instead of libgomp. This is
+# idempotent with the per-extension calls in the GPU blocks below, and being
+# early it is independent of extension ordering.
+if build_cpu and (build_gpu_thrust or build_gpu_omp_offload) and gpu_compiler:
+    _route_build_through_nvhpc(gpu_compiler)
 
 ext_modules = []
 

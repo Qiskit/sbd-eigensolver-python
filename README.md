@@ -1,6 +1,6 @@
 # SBD Python Bindings
 
-Python bindings for the Selected Basis Diagonalization (SBD) library with dual CPU/GPU backend support.
+Python bindings for the Selected Basis Diagonalization (SBD) library with CPU and GPU backend support.
 
 ## Overview
 
@@ -8,7 +8,7 @@ SBD (Selected Basis Diagonalization) is a high-performance library for quantum c
 
 **Key Features:**
 - **TPB diagonalization** for quantum chemistry Hamiltonians
-- Dual backend: CPU (OpenMP) and GPU (CUDA), switchable at runtime
+- Three backends, switchable at runtime: CPU (OpenMP), GPU Thrust (CUDA), and GPU OpenMP target offload
 - MPI parallelization
 - Integration with [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) for SQD workflows
 
@@ -95,33 +95,30 @@ export SBD_GPU_ARCH=cc100
 You do **not** need to set `CC=nvc` / `CXX=nvc++` or clear `CFLAGS` /
 `CXXFLAGS` manually for the GPU builds — setup.py auto-routes those
 extensions through nvc++ and filters the RHEL 9 sysconfig flags that
-nvc++ rejects. (Earlier versions required this; the v1.6 refactor
-moved it into `setup.py:_route_build_through_nvhpc()`.) If you DO
-set them, your values win — distutils' `os.environ.setdefault`
-semantics.
+nvc++ rejects. If you DO set them, your values win — distutils'
+`os.environ.setdefault` semantics.
 
-The OpenMP target-offload backend cannot share a Python process with
-CPU or Thrust. They link incompatible OpenMP runtimes (NVHPC's
-`libnvomp` for OMP-offload, `libgomp`/`libomp` for CPU and Thrust),
-and `import sbd` eagerly loads every `_core_*.so` it finds in
-`python/`. Co-resident `.so` files therefore pull both runtimes into
-the same address space, producing "Another OpenMP runtime library has
-been detected" and potentially deadlocking at the first `#pragma omp`
-region. **The cleanest setup is two venvs with two checkouts** — one
-for CPU + Thrust, one for OMP-offload. Within a single venv you can
-also switch profiles by removing the other profile's `_core_*.so`
-before rebuilding (only files present in `python/` get loaded), but a
-second venv avoids the bookkeeping.
+All three GPU-box backends co-exist in **one venv, one process**. On a
+GPU box the CPU, Thrust, and OMP-offload extensions all compile with
+NVHPC `nvc++` and link the same OpenMP runtime (`libnvomp`): CPU via
+`-fopenmp` (nvc++ maps it to `-mp`), Thrust via `-mp -cuda`, OMP-offload
+via `-mp=gpu`. `import sbd` eagerly loads every `_core_*.so` in
+`python/`; a single process reports `['cpu', 'gpu', 'gpu-omp']` and you
+select one per call with `device=`.
 
 ### Build
 
-Pick **one** of two installation profiles. They produce mutually
-incompatible Python processes (different OpenMP runtimes — see the
-paragraph above the "Build" section) so put them in **separate venvs
-backed by separate checkouts** if you need both. The `source …`
-lines below are not optional: forgetting to activate the right venv
-before `pip install -e .` either puts the build into the wrong venv
-or fails outright.
+One venv, one `pip install`, and the default (`SBD_BUILD_BACKEND`
+unset, i.e. `auto`) builds **every backend the toolchain supports**:
+
+- **Linux with a GPU + NVHPC `nvc++`** → CPU + Thrust + OMP-offload, all
+  through nvc++ so they share `libnvomp` and co-load. Devices: `'cpu'`,
+  `'gpu'` (Thrust), `'gpu-omp'` (target offload).
+- **macOS**, or **Linux without NVHPC** → CPU only, built with the
+  native `clang`/`g++`. Device: `'cpu'`.
+
+No separate venvs or checkouts are needed — a single install exposes
+all three and you switch per call (`device=...`) or per run.
 
 > **Note — `setuptools` in the setup line:** because the build uses
 > `--no-build-isolation`, it relies on the build tools already present
@@ -130,61 +127,40 @@ or fails outright.
 > the `pip install … setuptools wheel` line below). Without it the
 > build fails with `Cannot import 'setuptools.build_meta'`.
 
-**Profile 1 — CPU + Thrust GPU** (the common case)
-
 ```bash
 # one-time setup
-git clone --recurse-submodules https://github.com/Qiskit/sbd-eigensolver-python.git  sbd-thrust
-python -m venv  ~/venvs/sbd-thrust
-source ~/venvs/sbd-thrust/bin/activate
+git clone --recurse-submodules https://github.com/Qiskit/sbd-eigensolver-python.git
+python -m venv  ~/venvs/sbd
+source ~/venvs/sbd/bin/activate
 MPICC=$(which mpicc) pip install --no-binary=mpi4py mpi4py pybind11 numpy setuptools wheel
 
 # build (re-run after pulling main)
-source ~/venvs/sbd-thrust/bin/activate            # always activate first
-cd sbd-thrust
-SBD_GPU_ARCH=cc100  pip install -e . --no-build-isolation
+source ~/venvs/sbd/bin/activate                   # always activate first
+cd sbd-eigensolver-python
+SBD_GPU_ARCH=cc90  pip install -e . --no-build-isolation
 ```
 
-Builds the CPU backend always. Adds the Thrust GPU backend when NVHPC
-`nvc++` is on PATH; otherwise CPU-only. Devices: `'cpu'` and `'gpu'`.
-
-**Profile 2 — OpenMP target-offload GPU** (use a **separate** venv +
-checkout from Profile 1)
-
-```bash
-# one-time setup
-git clone --recurse-submodules https://github.com/Qiskit/sbd-eigensolver-python.git  sbd-omp-offload
-python -m venv  ~/venvs/sbd-omp-offload
-source ~/venvs/sbd-omp-offload/bin/activate
-MPICC=$(which mpicc) pip install --no-binary=mpi4py mpi4py pybind11 numpy setuptools wheel
-
-# build (re-run after pulling main)
-source ~/venvs/sbd-omp-offload/bin/activate       # always activate first
-cd sbd-omp-offload
-SBD_BUILD_BACKEND=gpu_omp_offload  SBD_GPU_ARCH=cc100 \
-    pip install -e . --no-build-isolation
-```
-
-Builds the OMP-offload GPU backend only. Device: `'gpu-omp'`.
-
-After both profiles are installed, switching is a one-liner
-(`source ~/venvs/<which>/bin/activate`) — no rebuild needed.
+On a GPU box this produces `_core_cpu`, `_core_gpu_thrust`, and
+`_core_gpu_omp_offload` side by side in `python/`; on a CPU-only host it
+produces just `_core_cpu`.
 
 **Multi-arch fat binary**: comma-separate the arches:
 `SBD_GPU_ARCH=cc80,cc90,cc100`. nvc++ embeds one SASS cubin per arch
 and picks the matching one at runtime.
 
-#### Advanced `SBD_BUILD_BACKEND` overrides
+#### `SBD_BUILD_BACKEND` overrides
 
-Only needed when you want to deviate from the two profiles above.
+Set this only to build a **subset** of the default. Any value that
+requests a GPU backend routes the whole build through nvc++.
 
 | Value | Builds |
 |---|---|
-| *unset* (default) | CPU always; Thrust GPU if `nvc++` found. The "Profile 1" default. |
-| `cpu` | CPU only — skip GPU even if `nvc++` is present. |
-| `gpu` | Thrust GPU only — skip CPU. Errors if `nvc++` missing. |
+| *unset* / `auto` (default) | All backends `nvc++` can build (CPU + Thrust + OMP-offload) when NVHPC is present; CPU only (gcc/clang) otherwise. |
+| `all` | CPU + Thrust + OMP-offload. Errors if `nvc++` is missing (no CPU-only fallback). |
+| `cpu` | CPU only — skip GPU even if `nvc++` is present. Uses the native compiler. |
+| `gpu` (alias `gpu_thrust`) | Thrust GPU only — skip CPU. Errors if `nvc++` missing. |
 | `both` | CPU + Thrust GPU. Errors instead of falling back if `nvc++` missing. |
-| `gpu_omp_offload` | OMP-offload GPU only. The "Profile 2" install. |
+| `gpu_omp_offload` | OMP-offload GPU only. |
 
 **Reverting to the LLVM/clang offload path:** prior versions of this
 repo supported a separate `_core_gpu_omp_nvidia` backend built with
@@ -198,9 +174,9 @@ recipe there if you need the clang path back.
 
 ```bash
 python -c "import sbd; print(sbd.available_backends())"
-# CPU only:                       ['cpu']
-# CPU + NVHPC Thrust:             ['cpu', 'gpu']
-# OMP-offload-only install:       ['gpu-omp']
+# CPU-only host (no NVHPC):       ['cpu']
+# GPU box, default build:         ['cpu', 'gpu', 'gpu-omp']
+# subset builds report only what they built, e.g. ['cpu', 'gpu'] or ['gpu-omp']
 ```
 
 ## Usage
@@ -229,18 +205,16 @@ sbd.finalize()
 
 ### Runtime backend switching
 
-Compatible backends coexist as separate `_core_*.so` modules and load
-at `import sbd` into independent pybind11 namespaces. CPU + Thrust GPU
-can co-load; the OMP-offload backend cannot (different OpenMP runtime —
-see the build section). Pick one per call with the `device` parameter:
+All compiled backends coexist as separate `_core_*.so` modules and load
+at `import sbd` into independent pybind11 namespaces. Pick one per call
+with the `device` parameter:
 
 ```python
 import sbd
 
 # All compiled backends are auto-loaded
 sbd.available_backends()
-# CPU + Thrust install:         ['cpu', 'gpu']
-# OMP-offload-only install:     ['gpu-omp']
+# GPU box:                      ['cpu', 'gpu', 'gpu-omp']
 
 # Per-call override — auto-initializes on first use
 result_cpu     = sbd.tpb_diag(..., device='cpu')
