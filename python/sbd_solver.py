@@ -332,14 +332,32 @@ def _make_sbd_dir(mpi_comm, mpi_rank, temp_dir):
     regenerated fcidump.txt when ``fcidump_path`` is not provided).
     Returns (path, owns_sbd_dir) where owns_sbd_dir is True on rank 0
     (so the caller knows to rmtree it on exit).
+
+    ``temp_dir`` is created along with any missing parents, so a caller may
+    pass a path that does not exist yet (e.g. ``--temp_dir`` pointing at a
+    fresh scratch location). Creation happens only on rank 0; if it fails, the
+    error is broadcast so that every rank raises together, rather than the
+    other ranks deadlocking in the broadcast below while rank 0 unwinds.
     """
     temp_dir = temp_dir or tempfile.gettempdir()
+    # (ok, payload): payload is the created directory when ok is True, else a
+    # message describing why rank 0 could not create it.
     if mpi_rank == 0:
-        sbd_dir_str = str(Path(tempfile.mkdtemp(prefix="sbd_files_", dir=temp_dir)))
+        try:
+            Path(temp_dir).mkdir(parents=True, exist_ok=True)
+            created = tempfile.mkdtemp(prefix="sbd_files_", dir=temp_dir)
+            result = (True, str(Path(created)))
+        except OSError as exc:
+            result = (False, f"{type(exc).__name__}: {exc}")
     else:
-        sbd_dir_str = None
-    sbd_dir_str = mpi_comm.bcast(sbd_dir_str, root=0)
-    return Path(sbd_dir_str), (mpi_rank == 0)
+        result = None
+    ok, payload = mpi_comm.bcast(result, root=0)
+    if not ok:
+        raise RuntimeError(
+            f"rank 0 could not create an SBD temporary directory under "
+            f"{temp_dir!r}: {payload}"
+        )
+    return Path(payload), (mpi_rank == 0)
 
 
 def _load_or_regenerate_fcidump(
