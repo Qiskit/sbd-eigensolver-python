@@ -79,6 +79,7 @@ def solve_sci(
     clean_temp_dir: bool = True,
     device_config=None,
     fcidump_path: str | Path | None = None,
+    report_carryover: bool | None = None,
 ) -> SCIResult:
     """
     Diagonalize Hamiltonian in subspace defined by CI strings using SBD.
@@ -101,6 +102,30 @@ def solve_sci(
             When None (default), rank 0 writes a regenerated FCIDUMP into
             ``temp_dir`` and every rank opens that file, which requires
             ``temp_dir`` to be shared for multi-node runs.
+        report_carryover: Whether to report the determinants SBD retained as
+            :attr:`~qiskit_addon_sqd.fermion.SCIResult.carryover` and return no
+            eigenvector, rather than returning an
+            :class:`~qiskit_addon_sqd.fermion.SCIState`.
+
+            SBD trims its own subspace whenever ``carryover_type`` is nonzero, so the
+            determinants it kept are already the ones a configuration recovery loop
+            needs. Reporting them directly avoids writing the eigenvector to disk and
+            reading it back: its size is the product of the two spin sector dimensions,
+            which is the one quantity a large distributed calculation cannot afford to
+            move between processes.
+
+            Defaults to ``None``, meaning report the carryover when ``carryover_type``
+            is nonzero and return an eigenvector otherwise. Since ``carryover_type``
+            itself defaults to 0, reporting the carryover is opt-in: set it to 1, 2 or 3
+            through ``sbd_config``. Pass ``False`` to keep the eigenvector even when SBD
+            trims, which is what a caller that wants the amplitudes for its own analysis
+            should do. Passing ``True`` with ``carryover_type=0`` raises ``ValueError``,
+            since SBD then selects no determinants to report.
+
+            SBD's carryover is selected by weight and returned in descending weight
+            order, whereas the eigenvector path labels its amplitudes with the
+            canonically ordered, deduplicated lists SBD was given. A caller that needs a
+            particular ordering should impose it rather than assume one.
 
     Returns:
         The diagonalization result as SCIResult.
@@ -129,6 +154,7 @@ def solve_sci(
             norb=norb,
             nelec=nelec,
             spin_sq=spin_sq,
+            report_carryover=report_carryover,
             mpi_comm=mpi_comm,
             mpi_rank=mpi_rank,
             sbd_config=sbd_config,
@@ -157,6 +183,7 @@ def _solve_sci_core(
     fcidump,
     device_config=None,
     ecore_offset: float = 0.0,
+    report_carryover: bool | None = None,
 ) -> SCIResult:
     """
     Inner diagonalization kernel that operates on a pre-loaded FCIDUMP object.
@@ -174,10 +201,26 @@ def _solve_sci_core(
     adet = _ci_strings_to_sbd_dets(strings_a, norb, backend, sbd_data.bit_length)
     bdet = _ci_strings_to_sbd_dets(strings_b, norb, backend, sbd_data.bit_length)
 
-    # Use .bin extension to trigger SBD's fast binary write path
-    # (SaveMatrixFormWF in restart.h checks extension: .bin -> raw doubles)
+    # SBD trims its own subspace when carryover_type is nonzero, in which case the
+    # surviving determinants are what the caller needs and the eigenvector is not. See
+    # the report_carryover argument. Note that _create_sbd_config defaults
+    # carryover_type to 0, so this is opt-in: a caller wanting SBD's selection must set
+    # carryover_type through sbd_config.
+    trims_own_subspace = sbd_data.carryover_type != 0
+    if report_carryover is None:
+        report_carryover = trims_own_subspace
+    elif report_carryover and not trims_own_subspace:
+        raise ValueError(
+            "report_carryover=True requires SBD to select carryover determinants, but "
+            "carryover_type is 0, so it selects none. Set carryover_type to 1, 2 or 3 in "
+            "sbd_config, or leave report_carryover unset."
+        )
+
     wf_dump_file = sbd_dir / "wavefunction.bin"
-    sbd_data.dump_matrix_form_wf = str(wf_dump_file)
+    if not report_carryover:
+        # Use .bin extension to trigger SBD's fast binary write path
+        # (SaveMatrixFormWF in restart.h checks extension: .bin -> raw doubles)
+        sbd_data.dump_matrix_form_wf = str(wf_dump_file)
 
     results = backend.tpb_diag(
         mpi_comm, sbd_data, fcidump, adet, bdet, loadname="", savename=""
@@ -187,18 +230,19 @@ def _solve_sci_core(
     mpi_comm.Barrier()
 
     if mpi_rank != 0:
+        # The configuration recovery loop reads results on the control process only, so
+        # the other ranks need return nothing but a well-formed object.
         return SCIResult(
             0.0,
-            SCIState(
-                amplitudes=np.empty((0, 0), dtype=np.float64),
-                ci_strs_a=np.array([], dtype=np.int64),
-                ci_strs_b=np.array([], dtype=np.int64),
-                norb=norb,
-                nelec=nelec,
-            ),
+            None if report_carryover else _empty_sci_state(norb, nelec),
             orbital_occupancies=(
                 np.zeros(norb, dtype=np.float64),
                 np.zeros(norb, dtype=np.float64),
+            ),
+            carryover=(
+                (np.array([], dtype=np.int64), np.array([], dtype=np.int64))
+                if report_carryover
+                else None
             ),
         )
 
@@ -213,6 +257,31 @@ def _solve_sci_core(
     occupancies_a = density[::2]
     occupancies_b = density[1::2]
     occupancies = (occupancies_a, occupancies_b)
+
+    if report_carryover:
+        # The determinants SBD retained are reported directly, so the eigenvector never
+        # has to be written to disk and read back. Its size is the product of the two
+        # spin sector dimensions, which is what a large calculation cannot afford to move.
+        #
+        # These come back in descending weight order, not canonical order: CarryOverAdet
+        # and CarryOverBdet (upstream chemistry/tpb/rdmat.h) sort by the diagonal reduced
+        # density matrix and keep the top entries, and never call sort_bitarray. That is
+        # the order a trim wants, and qiskit-addon-sqd applies its own shape constraints
+        # to whatever a policy returns, so neither ordering nor uniqueness is assumed
+        # here.
+        return SCIResult(
+            energy,
+            None,
+            orbital_occupancies=occupancies,
+            carryover=(
+                _sbd_dets_to_ci_strings(
+                    results["carryover_adet"], norb, backend, sbd_data.bit_length
+                ),
+                _sbd_dets_to_ci_strings(
+                    results["carryover_bdet"], norb, backend, sbd_data.bit_length
+                ),
+            ),
+        )
 
     # Read wavefunction coefficients from the binary dump.
     #
@@ -280,6 +349,7 @@ def solve_sci_batch(
     clean_temp_dir: bool = True,
     device_config=None,
     fcidump_path: str | Path | None = None,
+    report_carryover: bool | None = None,
 ) -> list[SCIResult]:
     """
     Diagonalize Hamiltonian in multiple subspaces using SBD.
@@ -304,6 +374,30 @@ def solve_sci_batch(
             When None (default), rank 0 writes a regenerated FCIDUMP into
             ``temp_dir`` and every rank opens that file, which requires
             ``temp_dir`` to be shared for multi-node runs.
+        report_carryover: Whether to report the determinants SBD retained as
+            :attr:`~qiskit_addon_sqd.fermion.SCIResult.carryover` and return no
+            eigenvector, rather than returning an
+            :class:`~qiskit_addon_sqd.fermion.SCIState`.
+
+            SBD trims its own subspace whenever ``carryover_type`` is nonzero, so the
+            determinants it kept are already the ones a configuration recovery loop
+            needs. Reporting them directly avoids writing the eigenvector to disk and
+            reading it back: its size is the product of the two spin sector dimensions,
+            which is the one quantity a large distributed calculation cannot afford to
+            move between processes.
+
+            Defaults to ``None``, meaning report the carryover when ``carryover_type``
+            is nonzero and return an eigenvector otherwise. Since ``carryover_type``
+            itself defaults to 0, reporting the carryover is opt-in: set it to 1, 2 or 3
+            through ``sbd_config``. Pass ``False`` to keep the eigenvector even when SBD
+            trims, which is what a caller that wants the amplitudes for its own analysis
+            should do. Passing ``True`` with ``carryover_type=0`` raises ``ValueError``,
+            since SBD then selects no determinants to report.
+
+            SBD's carryover is selected by weight and returned in descending weight
+            order, whereas the eigenvector path labels its amplitudes with the
+            canonically ordered, deduplicated lists SBD was given. A caller that needs a
+            particular ordering should impose it rather than assume one.
 
     Returns:
         List of SCIResult for each batch.
@@ -339,6 +433,7 @@ def solve_sci_batch(
                 fcidump=fcidump,
                 device_config=device_config,
                 ecore_offset=ecore_offset,
+                report_carryover=report_carryover,
             )
             for ci_strs in ci_strings
         ]
@@ -449,6 +544,17 @@ def _ci_strings_to_sbd_dets(
     return backend.sort_bitarray(dets)
 
 
+def _empty_sci_state(norb: int, nelec: tuple[int, int]) -> SCIState:
+    """Build the placeholder state returned by ranks other than the control process."""
+    return SCIState(
+        amplitudes=np.empty((0, 0), dtype=np.float64),
+        ci_strs_a=np.array([], dtype=np.int64),
+        ci_strs_b=np.array([], dtype=np.int64),
+        norb=norb,
+        nelec=nelec,
+    )
+
+
 def _sbd_dets_to_ci_strings(
     dets: list[list[int]], norb: int, backend,
     bit_length: int = SBD_DEFAULT_BIT_LENGTH,
@@ -478,13 +584,16 @@ def _create_sbd_config(config_dict: dict | None = None, backend=None, device_con
     sbd_data.init = 0
     sbd_data.do_shuffle = 0
     sbd_data.do_rdm = 0
-    # SBD's carryover is NOT consumed on this path: it is SBD's own iterative
-    # mechanism (its CLI writes it out with --carryover_adetfile and you re-run),
-    # whereas the SQD loop selects its own determinants from the amplitudes we
-    # return. Since _solve_sci_core discards results["carryover_*"], asking SBD to
-    # compute it is pure work -- for carryover_type=2 that includes building
-    # singles-extended determinant lists. Default it off; a caller who wants it
-    # can still set carryover_type through sbd_config.
+    # SBD's carryover is off by default because the default path does not consume it:
+    # the SQD loop selects its own determinants from the amplitudes we return, so
+    # computing SBD's selection would be pure work -- for carryover_type=2 that includes
+    # building singles-extended determinant lists.
+    #
+    # It is consumed when the caller asks for it. Setting carryover_type to 1, 2 or 3
+    # through sbd_config makes _solve_sci_core report SBD's selection as
+    # SCIResult.carryover and skip the eigenvector entirely, which is what a large
+    # distributed run wants: see the report_carryover argument. Leaving the default at 0
+    # keeps that opt-in rather than silently paying for a selection most callers ignore.
     sbd_data.carryover_type = 0
     sbd_data.ratio = 0.1
     sbd_data.threshold = 1e-4
