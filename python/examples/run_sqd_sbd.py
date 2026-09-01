@@ -65,7 +65,7 @@ def parse_args():
     p.add_argument("--fcidump", required=True, help="Path to FCIDUMP file")
     p.add_argument("--counts", default=None,
                    help="Path to count_dict.json (bitstring counts from hardware)")
-    p.add_argument("--samples", type=int, default=10000,
+    p.add_argument("--samples", type=int, default=3000,
                    help="Number of uniform random samples (used when --counts is not given)")
     p.add_argument("--device",
                    choices=["auto", "cpu", "gpu", "gpu-omp", "gpu-nvidia-omp"],
@@ -85,7 +85,7 @@ def parse_args():
     p.add_argument("--tolerance", "--eps", type=float, default=1e-8, dest="eps")
     p.add_argument("--iteration", "--max_it", type=int, default=100, dest="max_it",
                    help="Max SBD Davidson iterations per diagonalization")
-    p.add_argument("--block", "--max_nb", type=int, default=50, dest="max_nb")
+    p.add_argument("--block", "--max_nb", type=int, default=10, dest="max_nb")
     p.add_argument("--rdm", "--do_rdm", type=int, default=0, dest="do_rdm",
                    help="0=density only (default, sufficient for SQD), 1=full RDM")
     p.add_argument("--shuffle", "--do_shuffle", type=int, default=0, dest="do_shuffle")
