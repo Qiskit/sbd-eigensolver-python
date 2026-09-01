@@ -39,6 +39,12 @@ __version__ = "1.6.1"
 # ---------------------------------------------------------------------------
 _backends = {}
 
+# Why a backend is absent, keyed by device name. A .so that was built but
+# cannot be loaded -- missing libmpi at run time, wrong architecture, an
+# OpenMP runtime clash -- is otherwise indistinguishable from one that was
+# never built, and 'Available: []' with no explanation is a dead end.
+_backend_errors = {}
+
 # Device-string aliases. Keys are user-facing strings; values are the
 # canonical key in _backends. e.g. 'gpu-omp' resolves to whatever
 # OMP-offload backend is built.
@@ -46,10 +52,20 @@ _device_aliases = {}
 
 
 def _try_load(module_name, primary_device, *aliases):
+    import os
+    from importlib import import_module
     try:
-        from importlib import import_module
         mod = import_module(f'.{module_name}', package=__name__)
-    except ImportError:
+    except Exception as exc:
+        # Deliberately broad: a compiled extension can fail with OSError
+        # (missing shared library) as readily as ImportError.
+        here = os.path.dirname(__file__)
+        built = any(n.startswith(module_name + '.') and n.endswith('.so')
+                    for n in os.listdir(here)) if os.path.isdir(here) else False
+        _backend_errors[primary_device] = (
+            f"{'built but failed to load' if built else 'not built'}: "
+            f"{type(exc).__name__}: {exc}"
+        )
         return False
     _backends[primary_device] = mod
     for a in aliases:
@@ -61,6 +77,31 @@ _try_load('_core_cpu',             'cpu')
 _try_load('_core_gpu_thrust',      'gpu', 'gpu-thrust', 'gpu-nvidia', 'cuda')
 _try_load('_core_gpu_omp_offload', 'gpu-omp', 'gpu-omp-offload',
                                    'gpu-nvhpc-omp', 'gpu-nvidia-omp')
+
+# The OMP-offload backend links NVHPC's libnvomp; CPU and Thrust link
+# libgomp/libomp. Loading both pulls two OpenMP runtimes into one process,
+# and the observed result is not a crash but a silent demotion: offload
+# regions quietly run on the host while the device query still reports a
+# GPU, so a run looks GPU-accelerated and is not. Since every _core_*.so in
+# this directory is loaded eagerly, that happens whenever the three files
+# share a directory -- separate environments do not help if they share a
+# checkout. Warn loudly rather than let a wrong-looking-right run proceed.
+_omp_offload_conflict = (
+    'gpu-omp' in _backends and bool({'cpu', 'gpu'} & set(_backends))
+)
+if _omp_offload_conflict:
+    import warnings as _warnings
+    _warnings.warn(
+        "sbd: incompatible backends loaded together: "
+        f"{', '.join(sorted(_backends))}. The OMP-offload backend "
+        "(_core_gpu_omp_offload) links a different OpenMP runtime than the "
+        "CPU/Thrust backends, and co-loading them silently demotes offload "
+        "to the host -- device queries still report a GPU. Keep "
+        "_core_gpu_omp_offload.so in a directory of its own (its own "
+        "checkout, not merely its own env) and rebuild.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
 
 # ---------------------------------------------------------------------------
 # Global session state
@@ -426,6 +467,25 @@ def available_backends():
     return list(_backends.keys())
 
 
+def backend_load_errors():
+    """Why each unavailable backend is unavailable.
+
+    Maps device name -> reason, distinguishing "not built" from "built but
+    failed to load" (a missing libmpi at run time, a wrong-architecture
+    binary, an OpenMP runtime clash). Empty when every backend loaded.
+    """
+    return dict(_backend_errors)
+
+
+def has_backend_conflict():
+    """True when incompatible backends are loaded in this process.
+
+    The OMP-offload backend cannot share a process with CPU/Thrust: offload
+    regions silently run on the host while device queries still report a GPU.
+    """
+    return _omp_offload_conflict
+
+
 def print_info():
     """Print SBD information."""
     print("=" * 60)
@@ -461,6 +521,9 @@ __all__ = [
 
     # Backend access
     'get_backend',
+    'available_backends',
+    'backend_load_errors',
+    'has_backend_conflict',
 
     # Query
     'get_device',

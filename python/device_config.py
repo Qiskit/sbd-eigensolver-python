@@ -244,19 +244,41 @@ def get_device_info() -> dict:
 
 
 def print_device_info():
-    """Print information about available compute devices."""
+    """Print the compiled backends, then the hardware they could run on.
+
+    Backends come first because they are what actually constrains a run: the
+    hardware being present says nothing about whether a backend was compiled
+    for it. An earlier version printed "CPU Available: Always" unconditionally
+    while sbd.available_backends() returned [] -- reported as issue #9.
+    """
     info = get_device_info()
-    
-    print("="*60)
+
+    from . import available_backends, backend_load_errors, has_backend_conflict
+    backends = available_backends()
+    errors = backend_load_errors()
+
+    print("=" * 60)
     print("SBD Device Information")
-    print("="*60)
-    
+    print("=" * 60)
+
+    print(f"Compiled backends: {', '.join(backends) if backends else 'NONE'}")
+    if not backends:
+        print("  Nothing was built, or nothing could be loaded. This install")
+        print('  cannot run: solve_sci will raise "Backend not available".')
+    for device, reason in sorted(errors.items()):
+        print(f"  {device:8} unavailable ({reason})")
+    if has_backend_conflict():
+        print("  WARNING: OMP-offload is loaded alongside CPU/Thrust. Offload")
+        print("           regions will silently run on the host even though the")
+        print("           GPU query below succeeds. Give _core_gpu_omp_offload.so")
+        print("           a directory of its own and rebuild.")
+
+    print("-" * 60)
+    print("Hardware detected (independent of what was compiled):")
     if info['gpu_available']:
-        print(f"✓ GPU Available: {info['gpu_type']}")
-        if info['gpu_count'] > 0:
-            print(f"  GPU Count: {info['gpu_count']}")
+        print(f"  GPU: {info['gpu_type']}"
+              + (f", count {info['gpu_count']}" if info['gpu_count'] > 0 else ""))
     else:
-        print("✗ No GPU detected")
-    
-    print(f"✓ CPU Available: Always")
-    print("="*60)
+        print("  GPU: none detected")
+    print("  CPU: always present")
+    print("=" * 60)
