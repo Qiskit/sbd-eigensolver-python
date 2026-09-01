@@ -14,6 +14,8 @@ from setuptools import setup, Extension
 import sys
 import os
 import subprocess
+import re
+import sysconfig
 import pybind11
 
 
@@ -35,24 +37,58 @@ def get_mpi4py_include():
         return None
 
 
-def _mpi_config_from_mpicc():
-    """Probe the mpicc compiler wrapper for include/library/link flags.
+def _mpi_prefix_from_mpi4py():
+    """Derive the MPI install prefix from the library mpi4py is linked against.
 
-    Returns (include_dirs, library_dirs, libraries) or None if mpicc is
-    absent or does not understand the --showme flags (an OpenMPI-ism;
-    MPICH's wrapper does not support them).
+    mpi4py is a build requirement, so it is importable here. Deriving the prefix
+    from it -- rather than from whichever mpicc happens to be first on PATH --
+    guarantees the extensions link the same MPI that mpi4py uses. A mismatch is
+    not a build error: it surfaces at run time as an MPI_Init abort (e.g. MPICH
+    reporting "unsupported PMI version PMIx" under an Open MPI launcher), which
+    is considerably harder to diagnose.
+
+    Returns the prefix, or None when it cannot be determined -- a manylinux
+    wheel bundling its own MPI, a static build, or a platform with neither ldd
+    nor otool. Callers fall back to MPI_HOME.
     """
     try:
-        compile_flags = subprocess.check_output(['mpicc', '--showme:compile'],
-                                                universal_newlines=True).strip().split()
-        link_flags = subprocess.check_output(['mpicc', '--showme:link'],
-                                             universal_newlines=True).strip().split()
+        import mpi4py
+    except ImportError:
+        return None
+    pkg_dir = os.path.dirname(mpi4py.__file__)
+    try:
+        exts = [n for n in sorted(os.listdir(pkg_dir))
+                if n.startswith('MPI.') and n.endswith(('.so', '.dylib', '.pyd'))]
+    except OSError:
+        return None
+    # Some builds ship one extension per MPI flavour (MPI.mpich.*, MPI.openmpi.*)
+    # and choose at import time, so linkage cannot tell us which one is in use.
+    # Ambiguous: let the caller fall back to MPI_HOME.
+    if len(exts) != 1:
+        return None
+    ext = exts[0]
+    probe = ['otool', '-L'] if sys.platform == 'darwin' else ['ldd']
+    try:
+        out = subprocess.check_output(probe + [os.path.join(pkg_dir, ext)],
+                                      universal_newlines=True,
+                                      stderr=subprocess.DEVNULL)
     except Exception:
         return None
-    include_dirs = [flag[2:] for flag in compile_flags if flag.startswith('-I')]
-    library_dirs = [flag[2:] for flag in link_flags if flag.startswith('-L')]
-    libraries = [flag[2:] for flag in link_flags if flag.startswith('-l')]
-    return include_dirs, library_dirs, libraries
+    # Take the resolved path and normalise it. A conda-installed MPI is reached
+    # through a relative path with '..' segments (mpi4py/../../../libmpi.so.12),
+    # so matching a literal '/lib/libmpi' misses it entirely; realpath also
+    # follows the libmpi.so.12 -> libmpi.so.12.x.y symlink chain.
+    match = re.search(r'=>\s*(\S*libmpi\S*)', out) or re.search(r'(\S*libmpi\S*)', out)
+    if not match:
+        return None
+    raw = match.group(1)
+    # macOS records @rpath/@loader_path-relative install names; resolving those
+    # means walking LC_RPATH, which is not worth it here -- MPI_HOME covers it.
+    if not raw.startswith('/'):
+        return None
+    lib_path = os.path.realpath(raw)
+    prefix = os.path.dirname(os.path.dirname(lib_path))
+    return prefix if os.path.exists(os.path.join(prefix, 'include', 'mpi.h')) else None
 
 
 def _building_extensions():
@@ -72,54 +108,76 @@ def _building_extensions():
 
 
 def get_mpi_config():
-    # Prefer MPI_HOME, but only trust it if mpi.h actually lives at
-    # $MPI_HOME/include. Distros that split MPI into a -devel package
-    # (e.g. Fedora's environment-modules sets MPI_HOME=/usr/lib64/openmpi
-    # while headers live in /usr/include/openmpi-x86_64) break the naive
-    # $MPI_HOME/include assumption, so we fall through to mpicc there.
-    mpi_home = os.environ.get('MPI_HOME', None)
-    if mpi_home:
-        mpi_include = os.path.join(mpi_home, 'include')
-        mpi_lib = os.path.join(mpi_home, 'lib')
-        if os.path.exists(os.path.join(mpi_include, 'mpi.h')):
-            print(f"Using MPI from MPI_HOME: {mpi_home}")
-            return [mpi_include], [mpi_lib], ['mpi']
-        print(f"Notice: MPI_HOME={mpi_home} set but {mpi_include}/mpi.h "
-              "not found; falling back to mpicc detection.")
+    """Resolve MPI include/lib dirs, preferring the MPI that mpi4py uses.
 
-    mpicc_config = _mpi_config_from_mpicc()
-    if mpicc_config is not None:
-        print("Using MPI detected from mpicc")
-        return mpicc_config
+    Order of precedence: MPI_HOME when set (explicit override, and the escape
+    hatch for layouts this cannot infer), otherwise the MPI mpi4py is linked
+    against. When both are known and disagree, that is a hard error -- linking a
+    different MPI than mpi4py aborts at MPI_Init, so failing the build is much
+    the cheaper outcome.
 
-    # Last resort: honor MPI_HOME even without a discoverable mpi.h, so a
-    # deliberately-set MPI_HOME on an unusual layout still gets a chance.
-    if mpi_home:
-        print(f"Warning: using MPI_HOME={mpi_home} despite missing "
-              f"{mpi_include}/mpi.h and unusable mpicc.")
-        return [os.path.join(mpi_home, 'include')], \
-               [os.path.join(mpi_home, 'lib')], ['mpi']
+    Both MPICH and Open MPI install libmpi, so -lmpi is correct for either.
+    """
+    derived = _mpi_prefix_from_mpi4py()
+    mpi_home = os.environ.get('MPI_HOME') or None
+
+    if mpi_home and derived and \
+            os.path.realpath(mpi_home) != os.path.realpath(derived):
+        print(f"Error: MPI_HOME={mpi_home} is not the MPI that mpi4py is linked "
+              f"against ({derived}).\n"
+              "       Building against a different MPI than mpi4py aborts at "
+              "MPI_Init rather than at build time.\n"
+              "       Either unset MPI_HOME to use mpi4py's MPI, or rebuild "
+              "mpi4py against MPI_HOME:\n"
+              f"         MPICC={mpi_home}/bin/mpicc pip install --no-binary=mpi4py "
+              "--force-reinstall --no-cache-dir mpi4py\n"
+              "       Then verify: python -c \"from mpi4py import MPI; "
+              "print(MPI.Get_library_version())\"")
+        sys.exit(1)
+
+    prefix = mpi_home or derived
+    if prefix:
+        include_dir = os.path.join(prefix, 'include')
+        lib_dir = next((os.path.join(prefix, d) for d in ('lib', 'lib64')
+                        if os.path.isdir(os.path.join(prefix, d))),
+                       os.path.join(prefix, 'lib'))
+        print(f"Using MPI from {'MPI_HOME' if mpi_home else 'mpi4py'}: {prefix}")
+        if not os.path.exists(os.path.join(include_dir, 'mpi.h')):
+            print(f"Warning: {include_dir}/mpi.h not found; the compile will "
+                  "likely fail. Check MPI_HOME points at an MPI *prefix*, not "
+                  "its lib or bin directory.")
+        return [include_dir], [lib_dir], ['mpi']
 
     if not _building_extensions():
         print("Notice: Could not detect MPI, but no extension is being "
               "compiled; continuing without MPI flags.")
         return [], [], ['mpi']
 
-    print("Error: Could not detect MPI. Please set MPI_HOME environment "
-          "variable, or ensure mpicc is on PATH.")
+    print("Error: Could not determine which MPI to build against.\n"
+          "       mpi4py did not reveal an MPI prefix containing include/mpi.h "
+          "(a wheel that bundles its own MPI will do that), so set MPI_HOME:\n"
+          "         MPI_HOME=/path/to/mpi pip install -e . --no-build-isolation\n"
+          "       Better, install mpi4py against that MPI first so the two "
+          "cannot diverge:\n"
+          "         MPICC=/path/to/mpi/bin/mpicc pip install --no-binary=mpi4py "
+          "mpi4py")
     sys.exit(1)
 
 
-def _resolve_gpu_arch(default='cc90'):
-    """Pick the nvc++ -gpu=<arch> value from env, with back-compat alias.
+def _resolve_gpu_arch():
+    """Return the nvc++ -gpu=<arch> value; required for any GPU backend.
 
     Both Thrust (_core_gpu_thrust) and OMP-offload (_core_gpu_omp_offload)
-    backends compile with nvc++ and take the same -gpu=<arch> flag, so we
-    use a single env var.
+    compile with nvc++ and take the same -gpu=<arch> flag, so one env var
+    covers both.
 
-    Reads SBD_GPU_ARCH (canonical name since v1.6). Falls back to the
-    deprecated SBD_GPU_ARCH_NVIDIA (v1.5 and earlier) with a notice so
-    existing setup scripts keep working through the transition.
+    There is deliberately no default. nvc++ happily emits code for a compute
+    capability the machine does not have, and a wrong-arch Thrust build returns
+    incorrect energies instead of failing -- a silent-wrong-answer mode that is
+    far worse than a build error.
+
+    Reads SBD_GPU_ARCH, honoring the deprecated SBD_GPU_ARCH_NVIDIA (v1.5 and
+    earlier) with a notice so existing scripts keep working.
     """
     val = os.environ.get('SBD_GPU_ARCH')
     if val:
@@ -131,7 +189,16 @@ def _resolve_gpu_arch(default='cc90'):
               "since LLVM/clang was removed). Honoring it as a back-compat "
               "alias. Please switch to SBD_GPU_ARCH.")
         return legacy
-    return default
+    print("Error: SBD_GPU_ARCH must be set to build a GPU backend (NVHPC was "
+          "found).\n"
+          "       No default is assumed: nvc++ will build for the wrong compute "
+          "capability without complaint, and a wrong-arch Thrust build returns "
+          "incorrect energies rather than failing.\n"
+          "       cc80 = A100, cc90 = H100, cc100 = GB200/B200. For example:\n"
+          "         SBD_GPU_ARCH=cc100 pip install -e . --no-build-isolation\n"
+          "       To build the CPU backend only, unset NVHPC_HOME (and keep "
+          "nvc++ off PATH) or set SBD_BUILD_BACKEND=cpu.")
+    sys.exit(1)
 
 
 def _route_build_through_nvhpc(nvc_path):
@@ -169,7 +236,6 @@ def _route_build_through_nvhpc(nvc_path):
     # (requires v3+). distutils pulls these from sysconfig in addition
     # to os.environ.CFLAGS, so blanking the latter alone is not enough
     # — we rewrite the sysconfig dict itself.
-    import sysconfig, re as _re
     _cfg = sysconfig.get_config_vars()
     _strip_tokens = (
         '-grecord-gcc-switches',
@@ -189,7 +255,12 @@ def _route_build_through_nvhpc(nvc_path):
         for _bad in _strip_tokens:
             _v = _v.replace(_bad, '')
         _v = _v.replace('-march=x86-64-v2', '-march=x86-64-v3')
-        _cfg[_k] = _re.sub(r' +', ' ', _v).strip()
+        # conda's Python bakes '-B $CONDA_PREFIX/compiler_compat' into
+        # CC/CXX/LDSHARED/LDCXXSHARED. nvc++ rejects -B and hands the
+        # path to the linker as an input file, so drop just that flag
+        # and keep conda's -L/-rpath entries intact.
+        _v = re.sub(r'-B\s*\S*compiler_compat\S*', '', _v)
+        _cfg[_k] = re.sub(r' +', ' ', _v).strip()
 
 
 def find_nvidia_hpc_sdk():
@@ -249,9 +320,36 @@ libraries = mpi_libs + blas_libs
 
 # RPATH so libraries are found at runtime without LD_LIBRARY_PATH
 extra_link_args = ['-fopenmp']
+_rpath_dirs = []
 for lib_dir in library_dirs:
-    extra_link_args.append(f'-Wl,--rpath,{lib_dir}')
+    if lib_dir not in _rpath_dirs:          # a dir may appear as both MPI and BLAS
+        _rpath_dirs.append(lib_dir)
+        extra_link_args.append(f'-Wl,--rpath,{lib_dir}')
 print(f"RPATH will be set to: {library_dirs}")
+
+# Runtime search order matters: conda's Python injects -Wl,-rpath,$CONDA_PREFIX/lib
+# into LDSHARED/LDCXXSHARED, and setuptools places those flags *before* the ones
+# built above. A conda-installed library therefore wins over an explicitly
+# requested one -- BLAS_LIB_PATH gets honored at link time and silently ignored at
+# run time, which is how you end up running conda's generic OpenBLAS while
+# believing you selected a tuned build.
+#
+# Demote conda: drop its rpath entries (keeping its -L, so link-time discovery of
+# conda-provided libraries still works) and re-add the directory last, as a
+# fallback behind anything the caller asked for.
+_conda_prefix = os.environ.get('CONDA_PREFIX')
+if _conda_prefix:
+    _conda_lib = os.path.join(_conda_prefix, 'lib')
+    _scfg = sysconfig.get_config_vars()
+    _rpath_re = re.compile(r'-Wl,-rpath(?:-link)?,' + re.escape(_conda_lib) + r'(?=\s|$)')
+    for _key in ('LDSHARED', 'LDCXXSHARED'):
+        _val = _scfg.get(_key)
+        if isinstance(_val, str):
+            _scfg[_key] = re.sub(r' +', ' ', _rpath_re.sub('', _val)).strip()
+    if _conda_lib not in _rpath_dirs:   # skip if already requested explicitly
+        _rpath_dirs.append(_conda_lib)
+        extra_link_args.append(f'-Wl,--rpath,{_conda_lib}')
+        print(f"RPATH fallback appended last: {_conda_lib}")
 
 # Detect NVHPC. nvc++ is shared between two GPU backends here:
 #   1. _core_gpu_thrust       (Thrust + CUDA path,  nvc++ -cuda)
@@ -366,7 +464,7 @@ if build_gpu_thrust:
     # Auto-route the build through nvc++ + sanitize sysconfig flags.
     # No-op if the user already set CC/CXX manually.
     _route_build_through_nvhpc(gpu_compiler)
-    gpu_arch = _resolve_gpu_arch(default='cc90')
+    gpu_arch = _resolve_gpu_arch()
     print(f"NVHPC -gpu= arch: {gpu_arch} (set SBD_GPU_ARCH to override; "
           "nvc++ accepts cc<XX> and sm_<XX>)")
 
@@ -407,7 +505,7 @@ if build_gpu_omp_offload:
     print(f"Using compiler: {gpu_compiler}")
     # Auto-route the build through nvc++ + sanitize sysconfig flags.
     _route_build_through_nvhpc(gpu_compiler)
-    offload_arch = _resolve_gpu_arch(default='cc90')
+    offload_arch = _resolve_gpu_arch()
     print(f"NVHPC -gpu= arch: {offload_arch} (set SBD_GPU_ARCH to override)")
 
     gpu_omp_offload_ext = Extension(
