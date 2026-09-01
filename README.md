@@ -26,10 +26,20 @@ In addition to TPB, this package also contains experimental support for SBD's **
 **Optional (GPU):** NVIDIA HPC SDK (nvc++), CUDA-capable GPU, CUDA-aware MPI.
 
 Either install path compiles the C++ extension on the target machine;
-no pre-built wheels are published.  The resulting binary depends on
-the local MPI and BLAS, so an MPI toolchain (`mpicc` on `PATH`, or
-`MPI_HOME` set) and BLAS must be installed first; see
-[Environment Variables](#environment-variables).
+no pre-built wheels are published. The resulting binary depends on the
+local MPI and BLAS, so both must be installed first.
+
+**Which MPI gets used:** by default, the one `mpi4py` is already linked
+against — `setup.py` reads that from the `mpi4py` extension module. This
+is deliberate: linking a different MPI than `mpi4py` is not a build
+error, it aborts later at `MPI_Init` (MPICH reporting `unsupported PMI
+version PMIx` under an Open MPI launcher), which is far harder to
+diagnose. So **install `mpi4py` against your intended MPI first**, then
+build. If that cannot be determined unambiguously — an `@rpath`-relative
+install name on macOS, or an `mpi4py` shipping one extension per MPI
+flavour — the build stops and asks you to set `MPI_HOME`.
+
+See [Environment Variables](#environment-variables).
 
 ### Install from PyPI
 
@@ -66,10 +76,35 @@ pip install -e . --no-build-isolation --force-reinstall --no-deps
 ### Environment Variables
 
 ```bash
-# --- always needed ---
+# --- required for the GPU backends (Thrust and OpenMP target-offload) ---
+#     NVIDIA-only: both compile with NVHPC nvc++, there is no AMD/Intel
+#     GPU path here. Needs the NVHPC SDK (one tarball; no LLVM/clang
+#     source build since v1.6).
+export NVHPC_HOME=/opt/nvidia/hpc_sdk/Linux_x86_64/2025/compilers
+
+#     Target arch for nvc++ -gpu=<arch>, shared by the Thrust and the
+#     OMP-offload path. REQUIRED whenever a GPU backend is built — there
+#     is deliberately no default, because nvc++ will happily emit code
+#     for a compute capability the machine does not have and a wrong-arch
+#     Thrust build returns incorrect energies rather than failing.
+#       A100: cc80    H100: cc90    GB200 / B200: cc100
+#     nvc++ accepts cc<XX> (documented PGI form) and sm_<XX>.
+export SBD_GPU_ARCH=cc100
+
+# --- optional overrides; each has a working default ---
+#     MPI: defaults to whatever mpi4py is linked against. Set this only
+#     for layouts that cannot be inferred, or to link an MPI other than
+#     mpi4py's — in which case the build stops, since that combination
+#     aborts at MPI_Init.
 export MPI_HOME=/path/to/mpi
+
+#     BLAS: defaults to whatever the linker finds, including a
+#     conda-installed OpenBLAS in $CONDA_PREFIX/lib. Set these to select
+#     a specific build (e.g. an arch-tuned OpenBLAS); an explicit path is
+#     placed ahead of $CONDA_PREFIX/lib in the RPATH, so it wins at run
+#     time as well as at link time.
 export BLAS_LIB_PATH=/path/to/blas/lib
-export BLAS_LIBS=openblas  # or mkl_rt
+export BLAS_LIBS=openblas          # or mkl_rt
 
 # --- macOS only — pin the host compiler to system clang so libc++
 #     matches Python's. Not needed on Linux GPU boxes (setup.py
@@ -77,19 +112,6 @@ export BLAS_LIBS=openblas  # or mkl_rt
 #     then compiles cleanly under nvc++ as well).
 export CC=/usr/bin/clang
 export CXX=/usr/bin/clang++
-
-# --- GPU backends (Thrust and OpenMP target-offload) — NVIDIA-only.
-#     Both compile with NVHPC nvc++; there is no AMD/Intel GPU path
-#     in this wrapper. Requires the NVHPC SDK (one tarball; no
-#     LLVM/clang source build needed since v1.6).
-export NVHPC_HOME=/opt/nvidia/hpc_sdk/Linux_x86_64/2025/compilers
-# Target GPU arch for nvc++ -gpu=<arch>. Used by BOTH the Thrust path
-# and the OMP-offload path. nvc++ accepts cc<XX> (documented PGI form)
-# and sm_<XX>. Default cc90 for H100.
-#   H100:         cc90
-#   GB200 / B200: cc100
-#   A100:         cc80
-export SBD_GPU_ARCH=cc100
 ```
 
 You do **not** need to set `CC=nvc` / `CXX=nvc++` or clear `CFLAGS` /
@@ -107,21 +129,24 @@ and `import sbd` eagerly loads every `_core_*.so` it finds in
 `python/`. Co-resident `.so` files therefore pull both runtimes into
 the same address space, producing "Another OpenMP runtime library has
 been detected" and potentially deadlocking at the first `#pragma omp`
-region. **The cleanest setup is two venvs with two checkouts** — one
-for CPU + Thrust, one for OMP-offload. Within a single venv you can
-also switch profiles by removing the other profile's `_core_*.so`
-before rebuilding (only files present in `python/` get loaded), but a
-second venv avoids the bookkeeping.
+region. **The cleanest setup is two environments with two checkouts** —
+one for CPU + Thrust, one for OMP-offload. Within a single environment
+you can also switch profiles by removing the other profile's
+`_core_*.so` before rebuilding (only files present in `python/` get
+loaded), but a second environment avoids the bookkeeping.
 
 ### Build
 
 Pick **one** of two installation profiles. They produce mutually
 incompatible Python processes (different OpenMP runtimes — see the
-paragraph above the "Build" section) so put them in **separate venvs
-backed by separate checkouts** if you need both. The `source …`
-lines below are not optional: forgetting to activate the right venv
-before `pip install -e .` either puts the build into the wrong venv
-or fails outright.
+paragraph above) so put them in **separate environments backed by
+separate checkouts** if you need both. The `conda activate` lines below
+are not optional: building without the right environment active either
+installs into the wrong one or fails outright.
+
+The examples use conda, which keeps Python, OpenBLAS and (optionally)
+MPI in one prefix. Plain `venv` works identically — substitute
+`python -m venv` and `pip install pybind11 numpy setuptools wheel`.
 
 > **Note — `setuptools` in the setup line:** because the build uses
 > `--no-build-isolation`, it relies on the build tools already present
@@ -135,12 +160,25 @@ or fails outright.
 ```bash
 # one-time setup
 git clone --recurse-submodules https://github.com/Qiskit/sbd-eigensolver-python.git  sbd-thrust
-python -m venv  ~/venvs/sbd-thrust
-source ~/venvs/sbd-thrust/bin/activate
-MPICC=$(which mpicc) pip install --no-binary=mpi4py mpi4py pybind11 numpy setuptools wheel
+conda create -y -n sbd-thrust -c conda-forge \
+    python=3.12 pybind11 numpy setuptools wheel openblas pyscf pip
+conda activate sbd-thrust
+
+# The rest must be installed with pip AFTER activating, not listed in the
+# conda create line. mpi4py has to be compiled against the MPI you will
+# actually run with; a prebuilt wheel would bring its own.
+MPICC=/path/to/mpi/bin/mpicc pip install --no-binary=mpi4py --no-cache-dir mpi4py
+#   no host MPI on this machine? take one from conda instead:
+#   conda install -y -c conda-forge mpich mpi4py
+
+# confirm which MPI mpi4py uses -- setup.py builds against exactly this
+python -c "from mpi4py import MPI; print(MPI.Get_library_version())"
+
+# only for the SQD examples (python/examples/run_sqd_sbd.py and .ipynb)
+pip install "qiskit-addon-sqd>=0.13.1"
 
 # build (re-run after pulling main)
-source ~/venvs/sbd-thrust/bin/activate            # always activate first
+conda activate sbd-thrust                         # always activate first
 cd sbd-thrust
 SBD_GPU_ARCH=cc100  pip install -e . --no-build-isolation
 ```
@@ -148,18 +186,22 @@ SBD_GPU_ARCH=cc100  pip install -e . --no-build-isolation
 Builds the CPU backend always. Adds the Thrust GPU backend when NVHPC
 `nvc++` is on PATH; otherwise CPU-only. Devices: `'cpu'` and `'gpu'`.
 
-**Profile 2 — OpenMP target-offload GPU** (use a **separate** venv +
-checkout from Profile 1)
+**Profile 2 — OpenMP target-offload GPU** (use a **separate**
+environment + checkout from Profile 1)
 
 ```bash
 # one-time setup
 git clone --recurse-submodules https://github.com/Qiskit/sbd-eigensolver-python.git  sbd-omp-offload
-python -m venv  ~/venvs/sbd-omp-offload
-source ~/venvs/sbd-omp-offload/bin/activate
-MPICC=$(which mpicc) pip install --no-binary=mpi4py mpi4py pybind11 numpy setuptools wheel
+conda create -y -n sbd-omp-offload -c conda-forge \
+    python=3.12 pybind11 numpy setuptools wheel openblas pyscf pip
+conda activate sbd-omp-offload
+# pip, after activating (see Profile 1 for why mpi4py is built from source)
+MPICC=/path/to/mpi/bin/mpicc pip install --no-binary=mpi4py --no-cache-dir mpi4py
+python -c "from mpi4py import MPI; print(MPI.Get_library_version())"
+pip install "qiskit-addon-sqd>=0.13.1"   # only for the SQD examples
 
 # build (re-run after pulling main)
-source ~/venvs/sbd-omp-offload/bin/activate       # always activate first
+conda activate sbd-omp-offload                    # always activate first
 cd sbd-omp-offload
 SBD_BUILD_BACKEND=gpu_omp_offload  SBD_GPU_ARCH=cc100 \
     pip install -e . --no-build-isolation
@@ -168,11 +210,18 @@ SBD_BUILD_BACKEND=gpu_omp_offload  SBD_GPU_ARCH=cc100 \
 Builds the OMP-offload GPU backend only. Device: `'gpu-omp'`.
 
 After both profiles are installed, switching is a one-liner
-(`source ~/venvs/<which>/bin/activate`) — no rebuild needed.
+(`conda activate <which>`) — no rebuild needed.
 
 **Multi-arch fat binary**: comma-separate the arches:
-`SBD_GPU_ARCH=cc80,cc90,cc100`. nvc++ embeds one SASS cubin per arch
-and picks the matching one at runtime.
+`SBD_GPU_ARCH=cc80,cc90,cc100`. nvc++ embeds one SASS cubin per arch and
+picks the matching one at runtime.
+
+> **Prefer a single arch.** A multi-arch Thrust build has been observed
+> returning non-deterministic wrong energies when a communicator
+> dimension is 1 (e.g. `adet_comm_size=bdet_comm_size=1`), and running
+> roughly an order of magnitude slower, where the same source built
+> single-arch is correct and fast. Build one image per GPU generation
+> unless you have verified multi-arch on your own toolchain.
 
 #### Advanced `SBD_BUILD_BACKEND` overrides
 
