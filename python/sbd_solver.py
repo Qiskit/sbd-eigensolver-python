@@ -29,6 +29,17 @@ from typing import Callable
 import numpy as np
 from mpi4py import MPI
 
+# Bits packed into each size_t of SBD's ``std::vector<size_t>`` bitstring
+# representation. RIKEN's documented default is 20 (see the --bit_length option
+# in apps/chemistry_tpb_selected_basis_diagonalization/README.md), which is also
+# what run_sbd_diag.py defaults to.
+#
+# This must stay <= 63. bitadvance() in framework/bit_manipulation.h computes
+#     size_t d = (((size_t) 1) << bit_length) - 1;
+# so bit_length == 64 shifts a 64-bit size_t by 64, which is undefined behavior;
+# in practice the shift count is masked to 0 and the mask collapses to d == 0.
+SBD_DEFAULT_BIT_LENGTH = 20
+
 try:
     from pyscf import tools as pyscf_tools
 except ImportError:
@@ -154,10 +165,14 @@ def _solve_sci_core(
     the FCIDUMP only once and reuse it across all batches.
     """
     strings_a, strings_b = ci_strings
-    adet = _ci_strings_to_sbd_dets(strings_a, norb, backend)
-    bdet = _ci_strings_to_sbd_dets(strings_b, norb, backend)
 
+    # Build the config first: it carries the effective bit_length (possibly
+    # overridden by the caller), and the determinants must be packed with the
+    # same value the C++ engine will use to interpret them.
     sbd_data = _create_sbd_config(sbd_config, backend, device_config)
+
+    adet = _ci_strings_to_sbd_dets(strings_a, norb, backend, sbd_data.bit_length)
+    bdet = _ci_strings_to_sbd_dets(strings_b, norb, backend, sbd_data.bit_length)
 
     # Use .bin extension to trigger SBD's fast binary write path
     # (SaveMatrixFormWF in restart.h checks extension: .bin -> raw doubles)
@@ -199,8 +214,12 @@ def _solve_sci_core(
     occupancies_b = density[1::2]
     occupancies = (occupancies_a, occupancies_b)
 
-    co_strings_a = _sbd_dets_to_ci_strings(results["carryover_adet"], norb, backend)
-    co_strings_b = _sbd_dets_to_ci_strings(results["carryover_bdet"], norb, backend)
+    co_strings_a = _sbd_dets_to_ci_strings(
+        results["carryover_adet"], norb, backend, sbd_data.bit_length
+    )
+    co_strings_b = _sbd_dets_to_ci_strings(
+        results["carryover_bdet"], norb, backend, sbd_data.bit_length
+    )
 
     # Read wavefunction coefficients from binary dump
     n_alpha_co = len(co_strings_a)
@@ -411,14 +430,14 @@ def _read_fcidump_ecore(fcidump_path):
 
 
 def _ci_strings_to_sbd_dets(
-    ci_strings: np.ndarray, norb: int, backend
+    ci_strings: np.ndarray, norb: int, backend,
+    bit_length: int = SBD_DEFAULT_BIT_LENGTH,
 ) -> list[list[int]]:
     """Convert CI strings (integers) to SBD determinant format.
 
     Determinants are sorted in canonical order (matching C++ sort_bitarray)
     which is required by the GPU Correlation kernel (do_rdm=1).
     """
-    bit_length = 64
     dets = []
     for ci_str in ci_strings:
         binary_str = format(int(ci_str), f'0{norb}b')
@@ -428,10 +447,10 @@ def _ci_strings_to_sbd_dets(
 
 
 def _sbd_dets_to_ci_strings(
-    dets: list[list[int]], norb: int, backend
+    dets: list[list[int]], norb: int, backend,
+    bit_length: int = SBD_DEFAULT_BIT_LENGTH,
 ) -> np.ndarray:
     """Convert SBD determinants to CI strings (integers)."""
-    bit_length = 64
     ci_strings = []
     for det in dets:
         binary_str = backend.makestring(det, bit_length, norb)
@@ -459,7 +478,7 @@ def _create_sbd_config(config_dict: dict | None = None, backend=None, device_con
     sbd_data.carryover_type = 1
     sbd_data.ratio = 0.1
     sbd_data.threshold = 1e-4
-    sbd_data.bit_length = 64
+    sbd_data.bit_length = SBD_DEFAULT_BIT_LENGTH
 
     if config_dict:
         for key, value in config_dict.items():
