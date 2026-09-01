@@ -22,7 +22,7 @@ diagonalize via SBD, update occupancies, repeat.
 
 Bitstring input (choose one):
     --counts FILE     count_dict.json  {bitstring: count}
-    --samples N       generate N uniform random bitstrings (default)
+    --samples N       generate N random bitstrings at the target Hamming weights
 
 Usage (MPI required):
     # H2O with bundled data, random samples
@@ -66,7 +66,8 @@ def parse_args():
     p.add_argument("--counts", default=None,
                    help="Path to count_dict.json (bitstring counts from hardware)")
     p.add_argument("--samples", type=int, default=3000,
-                   help="Number of uniform random samples (used when --counts is not given)")
+                   help="Number of random samples when --counts is absent, drawn at "
+                        "the target alpha/beta Hamming weights.")
     p.add_argument("--device",
                    choices=["auto", "cpu", "gpu", "gpu-omp", "gpu-nvidia-omp"],
                    default="cpu",
@@ -205,12 +206,21 @@ def main():
         if rank == 0:
             print(f"Loaded {bit_array.num_shots} bitstrings from {args.counts}")
     else:
-        from qiskit_addon_sqd.counts import generate_bit_array_uniform
-        bit_array = generate_bit_array_uniform(
-            args.samples, norb * 2, rand_seed=rand_seed
+        # Stand-in for hardware counts, at the target Hamming weights. Uniform
+        # strings get postselected away: survival is C(norb,ne)^2 / 4^norb,
+        # ~6e-6 for H2O (5 of 24).
+        from qiskit_addon_sqd.counts import generate_counts_bipartite_hamming
+        counts = generate_counts_bipartite_hamming(
+            args.samples,
+            norb * 2,
+            hamming_right=num_elec_a,
+            hamming_left=num_elec_b,
+            rand_seed=rand_seed,
         )
+        bit_array = BitArray.from_counts(counts, num_bits=norb * 2)
         if rank == 0:
-            print(f"Generated {bit_array.num_shots} uniform random bitstrings")
+            print(f"Generated {bit_array.num_shots} random bitstrings with "
+                  f"({num_elec_a}, {num_elec_b}) alpha/beta Hamming weights")
 
     if rank == 0:
         print()
@@ -262,18 +272,6 @@ def main():
         print("Starting SQD loop...")
         t0 = time.perf_counter()
 
-    # HF (Hartree-Fock) occupancies as a recovery seed: first num_elec_a
-    # alpha orbitals filled, first num_elec_b beta orbitals filled. This
-    # is what configuration_recovery falls back to when the bit_array
-    # contains no valid Hamming-weight strings — which is always the
-    # case for the uniform-random fallback path (probability of a random
-    # 2*norb bitstring having exactly (num_elec_a, num_elec_b) Hamming
-    # weights is vanishing for any realistic norb). Cheap insurance even
-    # when --counts is provided; harmless if the bit_array is already
-    # valid.
-    hf_alpha = np.zeros(norb); hf_alpha[:num_elec_a] = 1.0
-    hf_beta  = np.zeros(norb); hf_beta[:num_elec_b]  = 1.0
-
     try:
         result = diagonalize_fermionic_hamiltonian(
             hcore,
@@ -288,7 +286,6 @@ def main():
             symmetrize_spin=True,
             callback=callback,
             seed=rand_seed,
-            initial_occupancies=(hf_alpha, hf_beta),
         )
     except RuntimeError as e:
         if "Failed to open FCIDUMP" in str(e):
