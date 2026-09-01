@@ -65,7 +65,7 @@ def parse_args():
     p.add_argument("--fcidump", required=True, help="Path to FCIDUMP file")
     p.add_argument("--counts", default=None,
                    help="Path to count_dict.json (bitstring counts from hardware)")
-    p.add_argument("--samples", type=int, default=10000,
+    p.add_argument("--samples", type=int, default=3000,
                    help="Number of uniform random samples (used when --counts is not given)")
     p.add_argument("--device",
                    choices=["auto", "cpu", "gpu", "gpu-omp", "gpu-nvidia-omp"],
@@ -85,13 +85,17 @@ def parse_args():
     p.add_argument("--tolerance", "--eps", type=float, default=1e-8, dest="eps")
     p.add_argument("--iteration", "--max_it", type=int, default=100, dest="max_it",
                    help="Max SBD Davidson iterations per diagonalization")
-    p.add_argument("--block", "--max_nb", type=int, default=50, dest="max_nb")
+    p.add_argument("--block", "--max_nb", type=int, default=10, dest="max_nb")
     p.add_argument("--rdm", "--do_rdm", type=int, default=0, dest="do_rdm",
                    help="0=density only (default, sufficient for SQD), 1=full RDM")
     p.add_argument("--shuffle", "--do_shuffle", type=int, default=0, dest="do_shuffle")
     p.add_argument("--carryover_type", type=int, default=1)
     p.add_argument("--carryover_ratio", "--ratio", type=float, default=0.1, dest="ratio")
     p.add_argument("--carryover_threshold", "--threshold", type=float, default=1e-4, dest="threshold")
+    p.add_argument("--bit_length", type=int, default=20,
+                   help="Bits packed into each size_t of the bitstring representation "
+                        "(RIKEN default 20). Must be <= 63: bitadvance() shifts a "
+                        "64-bit size_t by this amount, so 64 is undefined behavior.")
 
     # MPI sub-communicator sizes
     p.add_argument("--adet_comm_size", type=int, default=1)
@@ -223,7 +227,7 @@ def main():
         "carryover_type": args.carryover_type,
         "ratio": args.ratio,
         "threshold": args.threshold,
-        "bit_length": 64,
+        "bit_length": args.bit_length,
         "adet_comm_size": args.adet_comm_size,
         "bdet_comm_size": args.bdet_comm_size,
         "task_comm_size": args.task_comm_size,
