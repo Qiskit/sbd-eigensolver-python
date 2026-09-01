@@ -12,11 +12,6 @@
 
 """SQD loop using SBD solver with qiskit-addon-sqd.
 
-Requires qiskit-addon-sqd with distributed (SPMD) support. This currently
-lives on upstream main (not yet in a PyPI release):
-    pip install "git+https://github.com/Qiskit/qiskit-addon-sqd@main"
-Once a release includes it, plain `pip install qiskit-addon-sqd` will suffice.
-
 Runs the self-consistent SQD workflow: subsample bitstrings into batches,
 diagonalize via SBD, update occupancies, repeat.
 
@@ -25,9 +20,10 @@ Bitstring input (choose one):
     --samples N       generate N random bitstrings at the target Hamming weights
 
 Usage (MPI required):
-    # H2O with bundled data, random samples
+    # H2O with the bundled counts file (275 bitstrings -> ~ -76.236 Ha)
     mpirun -np 4 python run_sqd_sbd.py \
-        --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt
+        --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
+        --counts count_dict_h2o.json
 
     # Custom FCIDUMP with hardware bitstrings
     mpirun -np 8 python run_sqd_sbd.py \

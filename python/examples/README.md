@@ -5,7 +5,7 @@ Examples demonstrating SBD's capabilities for quantum chemistry calculations.
 ## Overview
 
 - **Communication:** MPI for distributed computing
-- **Backends:** CPU (OpenMP) and GPU (CUDA), switchable at runtime via `device` parameter
+- **Backends:** CPU (host OpenMP), GPU (NVHPC Thrust) and GPU (OpenMP target offload), switchable at runtime via `device` parameter
 
 ## Extra dependencies (only for the SQD examples)
 
@@ -18,17 +18,14 @@ extra Python packages. Install them once into the same venv:
 
 ```bash
 source ~/venvs/<your-sbd-venv>/bin/activate
-pip install pyscf qiskit \
-    "git+https://github.com/Qiskit/qiskit-addon-sqd@main"
+pip install pyscf qiskit "qiskit-addon-sqd>=0.13.1"
 ```
 
 - **`pyscf`** — reads FCIDUMP, restores 4-fold integral symmetry.
 - **`qiskit`** — `BitArray` type for sampled-bitstring input.
 - **`qiskit-addon-sqd`** — the SQD loop (`diagonalize_fermionic_hamiltonian`).
-  Requires the **distributed (SPMD) support** that calls `sci_solver` on
-  every MPI rank. That now lives in upstream `qiskit-addon-sqd`, but is not
-  yet in a PyPI release, so install from `@main` for now. Once a release
-  includes it, plain `pip install qiskit-addon-sqd` will suffice.
+  Needs the **distributed (SPMD) support** that calls `sci_solver` on every MPI
+  rank; that shipped in 0.13.1, so the PyPI release suffices.
 
 `pyscf` is the heavy one (~150 MB plus `h5py`). qiskit-addon-sqd is a thin
 layer on top of upstream qiskit, so most of `qiskit`'s ~300 MB is what
@@ -68,13 +65,16 @@ Run `python run_sbd_diag.py --help` for the full list.
 Runs the self-consistent SQD workflow (qiskit-addon-sqd) using SBD as the
 eigensolver backend. Supports two bitstring input modes:
 
-- `--counts FILE` — load hardware bitstrings from a count_dict.json
-- `--samples N` — generate N uniform random bitstrings (default)
+- `--counts FILE` — load bitstrings from a count_dict.json
+- `--samples N` — generate N random bitstrings at the target Hamming weights
+  (default). A plumbing check only: random determinants give a random subspace,
+  so the energy is not meaningful. Use `--counts` for real results.
 
 ```bash
-# H2O with random samples (default)
+# H2O with the bundled counts file (275 bitstrings -> ~ -76.236 Ha)
 mpirun -np 4 python run_sqd_sbd.py \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
+    --counts count_dict_h2o.json \
     --device cpu \
     --adet_comm_size 2 --bdet_comm_size 2
 
@@ -95,20 +95,31 @@ mpirun -np 8 python run_sqd_sbd.py \
 ```
 
 **count_dict.json format:** A JSON object mapping bitstrings to shot counts, as
-produced by a quantum device or simulator. Each bitstring has length `2 × NORB` —
-the first `NORB` bits are alpha (spin-up) orbitals and the last `NORB` are beta
-(spin-down):
+produced by a quantum device or simulator. Each bitstring has length `2 × NORB`
+and is laid out as **`[beta | alpha]`**: the first `NORB` bits are beta
+(spin-down), the last `NORB` are alpha (spin-up), and within each half **orbital 0
+is the rightmost bit**. qiskit-addon-sqd postselects the last `NORB` bits on
+`num_elec_a` and the first `NORB` on `num_elec_b`.
+
+For H2O (NORB=24, 5α+5β) the Hartree–Fock configuration — the five lowest
+orbitals doubly occupied — is therefore `"0"*19 + "1"*5` in *both* halves:
 
 ```json
 {
-  "010000000010001010000001010000000001000010100100": 16,
-  "000010001110000000000010001001000110000000000100": 12,
-  "000101000000010011000000000010000000001001000110": 8
+  "000000000000000000011111000000000000000000011111": 16,
+  "010000000010001010000001010000000001000010100100": 12,
+  "000010001110000000000010001001000110000000000100": 8
 }
 ```
 
-Supply your own `count_dict.json` produced by a quantum device or simulator.
-The bitstring length must be `2 × NORB` — e.g. for [`../../vendor/sbd-upstream/data/h2o/fcidump.txt`](../../vendor/sbd-upstream/data/h2o/fcidump.txt) that is NORB=24 (5α+5β electrons).
+Bitstrings whose halves do not hold exactly `num_elec_a` / `num_elec_b` ones are
+dropped by postselection, so a file of uniform-random strings yields nothing
+usable — for H2O only `C(24,5)² / 4²⁴ ≈ 6e-6` of them qualify.
+
+[`count_dict_h2o.json`](./count_dict_h2o.json) in this directory is a ready-made
+H2O example: 275 bitstrings taken from the vendored `h2o-1em3-alpha.txt`
+determinant list, giving a 275 × 275 = 75,625-determinant subspace at
+≈ -76.236 Ha.
 
 **Key options:** `--fcidump` (required), `--counts`, `--samples`,
 `--samples_per_batch`, `--num_batches`, `--max_iterations`, `--device`,
@@ -116,7 +127,7 @@ MPI decomposition flags. SBD solver flags (`--method`, `--tolerance`,
 `--iteration`, etc.) have sensible defaults; run `python run_sqd_sbd.py --help`
 for the full list.
 
-**Requirements:** see [Extra dependencies](#extra-dependencies-only-for-the-sqd-examples) above (`pyscf`, `qiskit`, `qiskit-addon-sqd` fork).
+**Requirements:** see [Extra dependencies](#extra-dependencies-only-for-the-sqd-examples) above (`pyscf`, `qiskit`, `qiskit-addon-sqd`).
 
 #### SQD Parameter Guide
 
@@ -131,7 +142,7 @@ postselection).
 | Parameter | What it controls | Typical values |
 |-----------|-----------------|----------------|
 | `--counts FILE` | Load hardware bitstrings from a JSON file (use one or the other) | 10K–1M+ shots |
-| `--samples N` | Generate N uniform random bitstrings for testing (default) | 10K–1M+ |
+| `--samples N` | Generate N random bitstrings at the target Hamming weights; plumbing check only, energy not meaningful | any |
 | `--samples_per_batch` | Subspace dimension per batch (accuracy vs. cost) | 300–800 (small), 1M+ (production) |
 | `--num_batches` | Independent subsamples for averaging occupancies | 3–10 (small), up to 100 (large) |
 | `--max_iterations` | SQD self-consistent loop iterations (not SBD `--iteration`) | 3–5 |
@@ -143,14 +154,13 @@ increases wall time linearly but does not require more ranks.
 
 ### 3. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
 
-Interactive single-rank companion to `run_sqd_sbd.py`. Same SQD self-
-consistent loop on h2o, but runs inside a Jupyter kernel
-(`MPI.COMM_WORLD` size 1). Uses uniform-random bitstrings + HF
-`initial_occupancies` as a self-contained demo. Converges to ~−76.19 Ha
-in a few seconds on CPU.
+Interactive single-rank companion to `run_sqd_sbd.py`. Same SQD self-consistent
+loop on h2o, but inside a Jupyter kernel (`MPI.COMM_WORLD` size 1). Uses the
+bundled [`count_dict_h2o.json`](./count_dict_h2o.json) (275 bitstrings → 75,625
+determinants) and reaches ≈ −76.236 Ha in a few seconds on CPU.
 
 ```bash
-jupyter nbconvert --to notebook --execute --inplace run_sqd_sbd.ipynb
+pytest --nbmake run_sqd_sbd.ipynb      # what CI runs; needs the nbtest extra
 # or open it in JupyterLab and step through the cells
 ```
 
@@ -169,13 +179,18 @@ When using more than one rank, specify at least `--adet_comm_size`. Examples:
 
 ## Backend Selection
 
-Both backends are loaded at import time. Select per-call via `--device`:
+All compiled backends load eagerly at import. Select per-call via `--device`:
 
 ```bash
---device cpu    # OpenMP (default)
---device gpu    # CUDA (requires NVIDIA GPU + HPC SDK build)
---device auto   # GPU if available, else CPU
+--device cpu       # host OpenMP (default)
+--device gpu       # NVHPC Thrust (requires NVIDIA GPU + HPC SDK build)
+--device gpu-omp   # NVHPC OpenMP target offload
+--device auto      # GPU if available, else CPU
 ```
+
+`gpu-omp` links a different OpenMP runtime (`libnvomp`) than `cpu`/`gpu`, so it is
+normally built into its own install — see the [Python Bindings README](../../README.md).
+`sbd.available_backends()` reports what the current install actually has.
 
 Within Python, backends can also be switched at runtime without re-initialization:
 
