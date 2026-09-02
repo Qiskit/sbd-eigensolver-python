@@ -171,6 +171,30 @@ def _load_backend(device):
             f" pip install -e . --no-build-isolation"
         )
 
+    if device == 'gpu-omp':
+        # Make a host fallback fail loudly instead of succeeding quietly.
+        #
+        # OMP_TARGET_OFFLOAD=DEFAULT -- the OpenMP default -- means "device if
+        # one is available, else host". A demoted run returns the correct energy
+        # and exits 0, with device queries still reporting a GPU, so it looks
+        # accelerated. Reachable whenever no device is available to the rank: an
+        # empty CUDA_VISIBLE_DEVICES, a mispinning launcher wrapper, a GPU-less
+        # node. MANDATORY turns each of those into an immediate error.
+        #
+        # This is a standard OpenMP 5.0 ICV, honoured by NVHPC libnvomp, GNU
+        # libgomp and LLVM libomptarget alike -- not an NVHPC extension. It must
+        # be set before the runtime reads it, which is why it happens here,
+        # immediately ahead of the import.
+        #
+        # Only when the caller has not chosen: an explicit
+        # OMP_TARGET_OFFLOAD=DEFAULT still wins, for anyone who wants host
+        # fallback (a smoke test on a GPU-less login node). An empty value is
+        # treated as unset -- `export OMP_TARGET_OFFLOAD=` is not a request for
+        # opportunistic offload, and setdefault() would otherwise honour it.
+        import os as _os
+        if not _os.environ.get('OMP_TARGET_OFFLOAD'):
+            _os.environ['OMP_TARGET_OFFLOAD'] = 'MANDATORY'
+
     from importlib import import_module
     try:
         mod = import_module(f'.{module_name}', package=__name__)

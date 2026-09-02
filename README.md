@@ -206,6 +206,28 @@ SBD_GPU_ARCH=cc100  pip install -e . --no-build-isolation
 > The Python one-liner is reliable for MPICH but not for Open MPI, whose version
 > string omits build options — use `ompi_info` there.
 
+> **A GPU-less run of `--device gpu-omp` fails rather than quietly using the CPU.**
+> OpenMP's default (`OMP_TARGET_OFFLOAD=DEFAULT`) means "device if available, else
+> host", so a rank with no visible GPU — an empty `CUDA_VISIBLE_DEVICES`, a
+> mispinning launcher wrapper, a login node — would return the correct energy and
+> exit 0 while running entirely on the CPU. Loading the offload backend therefore
+> sets `OMP_TARGET_OFFLOAD=MANDATORY` unless you set it yourself, which turns that
+> into an immediate error. It is a standard OpenMP 5.0 variable, honoured by NVHPC
+> `libnvomp`, GNU `libgomp` and LLVM `libomptarget` alike.
+>
+> To allow the host fallback — a smoke test where no GPU is present, say — ask for
+> it explicitly:
+>
+> ```bash
+> OMP_TARGET_OFFLOAD=DEFAULT mpirun -np 1 python run_sbd_diag.py --device gpu-omp ...
+> ```
+>
+> No rebuild is needed either way: this lives in `python/__init__.py`, so the env
+> var is read at run time. (You can also comment out the one line that sets it in
+> `_load_backend()`, though an editable reinstall or `git pull` will restore it —
+> the env var is the durable route.) The Thrust backend needs no equivalent: it
+> drives CUDA directly and errors instead of falling back.
+
 With `nvc++` available this builds all three backends into the one install:
 devices `'cpu'`, `'gpu'` (Thrust) and `'gpu-omp'` (OpenMP target offload).
 Without it, CPU only. Backends are imported lazily — one per process, on first
