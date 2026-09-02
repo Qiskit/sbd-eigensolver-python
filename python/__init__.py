@@ -29,8 +29,12 @@ Device switching (CPU/GPU) within the same process:
 
 import os
 import subprocess
+from importlib.metadata import version
 
-__version__ = "1.6.1"
+# Single-sourced from the [project] table in pyproject.toml, so the version is
+# declared in exactly one place. Note the argument is the *distribution* name
+# ("sbd-eigensolver"), not the import name ("sbd").
+__version__ = version("sbd-eigensolver")
 
 # ---------------------------------------------------------------------------
 # Backend registry — eagerly load all available backends at import time.
