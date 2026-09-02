@@ -150,57 +150,15 @@ python -c "import sbd; print(sbd.available_backends())"
 # OMP-offload-only install:       ['gpu-omp']
 ```
 
-## Usage
+## Examples
 
-See `python/examples/run_sbd_diag.py` for a complete example.
+Located in `python/examples/`:
 
-### Quick Start
+- **`run_sbd_diag.py`** — Standalone TPB diagonalization (no Qiskit dependency)
+- **`run_sqd_sbd.ipynb`** — Jupyter Notebook SQD loop with SBD solver (random or hardware bitstrings)
+- **`run_sqd_sbd.py`** — SQD loop with SBD solver (random or hardware bitstrings)
 
-```python
-import sbd
-
-# No explicit init() needed — auto-initializes on first use
-config = sbd.TPB_SBD()
-config.adet_comm_size = 2
-config.bdet_comm_size = 2
-config.max_it = 100
-config.eps = 1e-4
-
-results = sbd.tpb_diag_from_files(
-    fcidumpfile='data/h2o/fcidump.txt',
-    adetfile='data/h2o/h2o-1em4-alpha.txt',
-    sbd_data=config,
-)
-
-print(f"Energy: {results['energy']:.10f} Hartree")
-sbd.finalize()
-```
-
-### Runtime backend switching
-
-Compatible backends coexist as separate `_core_*.so` modules and load
-at `import sbd` into independent pybind11 namespaces. 
-
-```python
-import sbd
-
-# All compiled backends are auto-loaded
-sbd.available_backends()
-#                      ['cpu', 'gpu', 'gpu-omp']
-
-# Per-call override — auto-initializes on first use
-result_cpu     = sbd.tpb_diag(..., device='cpu')
-result_thrust  = sbd.tpb_diag(..., device='gpu')
-result_omp     = sbd.tpb_diag(..., device='gpu-omp')
-
-# Or set a default device explicitly (optional)
-sbd.init(device='gpu')      # default = NVHPC Thrust
-result = sbd.tpb_diag(...)
-
-# Or get the backend module directly
-backend = sbd.get_backend('gpu-omp')
-fcidump = backend.LoadFCIDump('fcidump.txt')
-```
+See [python/examples/README.md](python/examples/README.md) for usage details.
 
 ## Integration with qiskit-addon-sqd
 
