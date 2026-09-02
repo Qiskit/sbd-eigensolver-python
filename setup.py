@@ -399,12 +399,6 @@ elif build_backend in ('gpu', 'gpu_thrust'):
     print(f"\nBuilding Thrust GPU backend only (SBD_BUILD_BACKEND={build_backend})")
     if not has_nvhpc:
         print("Warning: nvc++ not found, GPU build may fail")
-elif build_backend == 'both':
-    build_cpu = True
-    build_gpu_thrust = True
-    print("\nBuilding both CPU and Thrust GPU backends (SBD_BUILD_BACKEND=both)")
-    if not has_nvhpc:
-        print("Warning: nvc++ not found, GPU build may fail")
 elif build_backend == 'gpu_omp_offload':
     build_gpu_omp_offload = True
     print("\nBuilding GPU OpenMP target-offload backend only "
@@ -415,7 +409,7 @@ elif build_backend == 'gpu_omp_offload':
 else:
     print(f"Error: Invalid SBD_BUILD_BACKEND='{build_backend}'")
     print("Valid values: auto (= all backends the toolchain supports), all, "
-          "cpu, gpu (alias gpu_thrust), both, gpu_omp_offload")
+          "cpu, gpu (alias gpu_thrust), gpu_omp_offload")
     sys.exit(1)
 
 ext_modules = []

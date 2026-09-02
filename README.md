@@ -47,45 +47,27 @@ is deliberate: linking a different MPI than `mpi4py` is not a build
 error, it aborts later at `MPI_Init` (MPICH reporting `unsupported PMI
 version PMIx` under an Open MPI launcher), which is far harder to
 diagnose. So **install `mpi4py` against your intended MPI first**, then
-build. If that cannot be determined unambiguously — an `@rpath`-relative
-install name on macOS, or an `mpi4py` shipping one extension per MPI
-flavour — the build stops and asks you to set `MPI_HOME`.
+build. If that cannot be determined unambiguously, the build stops 
+and asks you to set `MPI_HOME`.
 
 See [Environment Variables](#environment-variables).
 
 ### Install from PyPI
 
+**A self-contained conda environment** is the quickest way to get those
+dependencies in place for the CPU backend:
 ```bash
+conda create -y -n sbd -c conda-forge \
+    python=3.12 pybind11 numpy setuptools wheel openblas pyscf pip mpi4py
+```bash
+
+```bash
+conda activate sbd
 pip install sbd-eigensolver
 ```
 
 The published source distribution (sdist) bundles the sbd header files, so this
-needs no git checkout and no submodule step. It still compiles the extension
-locally against the MPI and BLAS it finds — there are no wheels.
-
-**A self-contained conda environment** is the quickest way to get those
-dependencies in place:
-
-```bash
-conda create -y -n sbd -c conda-forge \
-    python=3.12 pybind11 numpy setuptools wheel openblas pyscf pip mpi4py
-conda activate sbd
-pip install sbd-eigensolver qiskit-addon-sqd
-```
-
-Taking `mpi4py` from conda-forge brings its MPI along, so nothing needs to be
-installed system-wide. Two consequences worth knowing:
-
-- **This route is CPU-only in practice.** conda-forge's MPI is not built with
-  CUDA support, and the GPU backends pass device pointers to `MPI_Allreduce`
-  (see [Prerequisites](#prerequisites)). For GPU, install from a git checkout
-  with `NVHPC_HOME` and a CUDA-aware MPI — see [Build](#build).
-- `qiskit-addon-sqd` is only needed for the SQD examples, not for `sbd` itself.
-
-If you already have a cluster MPI you intend to run against, install `mpi4py`
-against *that* instead of taking conda's — drop it from the `conda create` line
-and use the `MPICC=… pip install --no-binary=mpi4py mpi4py` form shown under
-[Build](#build), so the extension links the MPI your launcher will use.
+needs no git checkout and no submodule step. 
 
 ### Install from git checkout
 
@@ -113,36 +95,26 @@ pip install -e . --no-build-isolation --force-reinstall --no-deps
 ### Environment Variables
 
 ```bash
-# --- required for the GPU backends (Thrust and OpenMP target-offload) ---
-#     NVIDIA-only: both compile with NVHPC nvc++, there is no AMD/Intel
-#     GPU path here. Needs the NVHPC SDK (one tarball; no LLVM/clang
-#     source build since v1.6).
+# --- required ONLY for the NVIDIA GPU backends (Thrust and OpenMP target-offload) ---
 export NVHPC_HOME=/opt/nvidia/hpc_sdk/Linux_x86_64/2025/compilers
 
-#     Target arch for nvc++ -gpu=<arch>, shared by the Thrust and the
-#     OMP-offload path. REQUIRED whenever a GPU backend is built — there
-#     is deliberately no default, because nvc++ will happily emit code
-#     for a compute capability the machine does not have and a wrong-arch
+# --- required whenever a NVIDIA GPU backend is built
 #     Thrust build returns incorrect energies rather than failing.
 #       A100: cc80    H100: cc90    GB200 / B200: cc100
-#     nvc++ accepts cc<XX> (documented PGI form) and sm_<XX>.
 export SBD_GPU_ARCH=cc100
 
 # --- optional overrides; each has a working default ---
 #     MPI: defaults to whatever mpi4py is linked against. Set this only
-#     for layouts that cannot be inferred, or to link an MPI other than
-#     mpi4py's — in which case the build stops, since that combination
-#     aborts at MPI_Init.
+#     for layouts that cannot be inferred.
 export MPI_HOME=/path/to/mpi
 
 #     BLAS: defaults to whatever the linker finds, including a
 #     conda-installed OpenBLAS in $CONDA_PREFIX/lib. Set these to select
-#     a specific build (e.g. an arch-tuned OpenBLAS); an explicit path is
-#     placed ahead of $CONDA_PREFIX/lib in the RPATH, so it wins at run
-#     time as well as at link time.
+#     a specific build (e.g. an arch-tuned OpenBLAS)
 export BLAS_LIB_PATH=/path/to/blas/lib
 export BLAS_LIBS=openblas          # or mkl_rt
 
+??? SHOULD NOT BE REQUIRED
 # --- macOS only — pin the host compiler to system clang so libc++
 #     matches Python's. Not needed on Linux GPU boxes (setup.py
 #     auto-picks nvc++ for the GPU extensions; the CPU extension
@@ -151,65 +123,21 @@ export CC=/usr/bin/clang
 export CXX=/usr/bin/clang++
 ```
 
-You do **not** need to set `CC=nvc` / `CXX=nvc++` or clear `CFLAGS` /
-`CXXFLAGS` manually for the GPU builds — setup.py auto-routes those
-extensions through nvc++ and filters the RHEL 9 sysconfig flags that
-nvc++ rejects. (Earlier versions required this; the v1.6 refactor
-moved it into `setup.py:_route_build_through_nvhpc()`.) If you DO
-set them, your values win — distutils' `os.environ.setdefault`
-semantics.
+### Build Using the Host MPI
 
-**All three backends can live in one install.** Backends are imported
-lazily — `get_backend(device)` loads only the `_core_*.so` for the device
-asked for — so co-resident extensions do not interfere, and `available_backends()`
-reports what is present by inspecting the files rather than by loading them.
-
-This used to require two environments with two checkouts, on the stated grounds
-that the backends link incompatible OpenMP runtimes. That explanation was wrong:
-when NVHPC is present every extension is compiled by `nvc++`, and `ldd` shows all
-three linking the same `libnvomp`. The real hazard was that `_core_cpu`, built
-without `-mp=gpu`, leaves that shared runtime initialised host-only; anything
-loading it before the offload backend left offload unable to acquire a device.
-It did not fail — target regions quietly ran on the host while device queries
-still reported a GPU, so runs returned correct energies, exited 0, and looked
-GPU-accelerated. Loading one backend per process removes the cause. If you do
-force several into one process, `sbd.has_backend_conflict()` reports it.
-
-### Build
-
-Pick **one** of two installation profiles. They produce mutually
-incompatible Python processes (different OpenMP runtimes — see the
-paragraph above) so put them in **separate environments backed by
-separate checkouts** if you need both. The `conda activate` lines below
-are not optional: building without the right environment active either
-installs into the wrong one or fails outright.
-
-The examples use conda, which keeps Python, OpenBLAS and (optionally)
-MPI in one prefix. Plain `venv` works identically — substitute
-`python -m venv` and `pip install pybind11 numpy setuptools wheel`.
-
-> **Note — `setuptools` in the setup line:** because the build uses
-> `--no-build-isolation`, it relies on the build tools already present
-> in the active venv. Python 3.12+ no longer seeds `setuptools` into
-> fresh venvs, so it must be installed explicitly (it is included in
-> the `pip install … setuptools wheel` line below). Without it the
-> build fails with `Cannot import 'setuptools.build_meta'`.
-
-**Profile 1 — CPU + Thrust GPU** (the common case)
-
+# Create a conda env
 ```bash
-# one-time setup
-git clone --recurse-submodules https://github.com/Qiskit/sbd-eigensolver-python.git  sbd-thrust
-conda create -y -n sbd-thrust -c conda-forge \
-    python=3.12 pybind11 numpy setuptools wheel openblas pyscf pip
-conda activate sbd-thrust
+conda create -y -n sbd -c conda-forge \
+    python=3.13.12 pybind11 numpy setuptools wheel openblas pyscf pip
 
-# The rest must be installed with pip AFTER activating, not listed in the
-# conda create line. mpi4py has to be compiled against the MPI you will
-# actually run with; a prebuilt wheel would bring its own.
-MPICC=/path/to/mpi/bin/mpicc pip install --no-binary=mpi4py --no-cache-dir mpi4py
-#   no host MPI on this machine? take one from conda instead:
-#   conda install -y -c conda-forge mpich mpi4py
+conda activate sbd                         # always activate first
+
+# Install mpi4py against the host MPI
+export MPI_HOME=/path/to/mpi
+MPICC=$MPI_HOME/bin/mpicc python -m pip install --no-binary=mpi4py --no-cache-dir mpi4py
+#NOTE: **For GPU backends, the host MPI must be CUDA-aware.**
+#      If you need only the CPU backend and no host MPI is available, take one from conda instead:
+#      conda install -y -c conda-forge mpich mpi4py
 
 # confirm which MPI mpi4py uses -- setup.py builds against exactly this
 python -c "from mpi4py import MPI; print(MPI.Get_library_version())"
@@ -218,97 +146,8 @@ python -c "from mpi4py import MPI; print(MPI.Get_library_version())"
 pip install "qiskit-addon-sqd>=0.13.1"
 
 # build (re-run after pulling main)
-conda activate sbd-thrust                         # always activate first
-cd sbd-thrust
-SBD_GPU_ARCH=cc100  pip install -e . --no-build-isolation
+SBD_GPU_ARCH=ccXX  pip install -e . --no-build-isolation
 ```
-
-> **Planning to use a GPU backend? The MPI must be CUDA-aware.** The GPU paths
-> hand device pointers to `MPI_Allreduce`; a non-CUDA-aware MPI stalls there, and
-> the symptom is easy to misread — the process creates a CUDA context and then
-> sits at 0% GPU utilisation, so it looks slow rather than broken. conda-forge's
-> `mpich` and `openmpi` are **not** CUDA-aware, so the `conda install mpich
-> mpi4py` shortcut above is fine for CPU only. Check *before* installing mpi4py,
-> because sbd links whatever MPI mpi4py uses — swapping it later means rebuilding
-> both:
->
-> ```bash
-> mpichversion | grep -i cuda      # MPICH:   expect --with-cuda=... in the configure line
-> ompi_info --parsable --all | grep mpi_built_with_cuda_support   # OpenMPI: expect ...:true
->
-> # mpi4py already installed? this reads MPICH's embedded configure string
-> python -c "from mpi4py import MPI; print('CUDA' in MPI.Get_library_version().upper())"
-> ```
->
-> The Python one-liner is reliable for MPICH but not for Open MPI, whose version
-> string omits build options — use `ompi_info` there.
-
-> **A GPU-less run of `--device gpu-omp` fails rather than quietly using the CPU.**
-> OpenMP's default (`OMP_TARGET_OFFLOAD=DEFAULT`) means "device if available, else
-> host", so a rank with no visible GPU — an empty `CUDA_VISIBLE_DEVICES`, a
-> mispinning launcher wrapper, a login node — would return the correct energy and
-> exit 0 while running entirely on the CPU. Loading the offload backend therefore
-> sets `OMP_TARGET_OFFLOAD=MANDATORY` unless you set it yourself, which turns that
-> into an immediate error. It is a standard OpenMP 5.0 variable, honoured by NVHPC
-> `libnvomp`, GNU `libgomp` and LLVM `libomptarget` alike.
->
-> To allow the host fallback — a smoke test where no GPU is present, say — ask for
-> it explicitly:
->
-> ```bash
-> OMP_TARGET_OFFLOAD=DEFAULT mpirun -np 1 python run_sbd_diag.py --device gpu-omp ...
-> ```
->
-> No rebuild is needed either way: this lives in `python/__init__.py`, so the env
-> var is read at run time. (You can also comment out the one line that sets it in
-> `_load_backend()`, though an editable reinstall or `git pull` will restore it —
-> the env var is the durable route.) The Thrust backend needs no equivalent: it
-> drives CUDA directly and errors instead of falling back.
-
-With `nvc++` available this builds all three backends into the one install:
-devices `'cpu'`, `'gpu'` (Thrust) and `'gpu-omp'` (OpenMP target offload).
-Without it, CPU only. Backends are imported lazily — one per process, on first
-use — so they do not interfere and no second environment is needed.
-
-**Profile 2 — OpenMP target-offload only** (rarely needed: Profile 1 already
-builds this backend. Use it to skip the CPU and Thrust builds, e.g. on a machine
-where only offload is wanted.)
-
-```bash
-# one-time setup
-git clone --recurse-submodules https://github.com/Qiskit/sbd-eigensolver-python.git  sbd-omp-offload
-conda create -y -n sbd-omp-offload -c conda-forge \
-    python=3.12 pybind11 numpy setuptools wheel openblas pyscf pip
-conda activate sbd-omp-offload
-# pip, after activating. As in Profile 1: build mpi4py from source, and use a
-# CUDA-aware MPI -- this profile is GPU-only, so a non-CUDA-aware MPI will stall.
-MPICC=/path/to/mpi/bin/mpicc pip install --no-binary=mpi4py --no-cache-dir mpi4py
-python -c "from mpi4py import MPI; print(MPI.Get_library_version())"
-pip install "qiskit-addon-sqd>=0.13.1"   # only for the SQD examples
-
-# build (re-run after pulling main)
-conda activate sbd-omp-offload                    # always activate first
-cd sbd-omp-offload
-SBD_BUILD_BACKEND=gpu_omp_offload  SBD_GPU_ARCH=cc100 \
-    pip install -e . --no-build-isolation
-```
-
-Builds the OMP-offload GPU backend only. Device: `'gpu-omp'`.
-
-Switching device is a per-call argument (`--device`, or `device=` in the API) —
-no rebuild and no second environment, since Profile 1 already contains all three
-backends.
-
-**Multi-arch fat binary**: comma-separate the arches:
-`SBD_GPU_ARCH=cc80,cc90,cc100`. nvc++ embeds one SASS cubin per arch and
-picks the matching one at runtime.
-
-> **Prefer a single arch.** A multi-arch Thrust build has been observed
-> returning non-deterministic wrong energies when a communicator
-> dimension is 1 (e.g. `adet_comm_size=bdet_comm_size=1`), and running
-> roughly an order of magnitude slower, where the same source built
-> single-arch is correct and fast. Build one image per GPU generation
-> unless you have verified multi-arch on your own toolchain.
 
 #### Advanced `SBD_BUILD_BACKEND` overrides
 
@@ -316,26 +155,17 @@ Only needed when you want to deviate from the two profiles above.
 
 | Value | Builds |
 |---|---|
-| *unset* (default) | CPU always; Thrust GPU if `nvc++` found. The "Profile 1" default. |
+| *unset* (default) | CPU always; Thrust and OMP-offload GPU if `nvc++` found. |
 | `cpu` | CPU only — skip GPU even if `nvc++` is present. |
 | `gpu` | Thrust GPU only — skip CPU. Errors if `nvc++` missing. |
-| `both` | CPU + Thrust GPU. Errors instead of falling back if `nvc++` missing. |
-| `gpu_omp_offload` | OMP-offload GPU only. The "Profile 2" install. |
-
-**Reverting to the LLVM/clang offload path:** prior versions of this
-repo supported a separate `_core_gpu_omp_nvidia` backend built with
-LLVM-with-NVPTX clang. That path was removed in v1.6 to reduce the
-software prereq surface (LLVM trunk had to be source-built, NVHPC's
-nvc++ does not). The tag `v1.5.0-llvm` preserves the last revision
-with that backend; check it out and follow the `SETUP_LLVM_OFFLOAD.txt`
-recipe there if you need the clang path back.
+| `gpu_omp_offload` | OMP-offload GPU only. |
 
 ### Verify
 
 ```bash
 python -c "import sbd; print(sbd.available_backends())"
 # CPU only:                       ['cpu']
-# CPU + NVHPC Thrust:             ['cpu', 'gpu']
+# NVHPC Thrust:                   ['gpu']
 # OMP-offload-only install:       ['gpu-omp']
 ```
 
@@ -366,17 +196,14 @@ sbd.finalize()
 ### Runtime backend switching
 
 Compatible backends coexist as separate `_core_*.so` modules and load
-at `import sbd` into independent pybind11 namespaces. CPU + Thrust GPU
-can co-load; the OMP-offload backend cannot (different OpenMP runtime —
-see the build section). Pick one per call with the `device` parameter:
+at `import sbd` into independent pybind11 namespaces. 
 
 ```python
 import sbd
 
 # All compiled backends are auto-loaded
 sbd.available_backends()
-# CPU + Thrust install:         ['cpu', 'gpu']
-# OMP-offload-only install:     ['gpu-omp']
+#                      ['cpu', 'gpu', 'gpu-omp']
 
 # Per-call override — auto-initializes on first use
 result_cpu     = sbd.tpb_diag(..., device='cpu')
@@ -450,6 +277,7 @@ See `python/examples/run_sqd_sbd.py` for a complete example.
 Located in `python/examples/`:
 
 - **`run_sbd_diag.py`** — Standalone TPB diagonalization (no Qiskit dependency)
+- **`run_sqd_sbd.ipynb`** — Jupyter Notebook SQD loop with SBD solver (random or hardware bitstrings)
 - **`run_sqd_sbd.py`** — SQD loop with SBD solver (random or hardware bitstrings)
 
 See [python/examples/README.md](python/examples/README.md) for usage details.
@@ -460,7 +288,7 @@ See [python/examples/README.md](python/examples/README.md) for usage details.
 
 | Function | Description |
 |----------|-------------|
-| `sbd.init(device, comm_backend)` | **Optional.** Initialize MPI, set default device (`'cpu'`, `'gpu'`, `'auto'`). Auto-called on first use with defaults. |
+| `sbd.init(device, comm_backend)` | **Optional.** Initialize MPI, set default device (`'cpu'`, `'gpu'`, `'gpu-omp'`, `'auto'`). Auto-called on first use with defaults. |
 | `sbd.finalize()` | Sync GPU, reset state. Does not call `MPI_Finalize` |
 | `sbd.is_initialized()` | Check init status |
 
