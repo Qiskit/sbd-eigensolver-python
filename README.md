@@ -59,8 +59,33 @@ See [Environment Variables](#environment-variables).
 pip install sbd-eigensolver
 ```
 
-The published source distribution (sdist) bundles the sbd header
-files, so this needs no git checkout and no submodule step.
+The published source distribution (sdist) bundles the sbd header files, so this
+needs no git checkout and no submodule step. It still compiles the extension
+locally against the MPI and BLAS it finds — there are no wheels.
+
+**A self-contained conda environment** is the quickest way to get those
+dependencies in place:
+
+```bash
+conda create -y -n sbd -c conda-forge \
+    python=3.12 pybind11 numpy setuptools wheel openblas pyscf pip mpi4py
+conda activate sbd
+pip install sbd-eigensolver qiskit-addon-sqd
+```
+
+Taking `mpi4py` from conda-forge brings its MPI along, so nothing needs to be
+installed system-wide. Two consequences worth knowing:
+
+- **This route is CPU-only in practice.** conda-forge's MPI is not built with
+  CUDA support, and the GPU backends pass device pointers to `MPI_Allreduce`
+  (see [Prerequisites](#prerequisites)). For GPU, install from a git checkout
+  with `NVHPC_HOME` and a CUDA-aware MPI — see [Build](#build).
+- `qiskit-addon-sqd` is only needed for the SQD examples, not for `sbd` itself.
+
+If you already have a cluster MPI you intend to run against, install `mpi4py`
+against *that* instead of taking conda's — drop it from the `conda create` line
+and use the `MPICC=… pip install --no-binary=mpi4py mpi4py` form shown under
+[Build](#build), so the extension links the MPI your launcher will use.
 
 ### Install from git checkout
 
