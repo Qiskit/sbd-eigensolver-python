@@ -90,7 +90,6 @@ pip install -e . --no-build-isolation --force-reinstall --no-deps
 export NVHPC_HOME=/opt/nvidia/hpc_sdk/Linux_x86_64/2025/compilers
 
 # --- required whenever a NVIDIA GPU backend is built
-#     Thrust build returns incorrect energies rather than failing.
 #       A100: cc80    H100: cc90    GB200 / B200: cc100
 export SBD_GPU_ARCH=cc100
 
