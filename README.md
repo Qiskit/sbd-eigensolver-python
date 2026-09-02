@@ -33,12 +33,21 @@ the local MPI and BLAS, so an MPI toolchain (`mpicc` on `PATH`, or
 
 ### Install from PyPI
 
+**For a quick CPU test**, a conda environment is the easiest way to satisfy that:
+it supplies every dependency — MPI, BLAS and the Python build tools — inside the
+environment, so nothing has to be installed system-wide and nothing on the host
+is touched. Any conda works; [Miniforge](https://github.com/conda-forge/miniforge)
+is a small one that defaults to conda-forge.
+
 ```bash
+conda create -n sbd python=3.12 pybind11 numpy setuptools wheel pyscf pip \
+    mpi4py openmpi openblas -c conda-forge
+conda activate sbd
 pip install sbd-eigensolver
 ```
 
-The published source distribution (sdist) bundles the sbd header
-files, so this needs no git checkout and no submodule step.
+The published source distribution (sdist) bundles the sbd header files, so this
+needs no git checkout and no submodule step.
 
 ### Install from git checkout
 
