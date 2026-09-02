@@ -40,8 +40,6 @@ Either install path compiles the C++ extension on the target machine;
 no pre-built wheels are published. The resulting binary depends on the
 local MPI and BLAS, so both must be installed first.
 
-See [Environment Variables](#environment-variables).
-
 ### Install from PyPI
 
 **A self-contained conda environment** is the quickest way to get those
