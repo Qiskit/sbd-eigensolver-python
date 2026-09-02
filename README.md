@@ -300,10 +300,6 @@ The optional `device` parameter overrides the default set by `init()`.
 
 ## Troubleshooting
 
-**`ImportError` on macOS (symbol not found):** Python's libc++ and Homebrew clang's libc++ may differ. Use system clang: `CC=/usr/bin/clang CXX=/usr/bin/clang++`.
-
-**`ImportError: _core_cpu`:** Backend not built. Rebuild: `pip install -e . --no-build-isolation -v`
-
 **GPU not building:** Check `which nvc++` and set `NVHPC_HOME`.
 
 **MPI errors:** Verify `MPI_HOME`, check `python -c "from mpi4py import MPI; print(MPI.Get_version())"`.
