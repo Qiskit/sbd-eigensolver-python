@@ -107,6 +107,28 @@ def _building_extensions():
     return not {'sdist', 'egg_info'}.intersection(sys.argv[1:])
 
 
+def _mpi_prefix_from_env_prefix():
+    """MPI installed inside the active Python environment.
+
+    Covers conda (`conda install mpich`/`openmpi`) and the PyPI `mpich`/`openmpi`
+    wheels, both of which drop mpi.h and libmpi straight into the environment
+    prefix. Needed because mpi4py's linkage is not always readable: a conda-forge
+    mpi4py ships one extension per MPI flavour (MPI.mpich.*, MPI.openmpi.*) so
+    linkage cannot say which is active, and on macOS the install name is
+    @rpath-relative. In both cases the prefix answers the question directly.
+
+    This is a heuristic, not authoritative like mpi4py's own linkage, so callers
+    let MPI_HOME override it silently rather than treating a difference as a
+    conflict.
+    """
+    for prefix in (sys.prefix, getattr(sys, 'base_prefix', sys.prefix)):
+        if prefix and os.path.exists(os.path.join(prefix, 'include', 'mpi.h')):
+            lib = os.path.join(prefix, 'lib')
+            if os.path.isdir(lib) and any(n.startswith('libmpi') for n in os.listdir(lib)):
+                return prefix
+    return None
+
+
 def get_mpi_config():
     """Resolve MPI include/lib dirs, preferring the MPI that mpi4py uses.
 
@@ -119,6 +141,8 @@ def get_mpi_config():
     Both MPICH and Open MPI install libmpi, so -lmpi is correct for either.
     """
     derived = _mpi_prefix_from_mpi4py()
+    # Only mpi4py's own linkage is authoritative enough to contradict MPI_HOME.
+    from_prefix = None if derived else _mpi_prefix_from_env_prefix()
     mpi_home = os.environ.get('MPI_HOME') or None
 
     if mpi_home and derived and \
@@ -135,13 +159,15 @@ def get_mpi_config():
               "print(MPI.Get_library_version())\"")
         sys.exit(1)
 
-    prefix = mpi_home or derived
+    prefix = mpi_home or derived or from_prefix
     if prefix:
         include_dir = os.path.join(prefix, 'include')
         lib_dir = next((os.path.join(prefix, d) for d in ('lib', 'lib64')
                         if os.path.isdir(os.path.join(prefix, d))),
                        os.path.join(prefix, 'lib'))
-        print(f"Using MPI from {'MPI_HOME' if mpi_home else 'mpi4py'}: {prefix}")
+        source = ('MPI_HOME' if mpi_home else
+                  'mpi4py' if derived else 'the environment prefix')
+        print(f"Using MPI from {source}: {prefix}")
         if not os.path.exists(os.path.join(include_dir, 'mpi.h')):
             print(f"Warning: {include_dir}/mpi.h not found; the compile will "
                   "likely fail. Check MPI_HOME points at an MPI *prefix*, not "

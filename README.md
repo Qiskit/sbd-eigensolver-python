@@ -113,14 +113,6 @@ export MPI_HOME=/path/to/mpi
 #     a specific build (e.g. an arch-tuned OpenBLAS)
 export BLAS_LIB_PATH=/path/to/blas/lib
 export BLAS_LIBS=openblas          # or mkl_rt
-
-??? SHOULD NOT BE REQUIRED
-# --- macOS only — pin the host compiler to system clang so libc++
-#     matches Python's. Not needed on Linux GPU boxes (setup.py
-#     auto-picks nvc++ for the GPU extensions; the CPU extension
-#     then compiles cleanly under nvc++ as well).
-export CC=/usr/bin/clang
-export CXX=/usr/bin/clang++
 ```
 
 ### Build Using the Host MPI
@@ -132,11 +124,12 @@ conda create -y -n sbd -c conda-forge \
 conda activate sbd                         # always activate first
 
 # Install mpi4py against the host MPI
+# For GPU backends, the host MPI must be CUDA-aware.
 export MPI_HOME=/path/to/mpi
 MPICC=$MPI_HOME/bin/mpicc python -m pip install --no-binary=mpi4py --no-cache-dir mpi4py
-#NOTE: **For GPU backends, the host MPI must be CUDA-aware.**
-#      If you need only the CPU backend and no host MPI is available, take one from conda instead:
-#      conda install -y -c conda-forge mpich mpi4py
+# NOTE: If you need only the CPU backend and no host MPI is available, run the command below,
+# which conda will choose a compatible MPI.
+# conda install -y -c conda-forge mpi4py
 
 # confirm which MPI mpi4py uses -- setup.py builds against exactly this
 python -c "from mpi4py import MPI; print(MPI.Get_library_version())"
@@ -144,8 +137,9 @@ python -c "from mpi4py import MPI; print(MPI.Get_library_version())"
 # only for the SQD examples (python/examples/run_sqd_sbd.py and .ipynb)
 pip install "qiskit-addon-sqd>=0.13.1"
 
-# build (re-run after pulling main)
-SBD_GPU_ARCH=ccXX  pip install -e . --no-build-isolation
+# install sbd-eigensolver
+pip install sbd-eigensolver
+
 ```
 
 #### Advanced `SBD_BUILD_BACKEND` overrides
@@ -169,6 +163,8 @@ python -c "import sbd; print(sbd.available_backends())"
 ```
 
 ## Usage
+
+See `python/examples/run_sbd_diag.py` for a complete example.
 
 ### Quick Start
 
@@ -218,18 +214,6 @@ backend = sbd.get_backend('gpu-omp')
 fcidump = backend.LoadFCIDump('fcidump.txt')
 ```
 
-In `auto` mode (the default), `_resolve_device('auto')` picks the first
-compiled GPU backend in the order Thrust → OMP-offload → CPU.
-
-### Resource Cleanup
-
-```python
-results = sbd.tpb_diag_from_files(...)
-sbd.finalize()  # optional — syncs GPU and resets state
-```
-
-`finalize()` calls `cudaDeviceSynchronize()` on GPU backends and resets Python state. It does **not** call `cudaDeviceReset()` (avoids CUDA-aware MPI conflicts) or `MPI_Finalize()` (handled by mpi4py).
-
 ## Integration with qiskit-addon-sqd
 
 SBD can serve as the eigensolver backend for qiskit-addon-sqd's SQD workflow.
@@ -261,15 +245,6 @@ result = diagonalize_fermionic_hamiltonian(
 ```
 
 See `python/examples/run_sqd_sbd.py` for a complete example.
-
-### Comparison with qiskit-addon-dice-solver
-
-| Feature | dice-solver | SBD |
-|---------|------------|-----|
-| Solver | DICE (subprocess) | SBD (in-process) |
-| GPU | No | Yes (CUDA) |
-| MPI | Spawns processes | Direct integration |
-| I/O | Temp files | In-memory |
 
 ## Examples
 
@@ -380,17 +355,6 @@ words in canonical order, then `n_dets` `float64` amplitudes.
 
 The optional `device` parameter overrides the default set by `init()`.
 
-### Utilities
-
-```python
-fcidump = sbd.LoadFCIDump("fcidump.txt", device=None)
-dets = sbd.LoadAlphaDets("alphadets.txt", bit_length, total_bit_length, device=None)
-string = sbd.makestring(det, bit_length, total_bit_length, device=None)
-det = sbd.from_string(s, bit_length, total_bit_length, device=None)
-dets = sbd.sort_bitarray(dets, device=None)
-sbd.print_info()
-```
-
 ## Backend Architecture
 
 - Each backend is a separate pybind11 module compiled from the same `python/bindings.cpp` source with different `-D` macros (`SBD_THRUST` for the Thrust path, `USE_GPU + USE_OMP_OFFLOAD` for OMP-offload, neither for CPU). The Thrust and OMP-offload paths both compile with NVHPC `nvc++` (with `-cuda` and `-mp=gpu` respectively); CPU compiles with gcc/clang. Distinct C++ namespaces — no symbol collision when multiple coexist.
@@ -409,15 +373,6 @@ sbd.print_info()
 **MPI errors:** Verify `MPI_HOME`, check `python -c "from mpi4py import MPI; print(MPI.Get_version())"`.
 
 **OMP-offload runs all land on GPU 0 in multi-GPU jobs:** symptom — every MPI rank shows large memory only on GPU 0 in `nvidia-smi`. The bindings call `omp_set_default_device(mpi_rank % n_dev)`, but `omp_get_num_devices()` can return 0 in some dlopen scenarios. The bindings fall back to parsing `CUDA_VISIBLE_DEVICES` to recover the device count, so make sure that env var is exported and lists all your GPUs (e.g. `0,1,2,3`). Slurm/`srun --gres=gpu:N` and OpenMPI's default binding policy already do this; if you've custom-restricted `CUDA_VISIBLE_DEVICES` to a single GPU per rank, set it manually before launch.
-
-**OMP-offload + UCX MPI fails with `MPI_INIT failed`:** mpi4py 4.x requests `MPI_THREAD_MULTIPLE` by default, which UCX in HPCX rejects with `UCP worker does not support MPI_THREAD_MULTIPLE`. Set `MPI4PY_RC_THREAD_LEVEL=serialized` (or `funneled`/`single`) in the environment, or `import mpi4py; mpi4py.rc.thread_level = 'serialized'` before `from mpi4py import MPI`.
-
-## Performance Tips
-
-**CPU:** `OMP_NUM_THREADS` = cores per MPI rank.
-**GPU (Thrust):** 1 rank per GPU, `OMP_NUM_THREADS=1`, use method 0 (matrix-free Davidson).
-**GPU (OMP-offload):** 1 rank per GPU, `OMP_NUM_THREADS` ≈ socket-local cores per rank, **pin each rank to one socket** (e.g. `mpirun --map-by ppr:N:socket --bind-to socket …` or wrap with `numactl --cpunodebind=… --membind=…`). Without pinning, the host-side `makeQChamDiagTerms` loop and the host-side orchestration inside Davidson degrade ~7× and 2–3× respectively because OMP threads thrash across NUMA nodes.
-
 ---
 
 **Repository:** https://github.com/Qiskit/sbd-eigensolver-python
