@@ -40,15 +40,6 @@ Either install path compiles the C++ extension on the target machine;
 no pre-built wheels are published. The resulting binary depends on the
 local MPI and BLAS, so both must be installed first.
 
-**Which MPI gets used:** by default, the one `mpi4py` is already linked
-against — `setup.py` reads that from the `mpi4py` extension module. This
-is deliberate: linking a different MPI than `mpi4py` is not a build
-error, it aborts later at `MPI_Init` (MPICH reporting `unsupported PMI
-version PMIx` under an Open MPI launcher), which is far harder to
-diagnose. So **install `mpi4py` against your intended MPI first**, then
-build. If that cannot be determined unambiguously, the build stops 
-and asks you to set `MPI_HOME`.
-
 See [Environment Variables](#environment-variables).
 
 ### Install from PyPI
