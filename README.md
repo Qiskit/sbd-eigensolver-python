@@ -132,7 +132,7 @@ pip install sbd-eigensolver
 
 #### Advanced `SBD_BUILD_BACKEND` overrides
 
-Only needed when you want to deviate from the two profiles above.
+Only needed when you want to deviate from the default.
 
 | Value | Builds |
 |---|---|
