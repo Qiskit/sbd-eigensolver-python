@@ -33,75 +33,167 @@ import subprocess
 __version__ = "1.6.1"
 
 # ---------------------------------------------------------------------------
-# Backend registry — eagerly load all available backends at import time.
-# All compiled backends can coexist: separate .so files with separate
-# pybind11 namespaces, no global C++ state conflicts.
+# Backend registry.
+#
+# Backends are resolved lazily: only the one actually requested gets imported.
+# This is not a micro-optimisation. Every _core_*.so here links NVHPC's
+# libnvomp, and _core_cpu is built without -mp=gpu; loading it first leaves
+# that runtime initialised host-only, after which the OMP-offload backend
+# cannot acquire a device. It does not fail -- offload regions quietly run on
+# the host while device queries still report a GPU, so the run looks
+# accelerated, returns the correct energy, and exits 0. Measured on GB200:
+# with _core_cpu co-loaded, OMP_TARGET_OFFLOAD=MANDATORY aborts with "Could
+# not run target region"; importing only _core_gpu_omp_offload from the very
+# same directory succeeds on the device. Loading one backend per process is
+# therefore what makes co-resident .so files safe, and lets a single
+# environment serve all three.
 # ---------------------------------------------------------------------------
-_backends = {}
 
-# Why a backend is absent, keyed by device name. A .so that was built but
-# cannot be loaded -- missing libmpi at run time, wrong architecture, an
-# OpenMP runtime clash -- is otherwise indistinguishable from one that was
-# never built, and 'Available: []' with no explanation is a dead end.
-_backend_errors = {}
+# (module name, canonical device, aliases)
+_BACKEND_SPECS = (
+    ('_core_cpu',             'cpu',     ()),
+    ('_core_gpu_thrust',      'gpu',     ('gpu-thrust', 'gpu-nvidia', 'cuda')),
+    ('_core_gpu_omp_offload', 'gpu-omp', ('gpu-omp-offload', 'gpu-nvhpc-omp',
+                                          'gpu-nvidia-omp')),
+)
 
-# Device-string aliases. Keys are user-facing strings; values are the
-# canonical key in _backends. e.g. 'gpu-omp' resolves to whatever
-# OMP-offload backend is built.
-_device_aliases = {}
+_backends = {}          # device -> imported module, populated on first use
+_backend_errors = {}    # device -> why it is unusable
+_device_aliases = {a: dev for _m, dev, al in _BACKEND_SPECS for a in al}
+_usable_cache = None    # list of usable devices; the static scan runs once
 
 
-def _try_load(module_name, primary_device, *aliases):
+def _extension_path(module_name):
+    """Path of the built extension for `module_name`, or None."""
     import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        names = os.listdir(here)
+    except OSError:
+        return None
+    for n in sorted(names):
+        if n.startswith(module_name + '.') and n.endswith(('.so', '.pyd', '.dylib')):
+            return os.path.join(here, n)
+    return None
+
+
+def _inspect_extension(path):
+    """Statically judge whether `path` can load. Returns (ok, reason).
+
+    Deliberately does NOT import it. Importing a backend runs MPI_Init, which
+    on an MPI without PMIx support hangs when the process was not started under
+    a launcher -- a diagnostic that hangs is worse than none. `ldd` inspects the
+    file without executing its initialisers.
+
+    Catches a missing dependency and an architecture mismatch. It cannot catch
+    an ABI/symbol mismatch, which only surfaces on a real dlopen; that is
+    reported by _load_backend() at first use.
+    """
+    import subprocess, sys as _sys
+    if _sys.platform == 'darwin':
+        return True, None          # otool output does not mark unresolved deps
+    try:
+        out = subprocess.run(['ldd', path], capture_output=True, text=True,
+                             timeout=20).stdout
+    except Exception:
+        return True, None          # no ldd: fall through to the real import
+    if 'not a dynamic executable' in out:
+        try:
+            kind = subprocess.run(['file', '-b', path], capture_output=True,
+                                  text=True, timeout=20).stdout.strip()
+        except Exception:
+            kind = 'unknown'
+        import platform
+        return False, (f"architecture mismatch: the file is '{kind}' but this "
+                       f"host is {platform.machine()}. Rebuild it here. (Note "
+                       f"the loader reports this as 'cannot open shared object "
+                       f"file', which is misleading -- the file exists.)")
+    missing = [l.split('=>')[0].strip() for l in out.splitlines() if 'not found' in l]
+    if missing:
+        return False, (f"missing shared librar{'y' if len(missing) == 1 else 'ies'}: "
+                       f"{', '.join(missing)}. Put the containing directory on "
+                       f"LD_LIBRARY_PATH, or rebuild so RPATH covers it.")
+    return True, None
+
+
+def _scan_backends():
+    """Populate the usable-device list and the reasons for the rest.
+
+    Runs once. A backend that was simply not built is recorded but not warned
+    about -- building CPU-only is a normal choice. A backend that IS built but
+    cannot load is a broken install, so that one warns.
+    """
+    global _usable_cache
+    if _usable_cache is not None:
+        return _usable_cache
+    import warnings
+    usable, broken = [], []
+    for module_name, device, _aliases in _BACKEND_SPECS:
+        path = _extension_path(module_name)
+        if path is None:
+            _backend_errors[device] = (
+                f"not built (no {module_name}.*.so in the package directory)"
+            )
+            continue
+        ok, reason = _inspect_extension(path)
+        if ok:
+            usable.append(device)
+        else:
+            _backend_errors[device] = reason
+            broken.append(f"{device}: {reason}")
+    _usable_cache = usable
+    if broken:
+        warnings.warn(
+            "sbd: backend(s) present on disk but not usable —\n  "
+            + "\n  ".join(broken),
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    return usable
+
+
+def _load_backend(device):
+    """Import the backend for `device`, or raise with an actionable message."""
+    if device in _backends:
+        return _backends[device]
+    module_name = next((m for m, d, _a in _BACKEND_SPECS if d == device), None)
+    if module_name is None:
+        raise RuntimeError(f"Unknown backend device '{device}'.")
+
+    path = _extension_path(module_name)
+    if path is None:
+        raise RuntimeError(
+            f"sbd backend '{device}' is not built.\n"
+            f"  expected: {module_name}.*.so in the sbd package directory\n"
+            f"  usable  : {_scan_backends() or 'none'}\n"
+            f"  fix     : rebuild, e.g. "
+            f"SBD_BUILD_BACKEND={'cpu' if device == 'cpu' else 'gpu_omp_offload' if device == 'gpu-omp' else 'gpu'}"
+            f" pip install -e . --no-build-isolation"
+        )
+
     from importlib import import_module
     try:
         mod = import_module(f'.{module_name}', package=__name__)
     except Exception as exc:
-        # Deliberately broad: a compiled extension can fail with OSError
-        # (missing shared library) as readily as ImportError.
-        here = os.path.dirname(__file__)
-        built = any(n.startswith(module_name + '.') and n.endswith('.so')
-                    for n in os.listdir(here)) if os.path.isdir(here) else False
-        _backend_errors[primary_device] = (
-            f"{'built but failed to load' if built else 'not built'}: "
-            f"{type(exc).__name__}: {exc}"
-        )
-        return False
-    _backends[primary_device] = mod
-    for a in aliases:
-        _device_aliases[a] = primary_device
-    return True
+        # Never substitute a different backend: a silently-swapped device is the
+        # same class of lie as a silent host fallback.
+        ok, reason = _inspect_extension(path)
+        detail = reason or f"{type(exc).__name__}: {exc}"
+        _backend_errors[device] = detail
+        raise RuntimeError(
+            f"sbd backend '{device}' could not be loaded.\n"
+            f"  module: {path}\n"
+            f"  cause : {type(exc).__name__}: {exc}\n"
+            f"  detail: {detail}\n"
+            f"  If the cause mentions an undefined symbol, the extension was "
+            f"built against a different Python or mpi4py than this "
+            f"environment's; rebuild it here."
+        ) from exc
 
+    _backends[device] = mod
+    _backend_errors.pop(device, None)
+    return mod
 
-_try_load('_core_cpu',             'cpu')
-_try_load('_core_gpu_thrust',      'gpu', 'gpu-thrust', 'gpu-nvidia', 'cuda')
-_try_load('_core_gpu_omp_offload', 'gpu-omp', 'gpu-omp-offload',
-                                   'gpu-nvhpc-omp', 'gpu-nvidia-omp')
-
-# The OMP-offload backend links NVHPC's libnvomp; CPU and Thrust link
-# libgomp/libomp. Loading both pulls two OpenMP runtimes into one process,
-# and the observed result is not a crash but a silent demotion: offload
-# regions quietly run on the host while the device query still reports a
-# GPU, so a run looks GPU-accelerated and is not. Since every _core_*.so in
-# this directory is loaded eagerly, that happens whenever the three files
-# share a directory -- separate environments do not help if they share a
-# checkout. Warn loudly rather than let a wrong-looking-right run proceed.
-_omp_offload_conflict = (
-    'gpu-omp' in _backends and bool({'cpu', 'gpu'} & set(_backends))
-)
-if _omp_offload_conflict:
-    import warnings as _warnings
-    _warnings.warn(
-        "sbd: incompatible backends loaded together: "
-        f"{', '.join(sorted(_backends))}. The OMP-offload backend "
-        "(_core_gpu_omp_offload) links a different OpenMP runtime than the "
-        "CPU/Thrust backends, and co-loading them silently demotes offload "
-        "to the host -- device queries still report a GPU. Keep "
-        "_core_gpu_omp_offload.so in a directory of its own (its own "
-        "checkout, not merely its own env) and rebuild.",
-        RuntimeWarning,
-        stacklevel=2,
-    )
 
 # ---------------------------------------------------------------------------
 # Global session state
@@ -136,15 +228,15 @@ def _resolve_device(device):
 
     Auto-resolution prefers Thrust GPU (`'gpu'`) over OMP-offload
     (`'gpu-omp'`) when both are built and a GPU is present, since the
-    Thrust path is the long-validated default. In practice OMP-offload
-    is built into its own venv/install (different OpenMP runtime, can't
-    co-load with Thrust/CPU), so this branch only fires when an OMP-only
-    install is in use.
+    Thrust path is the long-validated default. Since backends load lazily,
+    all three may live in one install: only the resolved one is imported, so
+    _core_cpu never poisons the OMP-offload runtime.
     """
     if device == 'auto':
-        if 'gpu' in _backends and _gpu_available():
+        usable = _scan_backends()
+        if 'gpu' in usable and _gpu_available():
             return 'gpu'
-        if 'gpu-omp' in _backends and _gpu_available():
+        if 'gpu-omp' in usable and _gpu_available():
             return 'gpu-omp'
         return 'cpu'
     return _device_aliases.get(device, device)
@@ -175,7 +267,7 @@ def init(device='cpu', comm_backend='mpi'):
     if _initialized:
         return  # already initialized — silently no-op
 
-    if not _backends:
+    if not _scan_backends():
         raise RuntimeError(
             "No SBD backends available. Build with:\n"
             "  pip install -e . --no-build-isolation                 (auto: CPU + Thrust GPU)\n"
@@ -199,11 +291,12 @@ def init(device='cpu', comm_backend='mpi'):
 
     # Resolve default device
     resolved = _resolve_device(device)
-    if resolved not in _backends:
-        available = list(_backends.keys())
+    usable = _scan_backends()
+    if resolved not in usable:
+        why = _backend_errors.get(resolved, 'unknown reason')
         raise RuntimeError(
-            f"Device '{resolved}' requested but backend not available. "
-            f"Available: {available}"
+            f"Device '{resolved}' requested but its backend is not usable "
+            f"({why}). Usable: {usable or 'none'}"
         )
     _default_device = resolved
     _initialized = True
@@ -262,12 +355,7 @@ def get_backend(device=None):
     if device is None:
         device = _default_device or 'auto'
     device = _resolve_device(device)
-    if device not in _backends:
-        available = list(_backends.keys())
-        raise RuntimeError(
-            f"Backend '{device}' not available. Available: {available}"
-        )
-    return _backends[device]
+    return _load_backend(device)
 
 
 def _ensure_initialized():
@@ -463,27 +551,49 @@ def gdb_diag(fcidump, det, sbd_data,
 # ---------------------------------------------------------------------------
 
 def available_backends():
-    """Get list of compiled backends ('cpu', 'gpu', 'gpu-omp')."""
+    """Devices whose extension is built and structurally loadable.
+
+    Each candidate .so is inspected statically -- present on disk, no
+    unresolved shared-library dependencies, matching architecture -- without
+    importing it. Importing would run MPI_Init, which hangs on an MPI lacking
+    PMIx support when the process was not started under a launcher.
+
+    A listed backend is therefore "present and structurally sound", not
+    "guaranteed to load": an ABI/symbol mismatch only shows up on a real
+    dlopen, and surfaces from get_backend(). Reasons for anything excluded are
+    in backend_load_errors(); a backend that is merely not built is recorded
+    there but does not warn, since building a subset is normal.
+    """
+    return list(_scan_backends())
+
+
+def loaded_backends():
+    """Devices actually imported into this process so far.
+
+    Normally one: backends load on first use. More than one means something
+    imported them explicitly, which is worth knowing -- co-loading _core_cpu
+    with the OMP-offload backend silently demotes offload to the host.
+    """
     return list(_backends.keys())
 
 
 def backend_load_errors():
-    """Why each unavailable backend is unavailable.
+    """Why each unusable backend is unusable.
 
-    Maps device name -> reason, distinguishing "not built" from "built but
-    failed to load" (a missing libmpi at run time, a wrong-architecture
-    binary, an OpenMP runtime clash). Empty when every backend loaded.
+    Maps device -> reason, distinguishing "not built" from a missing shared
+    library, an architecture mismatch, or a failed import.
     """
     return dict(_backend_errors)
 
 
 def has_backend_conflict():
-    """True when incompatible backends are loaded in this process.
+    """True when _core_cpu and the OMP-offload backend are both loaded here.
 
-    The OMP-offload backend cannot share a process with CPU/Thrust: offload
-    regions silently run on the host while device queries still report a GPU.
+    That combination leaves libnvomp initialised host-only, so offload regions
+    run on the host while device queries still report a GPU. Lazy loading
+    normally prevents it; this catches a caller that imported both explicitly.
     """
-    return _omp_offload_conflict
+    return 'cpu' in _backends and 'gpu-omp' in _backends
 
 
 def print_info():
@@ -522,6 +632,7 @@ __all__ = [
     # Backend access
     'get_backend',
     'available_backends',
+    'loaded_backends',
     'backend_load_errors',
     'has_backend_conflict',
 

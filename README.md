@@ -122,18 +122,21 @@ moved it into `setup.py:_route_build_through_nvhpc()`.) If you DO
 set them, your values win — distutils' `os.environ.setdefault`
 semantics.
 
-The OpenMP target-offload backend cannot share a Python process with
-CPU or Thrust. They link incompatible OpenMP runtimes (NVHPC's
-`libnvomp` for OMP-offload, `libgomp`/`libomp` for CPU and Thrust),
-and `import sbd` eagerly loads every `_core_*.so` it finds in
-`python/`. Co-resident `.so` files therefore pull both runtimes into
-the same address space, producing "Another OpenMP runtime library has
-been detected" and potentially deadlocking at the first `#pragma omp`
-region. **The cleanest setup is two environments with two checkouts** —
-one for CPU + Thrust, one for OMP-offload. Within a single environment
-you can also switch profiles by removing the other profile's
-`_core_*.so` before rebuilding (only files present in `python/` get
-loaded), but a second environment avoids the bookkeeping.
+**All three backends can live in one install.** Backends are imported
+lazily — `get_backend(device)` loads only the `_core_*.so` for the device
+asked for — so co-resident extensions do not interfere, and `available_backends()`
+reports what is present by inspecting the files rather than by loading them.
+
+This used to require two environments with two checkouts, on the stated grounds
+that the backends link incompatible OpenMP runtimes. That explanation was wrong:
+when NVHPC is present every extension is compiled by `nvc++`, and `ldd` shows all
+three linking the same `libnvomp`. The real hazard was that `_core_cpu`, built
+without `-mp=gpu`, leaves that shared runtime initialised host-only; anything
+loading it before the offload backend left offload unable to acquire a device.
+It did not fail — target regions quietly ran on the host while device queries
+still reported a GPU, so runs returned correct energies, exited 0, and looked
+GPU-accelerated. Loading one backend per process removes the cause. If you do
+force several into one process, `sbd.has_backend_conflict()` reports it.
 
 ### Build
 
@@ -183,11 +186,34 @@ cd sbd-thrust
 SBD_GPU_ARCH=cc100  pip install -e . --no-build-isolation
 ```
 
-Builds the CPU backend always. Adds the Thrust GPU backend when NVHPC
-`nvc++` is on PATH; otherwise CPU-only. Devices: `'cpu'` and `'gpu'`.
+> **Planning to use a GPU backend? The MPI must be CUDA-aware.** The GPU paths
+> hand device pointers to `MPI_Allreduce`; a non-CUDA-aware MPI stalls there, and
+> the symptom is easy to misread — the process creates a CUDA context and then
+> sits at 0% GPU utilisation, so it looks slow rather than broken. conda-forge's
+> `mpich` and `openmpi` are **not** CUDA-aware, so the `conda install mpich
+> mpi4py` shortcut above is fine for CPU only. Check *before* installing mpi4py,
+> because sbd links whatever MPI mpi4py uses — swapping it later means rebuilding
+> both:
+>
+> ```bash
+> mpichversion | grep -i cuda      # MPICH:   expect --with-cuda=... in the configure line
+> ompi_info --parsable --all | grep mpi_built_with_cuda_support   # OpenMPI: expect ...:true
+>
+> # mpi4py already installed? this reads MPICH's embedded configure string
+> python -c "from mpi4py import MPI; print('CUDA' in MPI.Get_library_version().upper())"
+> ```
+>
+> The Python one-liner is reliable for MPICH but not for Open MPI, whose version
+> string omits build options — use `ompi_info` there.
 
-**Profile 2 — OpenMP target-offload GPU** (use a **separate**
-environment + checkout from Profile 1)
+With `nvc++` available this builds all three backends into the one install:
+devices `'cpu'`, `'gpu'` (Thrust) and `'gpu-omp'` (OpenMP target offload).
+Without it, CPU only. Backends are imported lazily — one per process, on first
+use — so they do not interfere and no second environment is needed.
+
+**Profile 2 — OpenMP target-offload only** (rarely needed: Profile 1 already
+builds this backend. Use it to skip the CPU and Thrust builds, e.g. on a machine
+where only offload is wanted.)
 
 ```bash
 # one-time setup
@@ -195,7 +221,8 @@ git clone --recurse-submodules https://github.com/Qiskit/sbd-eigensolver-python.
 conda create -y -n sbd-omp-offload -c conda-forge \
     python=3.12 pybind11 numpy setuptools wheel openblas pyscf pip
 conda activate sbd-omp-offload
-# pip, after activating (see Profile 1 for why mpi4py is built from source)
+# pip, after activating. As in Profile 1: build mpi4py from source, and use a
+# CUDA-aware MPI -- this profile is GPU-only, so a non-CUDA-aware MPI will stall.
 MPICC=/path/to/mpi/bin/mpicc pip install --no-binary=mpi4py --no-cache-dir mpi4py
 python -c "from mpi4py import MPI; print(MPI.Get_library_version())"
 pip install "qiskit-addon-sqd>=0.13.1"   # only for the SQD examples
@@ -209,8 +236,9 @@ SBD_BUILD_BACKEND=gpu_omp_offload  SBD_GPU_ARCH=cc100 \
 
 Builds the OMP-offload GPU backend only. Device: `'gpu-omp'`.
 
-After both profiles are installed, switching is a one-liner
-(`conda activate <which>`) — no rebuild needed.
+Switching device is a per-call argument (`--device`, or `device=` in the API) —
+no rebuild and no second environment, since Profile 1 already contains all three
+backends.
 
 **Multi-arch fat binary**: comma-separate the arches:
 `SBD_GPU_ARCH=cc80,cc90,cc100`. nvc++ embeds one SASS cubin per arch and

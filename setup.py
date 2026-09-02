@@ -363,25 +363,34 @@ gpu_compiler, has_nvhpc = find_nvidia_hpc_sdk()
 #   both                  : cpu + thrust
 #   gpu_omp_offload       : OpenMP target offload only (nvc++ -mp=gpu)
 #
-# gpu_omp_offload is built ALONE — it uses a different OpenMP runtime
-# (libnvomp) than cpu (libgomp/libomp) and Thrust GPU (CPU OMP via -mp),
-# and loading two backends with different OMP runtimes in one Python
-# process produces "Another OpenMP runtime library has been detected"
-# warnings and can deadlock at first OMP region. Build it into its own
-# venv / install dir.
+# All three may now be installed side by side. They used to be kept apart on
+# the theory that they link different OpenMP runtimes; that is not what ldd
+# shows -- when NVHPC is present every extension is compiled by nvc++ and all
+# three link libnvomp. The real hazard was that _core_cpu, built without
+# -mp=gpu, leaves that shared runtime initialised host-only, after which the
+# OMP-offload backend cannot acquire a device and silently runs its target
+# regions on the host (correct energies, exit 0, GPU still reported). Since the
+# Python package now imports backends lazily -- one per process, on first use --
+# co-resident .so files no longer interfere, so `auto` builds everything the
+# toolchain supports.
 build_backend = os.environ.get('SBD_BUILD_BACKEND', 'auto').lower()
 
 build_cpu = False
 build_gpu_thrust = False
 build_gpu_omp_offload = False
 
-if build_backend == 'auto':
+if build_backend in ('auto', 'all'):
     build_cpu = True
     build_gpu_thrust = has_nvhpc
-    if build_gpu_thrust:
-        print("\nAuto-detected nvc++ - will build both CPU and Thrust GPU backends")
+    build_gpu_omp_offload = has_nvhpc
+    if has_nvhpc:
+        print("\nAuto-detected nvc++ - will build CPU, Thrust GPU and "
+              "OMP-offload GPU backends")
     else:
         print("\nnvc++ not found - will build CPU backend only")
+    if build_backend == 'all' and not has_nvhpc:
+        print("Error: SBD_BUILD_BACKEND=all requires NVHPC_HOME / nvc++.")
+        sys.exit(1)
 elif build_backend == 'cpu':
     build_cpu = True
     print("\nBuilding CPU backend only (SBD_BUILD_BACKEND=cpu)")
@@ -397,8 +406,6 @@ elif build_backend == 'both':
     if not has_nvhpc:
         print("Warning: nvc++ not found, GPU build may fail")
 elif build_backend == 'gpu_omp_offload':
-    # Stand-alone build: this mode only emits _core_gpu_omp_offload.so.
-    # See note above on the OpenMP-runtime exclusivity constraint.
     build_gpu_omp_offload = True
     print("\nBuilding GPU OpenMP target-offload backend only "
           "(SBD_BUILD_BACKEND=gpu_omp_offload)")
@@ -407,7 +414,8 @@ elif build_backend == 'gpu_omp_offload':
         sys.exit(1)
 else:
     print(f"Error: Invalid SBD_BUILD_BACKEND='{build_backend}'")
-    print("Valid values: auto, cpu, gpu (alias gpu_thrust), both, gpu_omp_offload")
+    print("Valid values: auto (= all backends the toolchain supports), all, "
+          "cpu, gpu (alias gpu_thrust), both, gpu_omp_offload")
     sys.exit(1)
 
 ext_modules = []
