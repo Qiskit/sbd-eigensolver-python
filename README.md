@@ -28,7 +28,8 @@ In addition to TPB, this package also contains experimental support for SBD's **
 
 **For the GPU backends** — optional; without them you get a CPU-only install:
 
-- *to build:* NVIDIA HPC SDK (`nvc++`), and `SBD_GPU_ARCH` set to the target
+- *to build:* [NVIDIA HPC SDK](https://developer.nvidia.com/hpc-sdk) (`nvc++`),
+  and `SBD_GPU_ARCH` set to the target
   compute capability (required — there is no default, see
   [Environment Variables](#environment-variables)). No GPU needs to be present
   on the build machine.
@@ -92,6 +93,14 @@ export NVHPC_HOME=/opt/nvidia/hpc_sdk/Linux_x86_64/2025/compilers
 export SBD_GPU_ARCH=cc100
 
 # --- optional overrides; each has a working default ---
+#     Which backends to build: defaults to CPU always, plus both GPU
+#     backends (Thrust and OpenMP target-offload) when nvc++ is found.
+#     Set it only to narrow that:
+#       cpu               CPU only -- skip GPU even if nvc++ is present
+#       gpu               Thrust GPU only, no CPU -- errors if nvc++ missing
+#       gpu_omp_offload   OpenMP target-offload GPU only
+export SBD_BUILD_BACKEND=cpu
+
 #     MPI: defaults to whatever mpi4py is linked against. Set this only
 #     for layouts that cannot be inferred.
 export MPI_HOME=/path/to/mpi
@@ -129,17 +138,6 @@ pip install "qiskit-addon-sqd>=0.13.1"
 pip install sbd-eigensolver
 
 ```
-
-#### Advanced `SBD_BUILD_BACKEND` overrides
-
-Only needed when you want to deviate from the default.
-
-| Value | Builds |
-|---|---|
-| *unset* (default) | CPU always; Thrust and OMP-offload GPU if `nvc++` found. |
-| `cpu` | CPU only — skip GPU even if `nvc++` is present. |
-| `gpu` | Thrust GPU only — skip CPU. Errors if `nvc++` missing. |
-| `gpu_omp_offload` | OMP-offload GPU only. |
 
 ### Verify
 
