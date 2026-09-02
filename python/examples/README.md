@@ -14,11 +14,14 @@ The standalone `run_sbd_diag.py` script needs nothing beyond what
 
 The SQD examples — `run_sqd_sbd.py` and `run_sqd_sbd.ipynb` — wrap SBD
 with the qiskit-addon-sqd self-consistent loop, which pulls in three
-extra Python packages. Install them once into the same venv:
+extra Python packages. Install them once into the same environment SBD
+was built in:
 
 ```bash
-source ~/venvs/<your-sbd-venv>/bin/activate
-pip install pyscf qiskit "qiskit-addon-sqd>=0.13.1"
+conda activate sbd          # the env from the Installation section of ../../README.md
+pip install qiskit "qiskit-addon-sqd>=0.13.1"
+# pyscf is already there if you used the conda recipe in ../../README.md;
+# otherwise:  conda install -y -c conda-forge pyscf
 ```
 
 - **`pyscf`** — reads FCIDUMP, restores 4-fold integral symmetry.
@@ -179,7 +182,9 @@ When using more than one rank, specify at least `--adet_comm_size`. Examples:
 
 ## Backend Selection
 
-All compiled backends load eagerly at import. Select per-call via `--device`:
+Every backend the toolchain supported was compiled into this one install, and
+each is imported **lazily, on first use** — normally one per process. Select
+per-call via `--device`:
 
 ```bash
 --device cpu       # host OpenMP (default)
@@ -188,18 +193,28 @@ All compiled backends load eagerly at import. Select per-call via `--device`:
 --device auto      # GPU if available, else CPU
 ```
 
-`gpu-omp` links a different OpenMP runtime (`libnvomp`) than `cpu`/`gpu`, so it is
-normally built into its own install — see the [Python Bindings README](../../README.md).
-`sbd.available_backends()` reports what the current install actually has.
+`sbd.available_backends()` reports what this install actually has (a static scan
+— it does not import anything, so it is safe to call outside `mpirun`), and
+`sbd.loaded_backends()` reports what the current process has pulled in.
 
-Within Python, backends can also be switched at runtime without re-initialization:
+Lazy loading is what makes the three backends safe to co-install: see
+[Backend Architecture](../../README.md#backend-architecture) in the Python
+Bindings README for why. One consequence is worth knowing when you write your
+own driver — **do not import the CPU and `gpu-omp` backends into the same
+process.** They share NVHPC's `libnvomp`, and loading `_core_cpu` first leaves
+it initialised host-only, after which offload regions run on the host while
+device queries still report a GPU. `sbd.has_backend_conflict()` returns True if
+that has happened. Loading `cpu` and `gpu` (Thrust) together is fine.
+
+Within Python, backends can be selected per call — no re-initialization needed:
 
 ```python
 import sbd
 
 # No init() needed — auto-initializes on first call
 result_cpu = sbd.tpb_diag(..., device='cpu')
-result_gpu = sbd.tpb_diag(..., device='gpu')
+result_gpu = sbd.tpb_diag(..., device='gpu')     # fine alongside 'cpu'
+# result_omp = sbd.tpb_diag(..., device='gpu-omp')   # NOT in the same process as 'cpu'
 ```
 
 ## Available Test Data

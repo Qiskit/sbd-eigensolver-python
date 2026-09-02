@@ -68,7 +68,7 @@ def parse_args():
                    choices=["auto", "cpu", "gpu", "gpu-omp", "gpu-nvidia-omp"],
                    default="cpu",
                    help="cpu | gpu (NVHPC Thrust) | gpu-omp = gpu-nvidia-omp "
-                        "(LLVM OpenMP-offload) | auto")
+                        "(NVHPC OpenMP target offload) | auto")
 
     # SQD outer-loop parameters
     p.add_argument("--samples_per_batch", type=int, default=300)

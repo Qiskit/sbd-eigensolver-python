@@ -383,11 +383,13 @@ if _conda_prefix:
 gpu_compiler, has_nvhpc = find_nvidia_hpc_sdk()
 
 # Determine which backends to build.
-#   auto                  : cpu + thrust GPU (if nvc++ present)
+#   auto                  : cpu, plus both GPU backends when nvc++ is present
+#   all                   : same as auto, but an error when nvc++ is missing
 #   cpu                   : cpu only
 #   gpu | gpu_thrust      : thrust GPU only
-#   both                  : cpu + thrust
 #   gpu_omp_offload       : OpenMP target offload only (nvc++ -mp=gpu)
+# `both` (cpu + thrust) was removed: it is a strict subset of `auto`, and the
+# reason to keep the GPU backends apart went away with lazy loading.
 #
 # All three may now be installed side by side. They used to be kept apart on
 # the theory that they link different OpenMP runtimes; that is not what ldd

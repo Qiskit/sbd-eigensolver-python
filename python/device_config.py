@@ -111,11 +111,17 @@ class DeviceConfig:
         """Force OpenMP target-offload GPU execution.
 
         Requires SBD compiled with the OMP-offload backend (the
-        ``_core_gpu_omp_offload`` extension, i.e.
-        ``SBD_BUILD_BACKEND=gpu_omp_offload``). The backend uses
-        ``nvc++ -mp=gpu`` with NVHPC's ``libnvomp`` runtime; it cannot
-        coexist in a single Python process with the CPU or Thrust GPU
-        backends (different OpenMP runtimes — install separately).
+        ``_core_gpu_omp_offload`` extension), which the default
+        ``SBD_BUILD_BACKEND=auto`` builds whenever ``nvc++`` is present; narrow
+        it to ``gpu_omp_offload`` to build only this one. The backend uses
+        ``nvc++ -mp=gpu`` with NVHPC's ``libnvomp`` runtime.
+
+        It installs alongside the CPU and Thrust backends -- backends are
+        imported lazily, one per process, which is what keeps them apart. The
+        one combination to avoid in a single process is this backend together
+        with the CPU one: they share ``libnvomp``, and loading ``_core_cpu``
+        first leaves it initialised host-only, after which offload regions run
+        on the host. See :func:`sbd.has_backend_conflict`.
         """
         return cls(device='gpu-omp', max_memory_gb=max_memory_gb)
 
