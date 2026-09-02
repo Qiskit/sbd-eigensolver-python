@@ -1,14 +1,17 @@
 # SBD Python Bindings
 
-Python bindings for the Selected Basis Diagonalization (SBD) library with dual CPU/GPU backend support.
+Python bindings for the Selected Basis Diagonalization (SBD) library, with CPU and GPU backends.
 
 ## Overview
 
-SBD (Selected Basis Diagonalization) is a high-performance library for quantum chemistry calculations. The Python bindings provide access to SBD's **Tensor-Product Basis (TPB)** diagonalization method with support for both CPU and GPU backends.
+SBD (Selected Basis Diagonalization) is a high-performance library for quantum chemistry calculations. The Python bindings provide access to SBD's **Tensor-Product Basis (TPB)** diagonalization method on CPU and GPU.
 
 **Key Features:**
 - **TPB diagonalization** for quantum chemistry Hamiltonians
-- Dual backend: CPU (OpenMP) and GPU (CUDA), switchable at runtime
+- Three backends, selected per call at runtime via `device=`:
+  `'cpu'` (host OpenMP), `'gpu'` (NVHPC Thrust/CUDA) and `'gpu-omp'` (NVHPC
+  OpenMP target offload). All three can be built into one install; each is
+  imported only when first used
 - MPI parallelization
 - Integration with [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) for SQD workflows
 
@@ -23,7 +26,16 @@ In addition to TPB, this package also contains experimental support for SBD's **
 
 **Required:** Python 3.10+, MPI (OpenMPI/MPICH), BLAS (OpenBLAS/MKL), pybind11, mpi4py, numpy.
 
-**Optional (GPU):** NVIDIA HPC SDK (nvc++), CUDA-capable GPU, CUDA-aware MPI.
+**For the GPU backends** — optional; without them you get a CPU-only install:
+
+- *to build:* NVIDIA HPC SDK (`nvc++`), and `SBD_GPU_ARCH` set to the target
+  compute capability (required — there is no default, see
+  [Environment Variables](#environment-variables)). No GPU needs to be present
+  on the build machine.
+- *to run:* a CUDA-capable GPU, and an MPI **built with CUDA support** — the GPU
+  paths pass device pointers to `MPI_Allreduce`, and a non-CUDA-aware MPI stalls
+  there. conda-forge's `mpich`/`openmpi` are not CUDA-aware; see the note under
+  [Build](#build) for how to check.
 
 Either install path compiles the C++ extension on the target machine;
 no pre-built wheels are published. The resulting binary depends on the
