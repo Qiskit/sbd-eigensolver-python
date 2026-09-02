@@ -192,16 +192,6 @@ result = diagonalize_fermionic_hamiltonian(
 
 See `python/examples/run_sqd_sbd.py` for a complete example.
 
-## Examples
-
-Located in `python/examples/`:
-
-- **`run_sbd_diag.py`** — Standalone TPB diagonalization (no Qiskit dependency)
-- **`run_sqd_sbd.ipynb`** — Jupyter Notebook SQD loop with SBD solver (random or hardware bitstrings)
-- **`run_sqd_sbd.py`** — SQD loop with SBD solver (random or hardware bitstrings)
-
-See [python/examples/README.md](python/examples/README.md) for usage details.
-
 ## API Reference
 
 ### Initialization
@@ -319,6 +309,7 @@ The optional `device` parameter overrides the default set by `init()`.
 **MPI errors:** Verify `MPI_HOME`, check `python -c "from mpi4py import MPI; print(MPI.Get_version())"`.
 
 **OMP-offload runs all land on GPU 0 in multi-GPU jobs:** symptom — every MPI rank shows large memory only on GPU 0 in `nvidia-smi`. The bindings call `omp_set_default_device(mpi_rank % n_dev)`, but `omp_get_num_devices()` can return 0 in some dlopen scenarios. The bindings fall back to parsing `CUDA_VISIBLE_DEVICES` to recover the device count, so make sure that env var is exported and lists all your GPUs (e.g. `0,1,2,3`). Slurm/`srun --gres=gpu:N` and OpenMPI's default binding policy already do this; if you've custom-restricted `CUDA_VISIBLE_DEVICES` to a single GPU per rank, set it manually before launch.
+
 ---
 
 **Repository:** https://github.com/Qiskit/sbd-eigensolver-python
