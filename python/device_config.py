@@ -100,7 +100,7 @@ class DeviceConfig:
         """Force NVHPC Thrust GPU execution.
 
         Requires SBD compiled with THRUST (the ``_core_gpu`` extension,
-        i.e. ``SBD_BUILD_BACKEND=gpu`` or ``=both``).
+        i.e. ``SBD_BUILD_BACKEND=gpu``, or the default ``auto``).
         """
         return cls(device='gpu',
                    use_precalculated_dets=use_precalculated_dets,

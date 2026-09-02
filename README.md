@@ -34,8 +34,7 @@ In addition to TPB, this package also contains experimental support for SBD's **
   on the build machine.
 - *to run:* a CUDA-capable GPU, and an MPI **built with CUDA support** — the GPU
   paths pass device pointers to `MPI_Allreduce`, and a non-CUDA-aware MPI stalls
-  there. conda-forge's `mpich`/`openmpi` are not CUDA-aware; see the note under
-  [Build](#build) for how to check.
+  there. conda-forge's `mpich`/`openmpi` are not CUDA-aware.
 
 Either install path compiles the C++ extension on the target machine;
 no pre-built wheels are published. The resulting binary depends on the
@@ -58,8 +57,8 @@ See [Environment Variables](#environment-variables).
 dependencies in place for the CPU backend:
 ```bash
 conda create -y -n sbd -c conda-forge \
-    python=3.12 pybind11 numpy setuptools wheel openblas pyscf pip mpi4py
-```bash
+    python=3.13.12 pybind11 numpy setuptools wheel openblas pyscf pip mpi4py
+```
 
 ```bash
 conda activate sbd
@@ -96,6 +95,7 @@ pip install -e . --no-build-isolation --force-reinstall --no-deps
 
 ```bash
 # --- required ONLY for the NVIDIA GPU backends (Thrust and OpenMP target-offload) ---
+#     Adjust the path.
 export NVHPC_HOME=/opt/nvidia/hpc_sdk/Linux_x86_64/2025/compilers
 
 # --- required whenever a NVIDIA GPU backend is built
@@ -124,9 +124,8 @@ export CXX=/usr/bin/clang++
 ```
 
 ### Build Using the Host MPI
-
-# Create a conda env
 ```bash
+# Create a conda env
 conda create -y -n sbd -c conda-forge \
     python=3.13.12 pybind11 numpy setuptools wheel openblas pyscf pip
 
