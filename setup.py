@@ -525,7 +525,29 @@ if build_gpu_thrust:
         # target missing), causing the link to fail with "cannot find
         # -lcublasmp" etc. SBD's GPU path only needs the CUDA runtime, so
         # explicitly link -lcudart instead.
-        extra_link_args=extra_link_args + ['-mp', '-cuda', '-lcudart'],
+        #
+        # -gpu= MUST be repeated here, at LINK time. The compile step above
+        # emits device code for every architecture in the list, but the
+        # device-link step decides what actually lands in the fatbin, and
+        # without -gpu= nvc++ keeps only its own built-in default and silently
+        # discards the rest -- no warning, exit 0. The result is a .so that
+        # runs only on whatever architecture that default happens to be.
+        #
+        # Measured on NVHPC 26.1 (aarch64) with SBD_GPU_ARCH=cc80,cc90,cc100:
+        #     object after compile        sm_80 sm_90 sm_100
+        #     .so linked without -gpu=    sm_100            <- two arches lost
+        #     .so linked with    -gpu=    sm_80 sm_90 sm_100
+        # The default is compiled into nvc++, not detected from the hardware,
+        # so a GPU-less build host (a container stage, say) does not change it.
+        #
+        # The OMP-offload extension below already passes -gpu= at link, which is
+        # why only the Thrust backend was affected: a multi-arch build appeared
+        # to succeed and then failed on any GPU other than the build toolchain's
+        # default -- observed as a Thrust-only failure on H100 from a fatbin
+        # built for cc80,cc90,cc100. These builds embed no PTX, so there is no
+        # JIT fallback to mask it.
+        extra_link_args=extra_link_args + ['-mp', '-cuda', f'-gpu={gpu_arch}',
+                                           '-lcudart'],
     )
     ext_modules.append(gpu_thrust_ext)
 
