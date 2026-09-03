@@ -28,11 +28,13 @@ In addition to TPB, this package also contains experimental support for SBD's **
 
 **For the GPU backends** — optional; without them you get a CPU-only install:
 
-- *to build:* [NVIDIA HPC SDK](https://developer.nvidia.com/hpc-sdk) (`nvc++`),
-  and `SBD_GPU_ARCH` set to the target
-  compute capability (required — there is no default, see
-  [Environment Variables](#environment-variables)). No GPU needs to be present
-  on the build machine.
+- *to build:* [NVIDIA HPC SDK](https://developer.nvidia.com/hpc-sdk) (`nvc++`).
+  `SBD_GPU_ARCH` is **optional**: unset, nvc++ targets the GPU of the machine
+  the toolchain was installed on; set, it is honored exactly and may name
+  several generations at once (`cc80,cc90,cc100`) — see
+  [Environment Variables](#environment-variables). Set it for any build that
+  will run elsewhere, since no PTX is embedded and an unlisted architecture has
+  no JIT fallback. No GPU needs to be present on the build machine.
 - *to run:* a CUDA-capable GPU, and an MPI **built with CUDA support** — the GPU
   paths pass device pointers to `MPI_Allreduce`, and a non-CUDA-aware MPI stalls
   there. conda-forge's `mpich`/`openmpi` are not CUDA-aware.
@@ -88,9 +90,19 @@ pip install -e . --no-build-isolation --force-reinstall --no-deps
 #     Adjust the path.
 export NVHPC_HOME=/opt/nvidia/hpc_sdk/Linux_x86_64/2025/compilers
 
-# --- required whenever a NVIDIA GPU backend is built
+# --- OPTIONAL. Unset: nvc++ targets the GPU of the machine this toolchain was
+#     installed on -- right for a local build on the machine you will run on.
+#     Set it to pin the target, including SEVERAL generations at once:
 #       A100: cc80    H100: cc90    GB200 / B200: cc100
-export SBD_GPU_ARCH=cc100
+#       ccall-major   one target per major generation
+#     Set it whenever the build TRAVELS -- a container image, a shared
+#     filesystem, a mixed-GPU cluster. No PTX is embedded, so an architecture
+#     that is not listed has no JIT fallback and simply will not run.
+export SBD_GPU_ARCH=cc80,cc90,cc100
+
+#     Verify what actually landed rather than trusting the flag:
+#       cuobjdump --list-elf $(python -c "import sbd,glob,os; \
+#         print(glob.glob(os.path.join(os.path.dirname(sbd.__file__),'_core_gpu_thrust*.so'))[0])")
 
 # --- optional overrides; each has a working default ---
 #     Which backends to build: defaults to CPU always, plus both GPU

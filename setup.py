@@ -191,16 +191,29 @@ def get_mpi_config():
 
 
 def _resolve_gpu_arch():
-    """Return the nvc++ -gpu=<arch> value; required for any GPU backend.
+    """Return the nvc++ ``-gpu=<arch>`` value, or None to let nvc++ decide.
 
-    Both Thrust (_core_gpu_thrust) and OMP-offload (_core_gpu_omp_offload)
-    compile with nvc++ and take the same -gpu=<arch> flag, so one env var
-    covers both.
+    OPTIONAL BY DESIGN.
 
-    There is deliberately no default. nvc++ happily emits code for a compute
-    capability the machine does not have, and a wrong-arch Thrust build returns
-    incorrect energies instead of failing -- a silent-wrong-answer mode that is
-    far worse than a build error.
+    * Set (e.g. ``cc90``, or ``cc80,cc90,cc100`` for a portable
+      multi-architecture binary): honored exactly, and passed at BOTH compile
+      and link. Passing it at link is not optional -- the device-link step is
+      where the final SASS is generated, so a value given only at compile time
+      is discarded and you silently get the toolchain's own target instead.
+    * Unset: no ``-gpu=`` flag is emitted at all and nvc++ targets the GPU of
+      the machine the toolchain was installed on. That is the right default for
+      a local build on the machine you will run on, and it keeps a plain
+      ``pip install`` working with no environment setup.
+
+    Build a multi-architecture binary whenever the artifact travels -- a
+    container image, a shared filesystem, a wheel for a mixed cluster. These
+    builds embed no PTX, so an architecture that is not listed has no JIT
+    fallback: it simply will not run. ``ccall-major`` covers one target per
+    major generation if you would rather not enumerate.
+
+    Verify what actually landed rather than trusting the flag:
+
+        cuobjdump --list-elf <the built _core_gpu_*.so>
 
     Reads SBD_GPU_ARCH, honoring the deprecated SBD_GPU_ARCH_NVIDIA (v1.5 and
     earlier) with a notice so existing scripts keep working.
@@ -212,19 +225,18 @@ def _resolve_gpu_arch():
     if legacy:
         print(f"Notice: SBD_GPU_ARCH_NVIDIA={legacy!r} is deprecated since "
               "v1.6 (single SBD_GPU_ARCH covers both Thrust and OMP-offload "
-              "since LLVM/clang was removed). Honoring it as a back-compat "
+              "now that the LLVM path is gone). Honoring it as a back-compat "
               "alias. Please switch to SBD_GPU_ARCH.")
         return legacy
-    print("Error: SBD_GPU_ARCH must be set to build a GPU backend (NVHPC was "
-          "found).\n"
-          "       No default is assumed: nvc++ will build for the wrong compute "
-          "capability without complaint, and a wrong-arch Thrust build returns "
-          "incorrect energies rather than failing.\n"
-          "       cc80 = A100, cc90 = H100, cc100 = GB200/B200. For example:\n"
-          "         SBD_GPU_ARCH=cc100 pip install -e . --no-build-isolation\n"
-          "       To build the CPU backend only, unset NVHPC_HOME (and keep "
-          "nvc++ off PATH) or set SBD_BUILD_BACKEND=cpu.")
-    sys.exit(1)
+    print("Notice: SBD_GPU_ARCH is not set; letting nvc++ target the GPU of the\n"
+          "        machine this toolchain was installed on. Fine for a local\n"
+          "        build. If this artifact will run anywhere else -- a container\n"
+          "        image, a shared filesystem, a mixed-GPU cluster -- set it to\n"
+          "        every architecture you need, e.g.\n"
+          "          SBD_GPU_ARCH=cc80,cc90,cc100   (A100 / H100 / GB200-B200)\n"
+          "          SBD_GPU_ARCH=ccall-major       (one per major generation)\n"
+          "        No PTX is embedded, so an unlisted architecture cannot JIT.")
+    return None
 
 
 def _route_build_through_nvhpc(nvc_path):
@@ -495,6 +507,9 @@ if build_gpu_thrust:
     # No-op if the user already set CC/CXX manually.
     _route_build_through_nvhpc(gpu_compiler)
     gpu_arch = _resolve_gpu_arch()
+    # Emitted only when the user asked for a specific arch; otherwise omitted
+    # entirely so nvc++ picks the build machine's GPU (see _resolve_gpu_arch).
+    gpu_arch_flags = [f'-gpu={gpu_arch}'] if gpu_arch else []
     print(f"NVHPC -gpu= arch: {gpu_arch} (set SBD_GPU_ARCH to override; "
           "nvc++ accepts cc<XX> and sm_<XX>)")
 
@@ -515,7 +530,7 @@ if build_gpu_thrust:
             '--diag_suppress=declared_but_not_referenced,set_but_not_used',
             '-fmax-errors=0',
             '-fPIC',
-            f'-gpu={gpu_arch}',
+            *gpu_arch_flags,
             '-DSBD_MODULE_NAME=_core_gpu_thrust',
         ],
         # NOTE: -cudalib (no value) makes nvc++ blanket-link every CUDA
@@ -546,7 +561,7 @@ if build_gpu_thrust:
         # default -- observed as a Thrust-only failure on H100 from a fatbin
         # built for cc80,cc90,cc100. These builds embed no PTX, so there is no
         # JIT fallback to mask it.
-        extra_link_args=extra_link_args + ['-mp', '-cuda', f'-gpu={gpu_arch}',
+        extra_link_args=extra_link_args + ['-mp', '-cuda', *gpu_arch_flags,
                                            '-lcudart'],
     )
     ext_modules.append(gpu_thrust_ext)
@@ -558,6 +573,7 @@ if build_gpu_omp_offload:
     # Auto-route the build through nvc++ + sanitize sysconfig flags.
     _route_build_through_nvhpc(gpu_compiler)
     offload_arch = _resolve_gpu_arch()
+    offload_arch_flags = [f'-gpu={offload_arch}'] if offload_arch else []
     print(f"NVHPC -gpu= arch: {offload_arch} (set SBD_GPU_ARCH to override)")
 
     gpu_omp_offload_ext = Extension(
@@ -570,7 +586,7 @@ if build_gpu_omp_offload:
         extra_compile_args=[
             '-O3', '-std=c++17', '-fPIC',
             '-mp=gpu',
-            f'-gpu={offload_arch}',
+            *offload_arch_flags,
             '-Minfo=mp',
             '-DSBD_TRADMODE',
             '-DUSE_GPU',
@@ -585,7 +601,7 @@ if build_gpu_omp_offload:
         ],
         extra_link_args=extra_link_args + [
             '-mp=gpu',
-            f'-gpu={offload_arch}',
+            *offload_arch_flags,
         ],
     )
     ext_modules.append(gpu_omp_offload_ext)
