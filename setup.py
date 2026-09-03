@@ -397,7 +397,12 @@ if build_gpu_thrust:
         # target missing), causing the link to fail with "cannot find
         # -lcublasmp" etc. SBD's GPU path only needs the CUDA runtime, so
         # explicitly link -lcudart instead.
-        extra_link_args=extra_link_args + ['-mp', '-cuda', '-lcudart'],
+        #
+        # -gpu= is repeated at link because the device-link step generates the
+        # final SASS: without it nvc++ silently targets its own default instead
+        # of the requested arch(es).
+        extra_link_args=extra_link_args + ['-mp', '-cuda', f'-gpu={gpu_arch}',
+                                           '-lcudart'],
     )
     ext_modules.append(gpu_thrust_ext)
 
