@@ -37,6 +37,12 @@ basetest = [
 test = [
     "sbd-eigensolver[basetest]",
     "pytest-mpi>=0.6",
+    # The SQD integration tests drive qiskit-addon-sqd's own entry point, and read the
+    # reference Hamiltonian from a FCIDUMP with pyscf. Both are in the default test
+    # extra rather than an opt-in one so that `tox -e py` and `tox -e mpi` cover that
+    # path; the tests skip themselves if the imports are unavailable anyway.
+    "qiskit-addon-sqd>=0.13.1",
+    "pyscf>=2.9",
 ]
 nbtest = [
     "sbd-eigensolver[basetest]",
