@@ -13,6 +13,7 @@
 from setuptools import setup, Extension
 import sys
 import os
+import platform
 import subprocess
 import pybind11
 
@@ -192,6 +193,23 @@ def _route_build_through_nvhpc(nvc_path):
         _cfg[_k] = _re.sub(r' +', ' ', _v).strip()
 
 
+def _homebrew_prefix():
+    """Homebrew's install prefix, or None if brew is not on PATH.
+
+    Not a constant: it is /opt/homebrew on Apple silicon and /usr/local on
+    Intel, so either one hardcoded is wrong on the other architecture.
+    """
+    import shutil
+    brew = shutil.which('brew')
+    if not brew:
+        return None
+    try:
+        return subprocess.check_output([brew, '--prefix'],
+                                       universal_newlines=True).strip()
+    except Exception:
+        return None
+
+
 def find_nvidia_hpc_sdk():
     nvhpc_home = os.environ.get('NVHPC_HOME', None)
     if nvhpc_home:
@@ -247,10 +265,14 @@ print(f"Using BLAS libraries: {blas_libs}")
 
 libraries = mpi_libs + blas_libs
 
-# RPATH so libraries are found at runtime without LD_LIBRARY_PATH
+# RPATH so libraries are found at runtime without LD_LIBRARY_PATH.
+#
+# `--rpath` is a GNU ld spelling that Apple's linker does not accept; it wants
+# the single-dash `-rpath`. GNU ld understands `-rpath` too, so use that form
+# on both platforms.
 extra_link_args = ['-fopenmp']
 for lib_dir in library_dirs:
-    extra_link_args.append(f'-Wl,--rpath,{lib_dir}')
+    extra_link_args.append(f'-Wl,-rpath,{lib_dir}')
 print(f"RPATH will be set to: {library_dirs}")
 
 # Detect NVHPC. nvc++ is shared between two GPU backends here:
@@ -316,21 +338,33 @@ ext_modules = []
 
 if build_cpu:
     print("\nConfiguring CPU backend (_core_cpu)")
-    import platform
     if platform.system() == 'Darwin':
-        omp_inc = '/opt/homebrew/opt/libomp/include'
-        omp_lib = '/opt/homebrew/opt/libomp/lib'
-        openblas_lib = '/opt/homebrew/opt/openblas/lib'
+        # Apple clang has no OpenMP of its own, so libomp comes from Homebrew,
+        # and `-fopenmp` has to be smuggled past the driver with -Xpreprocessor
+        # (plain `-fopenmp` is rejected). Both libomp and openblas are keg-only
+        # formulae, so neither their headers nor their libraries are on the
+        # default search paths -- they must be named explicitly here.
+        brew_prefix = _homebrew_prefix() or '/opt/homebrew'
+        omp_inc = os.path.join(brew_prefix, 'opt', 'libomp', 'include')
+        omp_lib = os.path.join(brew_prefix, 'opt', 'libomp', 'lib')
+        openblas_lib = os.path.join(brew_prefix, 'opt', 'openblas', 'lib')
+        print(f"Using Homebrew prefix: {brew_prefix}")
         cpu_compile_args = [
             '-DSBD_TRADMODE',
+            '-DOMPI_SKIP_MPICXX',
             '-std=c++17', '-Xpreprocessor', '-fopenmp', '-O3',
             '-Wno-sign-compare', '-Wno-unused-variable', '-fPIC',
             '-DSBD_MODULE_NAME=_core_cpu', f'-I{omp_inc}',
         ]
-        cpu_link_args = [f'-L{omp_lib}', f'-L{openblas_lib}', '-lomp']
         cpu_inc = include_dirs + [omp_inc]
         cpu_lib_dirs = library_dirs + [omp_lib, openblas_lib]
         cpu_libs = libraries + ['omp']
+        # Not extra_link_args: that carries a bare `-fopenmp`, which Apple
+        # clang rejects at link time the same way it does when compiling.
+        # Re-derive the rpath entries over the Homebrew directories added
+        # above, so the keg-only dylibs resolve at import time.
+        cpu_link_args = [f'-L{d}' for d in (omp_lib, openblas_lib)]
+        cpu_link_args += [f'-Wl,-rpath,{d}' for d in cpu_lib_dirs]
     else:
         cpu_compile_args = [
             '-DSBD_TRADMODE',
