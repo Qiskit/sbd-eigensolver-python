@@ -129,6 +129,31 @@ def _mpi_prefix_from_env_prefix():
     return None
 
 
+def _mpi_config_from_mpicc():
+    """Probe the mpicc compiler wrapper for include/library/link flags.
+
+    Needed because a prefix without $prefix/include/mpi.h is not necessarily the
+    wrong MPI: distros that split MPI into a -devel package put the headers
+    elsewhere (Debian's Open MPI uses /usr/lib/<triple>/openmpi/include), and
+    mpicc is the thing that knows where its own headers live.
+
+    Returns (include_dirs, library_dirs, libraries) or None if mpicc is absent or
+    does not understand the --showme flags (an OpenMPI-ism; MPICH's wrapper does
+    not support them).
+    """
+    try:
+        compile_flags = subprocess.check_output(['mpicc', '--showme:compile'],
+                                               universal_newlines=True).strip().split()
+        link_flags = subprocess.check_output(['mpicc', '--showme:link'],
+                                             universal_newlines=True).strip().split()
+    except Exception:
+        return None
+    include_dirs = [f[2:] for f in compile_flags if f.startswith('-I')]
+    library_dirs = [f[2:] for f in link_flags if f.startswith('-L')]
+    libraries = [f[2:] for f in link_flags if f.startswith('-l')]
+    return include_dirs, library_dirs, libraries
+
+
 def get_mpi_config():
     """Resolve MPI include/lib dirs, preferring the MPI that mpi4py uses.
 
@@ -167,12 +192,24 @@ def get_mpi_config():
                        os.path.join(prefix, 'lib'))
         source = ('MPI_HOME' if mpi_home else
                   'mpi4py' if derived else 'the environment prefix')
-        print(f"Using MPI from {source}: {prefix}")
-        if not os.path.exists(os.path.join(include_dir, 'mpi.h')):
-            print(f"Warning: {include_dir}/mpi.h not found; the compile will "
-                  "likely fail. Check MPI_HOME points at an MPI *prefix*, not "
-                  "its lib or bin directory.")
+        if os.path.exists(os.path.join(include_dir, 'mpi.h')):
+            print(f"Using MPI from {source}: {prefix}")
+            return [include_dir], [lib_dir], ['mpi']
+        # Same MPI, unusual layout -- ask mpicc before giving up on it.
+        print(f"Notice: no mpi.h under {prefix} (from {source}); asking mpicc.")
+        mpicc_config = _mpi_config_from_mpicc()
+        if mpicc_config is not None:
+            print("Using MPI detected from mpicc")
+            return mpicc_config
+        print(f"Warning: {include_dir}/mpi.h not found and mpicc unusable; "
+              "trying the prefix anyway. Check MPI_HOME points at an MPI "
+              "*prefix*, not its lib or bin directory.")
         return [include_dir], [lib_dir], ['mpi']
+
+    mpicc_config = _mpi_config_from_mpicc()
+    if mpicc_config is not None:
+        print("Using MPI detected from mpicc")
+        return mpicc_config
 
     if not _building_extensions():
         print("Notice: Could not detect MPI, but no extension is being "
