@@ -146,18 +146,6 @@ export SBD_BUILD_BACKEND=cpu
 #           CUDA-aware on NVIDIA, ROCm-aware on AMD.
 export MPI_HOME=/path/to/mpi
 
-#     If a GPU-aware MPI is not available, the Thrust backend can be built to
-#     avoid handing it device pointers at all. These are COMPILE-TIME options --
-#     they are baked into the extension, so set them before installing and
-#     rebuild to change them; setting them at run time does nothing.
-#       SBD_NON_CUDA_AWARE_MPI=1         stage every device buffer through host
-#                                        memory before MPI touches it. Adds a
-#                                        GPU-to-host copy per transfer, so expect
-#                                        it to be slower than a GPU-aware MPI.
-#       SBD_THRUST_SAFE_MPI_ALLREDUCE=1  the same staging for the allreduce only
-#                                        -- a subset of the above, so cheaper.
-export SBD_NON_CUDA_AWARE_MPI=1
-
 #     BLAS: defaults to whatever the linker finds, including a
 #     conda-installed OpenBLAS in $CONDA_PREFIX/lib. Set these to select
 #     a specific build (e.g. an arch-tuned OpenBLAS)
@@ -365,6 +353,12 @@ The optional `device` parameter overrides the default set by `init()`.
 - `get_backend(device)` resolves the `device=` string and returns the appropriate module; all wrapper functions accept an optional `device` parameter. Aliases for back-compat live in `sbd._device_aliases`.
 - GPU device assignment: `gpu_id = mpi_rank % num_gpus` (set per `tpb_diag()` call in `bindings.cpp`); same logic for both Thrust and OMP-offload paths.
 - Backends differ in which phases run on the GPU vs the host. Davidson and the matvec (`mult`) live on the GPU under both Thrust and OMP-offload. The diagonal-Hamiltonian preconditioner (`makeQChamDiagTerms`) is GPU-resident under Thrust but runs on the host under OMP-offload (no `#pragma omp target` port in `tpb/qcham.h`).
+- **The Thrust build assumes a GPU-aware MPI** and hands MPI device pointers directly. Two upstream escape hatches exist for an MPI that cannot address device memory. Both are **off by default**, and both are **compile-time** — set them before installing, rebuild to change them, and they do nothing if set at run time:
+    ```
+    SBD_NON_CUDA_AWARE_MPI=1         stage every device buffer through host memory
+    SBD_THRUST_SAFE_MPI_ALLREDUCE=1  stage only the allreduce (a subset of the above)
+    ```
+    Both trade speed for reach: staging copies each buffer GPU-to-host and back, and the reduction then runs host-side rather than using the device collectives. Reach for them when a GPU backend crashes inside the MPI itself rather than in SBD.
 - Verify what GPU architecture is supported in the binary:
   ```
   NVIDIA: cuobjdump --list-elf   <the built _core_gpu_thrust*.so>
