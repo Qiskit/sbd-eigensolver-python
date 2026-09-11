@@ -167,8 +167,11 @@ conda activate sbd                         # always activate first
 # CUDA-aware on NVIDIA, ROCm-aware on AMD.
 export MPI_HOME=/path/to/mpi
 MPICC=$MPI_HOME/bin/mpicc python -m pip install --no-binary=mpi4py --no-cache-dir mpi4py
-# NOTE: If you need only the CPU backend and no host MPI is available, let conda
-# pick a compatible one with the command below (it is not GPU-aware).
+# NOTE: If no host MPI is available, let conda pick a compatible one with the
+# command below. A default conda-forge MPI is not GPU-aware, which is fine for the
+# CPU backend; for the GPU backends either install mpi4py against a GPU-aware MPI
+# as above, or see "Backend Architecture" below for the two build-time options that
+# let the Thrust backend run without one.
 # conda install -y -c conda-forge mpi4py
 
 # confirm which MPI mpi4py uses -- setup.py builds against exactly this
@@ -358,7 +361,7 @@ The optional `device` parameter overrides the default set by `init()`.
     SBD_NON_CUDA_AWARE_MPI=1         stage every device buffer through host memory
     SBD_THRUST_SAFE_MPI_ALLREDUCE=1  stage only the allreduce (a subset of the above)
     ```
-    Both make the Thrust path stage device buffers through host memory instead of handing MPI device pointers, so they add copies whose cost grows with how much data crosses MPI. Treat them as a compatibility fallback rather than a tuning knob: reach for them when a GPU backend crashes inside the MPI itself rather than in SBD. (On a single 8-GPU node the allreduce-only variant measured no slower than the default, but do not assume that holds for larger buffers or across nodes.)
+    Both make the Thrust path stage device buffers through host memory instead of handing MPI device pointers, so they add copies whose cost grows with how much data crosses MPI. Treat them as a compatibility fallback rather than a tuning knob: reach for them when a GPU backend crashes inside the MPI itself rather than in SBD.
 - Verify what GPU architecture is supported in the binary:
   ```
   NVIDIA: cuobjdump --list-elf   <the built _core_gpu_thrust*.so>
