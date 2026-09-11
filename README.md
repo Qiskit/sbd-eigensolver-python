@@ -146,6 +146,18 @@ export SBD_BUILD_BACKEND=cpu
 #           CUDA-aware on NVIDIA, ROCm-aware on AMD.
 export MPI_HOME=/path/to/mpi
 
+#     If a GPU-aware MPI is not available, the Thrust backend can be built to
+#     avoid handing it device pointers at all. These are COMPILE-TIME options --
+#     they are baked into the extension, so set them before installing and
+#     rebuild to change them; setting them at run time does nothing.
+#       SBD_NON_CUDA_AWARE_MPI=1         stage every device buffer through host
+#                                        memory before MPI touches it. Adds a
+#                                        GPU-to-host copy per transfer, so expect
+#                                        it to be slower than a GPU-aware MPI.
+#       SBD_THRUST_SAFE_MPI_ALLREDUCE=1  the same staging for the allreduce only
+#                                        -- a subset of the above, so cheaper.
+export SBD_NON_CUDA_AWARE_MPI=1
+
 #     BLAS: defaults to whatever the linker finds, including a
 #     conda-installed OpenBLAS in $CONDA_PREFIX/lib. Set these to select
 #     a specific build (e.g. an arch-tuned OpenBLAS)

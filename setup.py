@@ -837,11 +837,13 @@ if build_gpu_thrust:
     # build -- and a candidate explanation for the container Thrust segfault in
     # MPIR_Localcopy, where a non-GPU-aware MPI host-copied a device pointer.
     # Upstream's thrust branch also carries two MPI-safety options. Mirror them
-    # as env vars of the same name: both are pure -D defines needing no extra
-    # linkage, and SBD_NON_CUDA_AWARE_MPI is the supported way to run on an MPI
-    # that cannot touch device memory -- which is otherwise a hard requirement.
+    # as BUILD-TIME env vars of the same name -- they are -D defines compiled into
+    # the extension, so they must be set before `pip install` and changing one
+    # means rebuilding. Setting them at run time does nothing.
     #   SBD_NON_CUDA_AWARE_MPI=1        host-stage all MPI comm on device memory
     #   SBD_THRUST_SAFE_MPI_ALLREDUCE=1 just the allreduce (a subset of the above)
+    # SBD_NON_CUDA_AWARE_MPI is the supported way to build for an MPI that cannot
+    # address device memory, which is otherwise a hard requirement.
     # Deliberately NOT mirrored: SBD_USE_NVTX / SBD_USE_NCCL / SBD_USE_CUBLAS
     # (each needs link libraries we do not add) and SBD_COMPLEX (changes the
     # element type, so it is an API change rather than a flag).
@@ -850,7 +852,7 @@ if build_gpu_thrust:
         if (os.environ.get(_opt) or '').strip().lower() in ('1', 'on', 'true', 'yes'):
             _thrust_opt_defines.append(f'-D{_opt}')
     if _thrust_opt_defines:
-        print("Thrust upstream options: "
+        print("Thrust build-time options baked in: "
               + " ".join(d[2:] for d in _thrust_opt_defines))
 
     _thrust_gpu_opts = 'mem:unified,interceptdeallocations'
