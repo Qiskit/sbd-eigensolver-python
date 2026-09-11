@@ -130,28 +130,46 @@ def _mpi_prefix_from_env_prefix():
 
 
 def _mpi_config_from_mpicc():
-    """Probe the mpicc compiler wrapper for include/library/link flags.
+    """Probe the mpicc wrapper for include/library/link flags.
 
     Needed because a prefix without $prefix/include/mpi.h is not necessarily the
     wrong MPI: distros that split MPI into a -devel package put the headers
     elsewhere (Debian's Open MPI uses /usr/lib/<triple>/openmpi/include), and
     mpicc is the thing that knows where its own headers live.
 
-    Returns (include_dirs, library_dirs, libraries) or None if mpicc is absent or
-    does not understand the --showme flags (an OpenMPI-ism; MPICH's wrapper does
-    not support them).
+    `-show` is tried first because BOTH Open MPI and MPICH understand it and it
+    prints the whole command line. `--showme:compile`/`--showme:link` are an Open
+    MPI-ism -- MPICH's wrapper treats `--showme:compile` as a source file and
+    tries to compile it (exit 127), so probing that first would silently rule out
+    MPICH, which this package claims to support.
+
+    Returns (include_dirs, library_dirs, libraries), or None if mpicc is absent
+    or neither form yields any flags.
     """
-    try:
-        compile_flags = subprocess.check_output(['mpicc', '--showme:compile'],
-                                               universal_newlines=True).strip().split()
-        link_flags = subprocess.check_output(['mpicc', '--showme:link'],
-                                             universal_newlines=True).strip().split()
-    except Exception:
-        return None
-    include_dirs = [f[2:] for f in compile_flags if f.startswith('-I')]
-    library_dirs = [f[2:] for f in link_flags if f.startswith('-L')]
-    libraries = [f[2:] for f in link_flags if f.startswith('-l')]
-    return include_dirs, library_dirs, libraries
+    def _parse(tokens):
+        inc, lib, libs = [], [], []
+        for t in tokens:
+            for pfx, acc in (('-I', inc), ('-L', lib), ('-l', libs)):
+                if t.startswith(pfx) and t[2:] and t[2:] not in acc:
+                    acc.append(t[2:])
+                    break
+        return inc, lib, libs
+
+    for probe in (['-show'], ['--showme:compile', '--showme:link']):
+        tokens = []
+        try:
+            for arg in probe:
+                tokens += subprocess.check_output(
+                    ['mpicc', arg], universal_newlines=True,
+                    stderr=subprocess.DEVNULL).split()
+        except Exception:
+            continue
+        inc, lib, libs = _parse(tokens)
+        if inc or lib:
+            # MPICH reports -lmpi -lpmpi, Open MPI just -lmpi; either is what the
+            # wrapper itself would link. Fall back to -lmpi if neither said so.
+            return inc, lib, libs or ['mpi']
+    return None
 
 
 def get_mpi_config():
