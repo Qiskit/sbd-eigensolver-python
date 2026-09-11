@@ -148,8 +148,10 @@ postselection).
 | `--max_iterations` | SQD self-consistent loop iterations (not SBD `--iteration`) | 3–5 |
 
 **MPI work distribution:** All ranks diagonalize each batch together, then move
-to the next batch sequentially. Within each diagonalization, ranks form a 3D grid:
-`adet_comm_size × bdet_comm_size × task_comm_size = total ranks`. More batches
+to the next batch sequentially. Within each diagonalization, ranks form a 4D grid:
+`task_comm_size × adet_comm_size × bdet_comm_size × helper`, where the helper
+dimension is not set directly — SBD derives it as
+`ranks / (task_comm_size × adet_comm_size × bdet_comm_size)`. More batches
 increases wall time linearly but does not require more ranks.
 
 ### 3. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
@@ -166,16 +168,31 @@ pytest --nbmake run_sqd_sbd.ipynb      # what CI runs; needs the nbtest extra
 
 ## MPI Decomposition
 
-Total MPI ranks must equal `task_comm_size × adet_comm_size × bdet_comm_size`.
+Total MPI ranks must be a **multiple** of
+`task_comm_size × adet_comm_size × bdet_comm_size` — not equal to it. SBD splits
+the ranks you asked for across those three dimensions and puts whatever remains
+into a fourth, "helper" dimension, computed as
+`ranks / (task_comm_size × adet_comm_size × bdet_comm_size)`.
+
+So 8 ranks with `--adet_comm_size 2 --bdet_comm_size 2` is valid: the grid is
+`1 × 2 × 2` and the helper dimension absorbs the remaining factor of 2. Because
+that division is integer, a rank count that is *not* a multiple silently leaves
+ranks unused rather than failing.
 
 When using more than one rank, specify at least `--adet_comm_size`. Examples:
 
-| Ranks | Decomposition |
-|-------|---------------|
-| 1 | default (all = 1) |
-| 2 | `--adet_comm_size 2` |
-| 4 | `--adet_comm_size 2 --bdet_comm_size 2` |
-| 8 | `--adet_comm_size 2 --bdet_comm_size 2 --task_comm_size 2` |
+| Ranks | Decomposition | Helper |
+|-------|---------------|--------|
+| 1 | default (all = 1) | 1 |
+| 2 | `--adet_comm_size 2` | 1 |
+| 4 | `--adet_comm_size 2 --bdet_comm_size 2` | 1 |
+| 8 | `--adet_comm_size 2 --bdet_comm_size 2` | 2 |
+| 8 | `--adet_comm_size 2 --bdet_comm_size 2 --task_comm_size 2` | 1 |
+
+**GDB** (`gdb_diag`) decomposes differently: `t_comm_size × b_comm_size × helper`,
+with its own field names rather than TPB's. It is not exercised by these examples
+or by the test suite, so its decomposition is unvalidated and is deliberately not
+documented further here.
 
 ## Backend Selection
 
