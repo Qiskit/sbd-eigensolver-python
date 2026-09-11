@@ -25,7 +25,13 @@ In addition to TPB, this package also contains experimental support for SBD's **
 
 ### Prerequisites
 
-**Required:** Python 3.10+, MPI (OpenMPI/MPICH), BLAS (OpenBLAS/MKL), pybind11, mpi4py, numpy.
+**Required:** Python 3.10+, MPI (OpenMPI/MPICH), BLAS (OpenBLAS/MKL), pybind11, mpi4py, numpy, compiler with OpenMP.
+
+**On macOS:** Apple clang ships without OpenMP, so add `llvm-openmp` to the conda
+environment. Homebrew's `libomp` is used as a fallback if the env has none. Pin the
+compiler with `CC`/`CXX` as well — a bare `clang++` is resolved through `PATH`, so a
+Homebrew LLVM silently wins over both Apple clang and a conda toolchain. The build
+prints which compiler and which libomp it chose.
 
 **For the GPU backends** — optional; without them you get a CPU-only install:
 
@@ -55,10 +61,15 @@ dependencies in place for the CPU backend:
 ```bash
 conda create -y -n sbd -c conda-forge \
     python=3.13.12 pybind11 numpy setuptools wheel openblas pyscf pip mpi4py
+#   ...plus llvm-openmp on macOS
 ```
 
 ```bash
 conda activate sbd
+```
+
+Now install the sbd-eigensolver-python package
+```
 pip install sbd-eigensolver
 ```
 
@@ -147,6 +158,7 @@ export BLAS_LIBS=openblas          # or mkl_rt
 # Create a conda env
 conda create -y -n sbd -c conda-forge \
     python=3.13.12 pybind11 numpy setuptools wheel openblas pyscf pip
+#   ...plus llvm-openmp on macOS
 
 conda activate sbd                         # always activate first
 
@@ -354,6 +366,11 @@ The optional `device` parameter overrides the default set by `init()`.
   ```
 
 ## Troubleshooting
+
+**GPU backends silently build as host code:** a conda compiler package
+(`cxx-compiler`, `gxx_linux-64`, `clangxx_osx-*`) sets `CC`/`CXX` on activation and
+the build respects a caller-set compiler, so `nvc++`/`amdclang++` never run. Unset
+`CC`/`CXX`, or keep conda compilers out of the build env.
 
 **GPU not building:** On NVIDIA check `which nvc++` and set `NVHPC_HOME`. On AMD
 check `which amdclang++` and set `ROCM_HOME`. The build prints which toolchain it

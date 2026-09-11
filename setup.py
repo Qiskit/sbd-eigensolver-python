@@ -682,9 +682,49 @@ if build_cpu:
     print("\nConfiguring CPU backend (_core_cpu)")
     import platform
     if platform.system() == 'Darwin':
-        omp_inc = '/opt/homebrew/opt/libomp/include'
-        omp_lib = '/opt/homebrew/opt/libomp/lib'
-        openblas_lib = '/opt/homebrew/opt/openblas/lib'
+        # macOS has no system OpenMP, so libomp comes from a package manager.
+        # Prefer the conda env when it has one: those are the libraries actually
+        # LOADED at import time (resolved via the python executable's
+        # @loader_path/../lib), so building against Homebrew's copies instead
+        # means compiling against different libraries than the process runs on.
+        conda_prefix = os.environ.get('CONDA_PREFIX')
+        if conda_prefix and os.path.exists(
+                os.path.join(conda_prefix, 'include', 'omp.h')):
+            omp_inc = os.path.join(conda_prefix, 'include')
+            omp_lib = openblas_lib = os.path.join(conda_prefix, 'lib')
+            print(f"Darwin: libomp and BLAS from conda env {conda_prefix}")
+        else:
+            omp_inc = '/opt/homebrew/opt/libomp/include'
+            omp_lib = '/opt/homebrew/opt/libomp/lib'
+            openblas_lib = '/opt/homebrew/opt/openblas/lib'
+            if not os.path.exists(os.path.join(omp_inc, 'omp.h')):
+                # Fail here with the fix, rather than 100 lines later with
+                # "'omp.h' file not found" from the middle of a compile.
+                print("Error: no OpenMP runtime found on this macOS host.\n"
+                      f"       Looked in $CONDA_PREFIX/include and {omp_inc}.\n"
+                      "       Apple clang ships without OpenMP, so install one:\n"
+                      "         conda install -c conda-forge llvm-openmp   (preferred)\n"
+                      "         brew install libomp")
+                sys.exit(1)
+            print("Darwin: libomp and BLAS from Homebrew (no conda libomp found)")
+
+        # Say WHICH clang is compiling. distutils takes CC/CXX from the
+        # environment, else from sysconfig -- where conda records a bare
+        # 'clang++' that is resolved through PATH, so a Homebrew LLVM silently
+        # wins over both Apple clang and a conda toolchain. Printing it is the
+        # difference between a reproducible build and a mystery.
+        import shutil
+        _cxx = (os.environ.get('CXX') or sysconfig.get_config_var('CXX')
+                or 'clang++').split()[0]
+        _cxx_path = shutil.which(_cxx) or _cxx
+        try:
+            _cxx_ver = subprocess.check_output(
+                [_cxx_path, '--version'], universal_newlines=True,
+                stderr=subprocess.STDOUT).splitlines()[0]
+        except Exception:
+            _cxx_ver = '(version unknown)'
+        print(f"Darwin C++ compiler: {_cxx_path}\n"
+              f"                     {_cxx_ver}   (pin it with CC/CXX)")
         cpu_compile_args = [
             '-DSBD_TRADMODE',
             '-std=c++17', '-Xpreprocessor', '-fopenmp', '-O3',
