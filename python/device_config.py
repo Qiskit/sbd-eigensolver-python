@@ -47,9 +47,10 @@ class DeviceConfig:
         Initialize device configuration.
 
         Args:
-            device: Backend device key — 'cpu', 'gpu' (NVHPC Thrust),
-                'gpu-omp' (nvc++ OpenMP target offload), or any alias
-                known to ``sbd._device_aliases``. Default 'cpu'.
+            device: Backend device key — 'cpu', 'gpu' (NVHPC Thrust,
+                NVIDIA-only), 'gpu-omp' (OpenMP target offload, NVIDIA or
+                AMD), or any alias known to ``sbd._device_aliases``.
+                Default 'cpu'.
             use_precalculated_dets: Use precalculated determinants (GPU only)
             max_memory_gb: Maximum GPU memory in GB (-1 = auto)
             use_gpu: Deprecated boolean. If supplied without ``device``,
@@ -67,26 +68,51 @@ class DeviceConfig:
     @classmethod
     def auto(cls, max_memory_gb: int = -1) -> 'DeviceConfig':
         """
-        Auto-detect GPU availability and use it if available.
-        
+        Auto-detect the best available backend and use it.
+
+        Resolves against the backends that were actually COMPILED, not just the
+        hardware that is present. Detecting a GPU and returning 'gpu'
+        unconditionally was wrong in two ways: on an AMD host it selected the
+        Thrust/CUDA backend, which cannot exist there (upstream wires Thrust to
+        nvc++ -cuda), so a machine that reported "GPU detected (HIP)" then failed
+        to load a CUDA module; and on a CPU-only build with a GPU present it
+        picked a backend that was never built.
+
+        Preference order matches sbd._resolve_device(): Thrust ('gpu') first
+        where it exists, since it is the long-validated NVIDIA default and keeps
+        more phases on the device, then OpenMP offload ('gpu-omp'), then CPU.
+
         Args:
             max_memory_gb: Maximum GPU memory in GB (-1 = auto)
-            
+
         Returns:
-            DeviceConfig configured for GPU if available, CPU otherwise
+            DeviceConfig for the best backend that is both built and runnable
         """
-        # Check if CUDA or HIP is available
         has_cuda = cls._check_cuda()
         has_hip = cls._check_hip()
-        
-        use_gpu = has_cuda or has_hip
 
-        if use_gpu:
-            print(f"GPU detected ({'CUDA' if has_cuda else 'HIP'}), using GPU acceleration")
+        try:
+            from . import available_backends
+            built = available_backends()
+        except Exception:
+            built = []
+
+        device = 'cpu'
+        if has_cuda or has_hip:
+            vendor = 'CUDA' if has_cuda else 'HIP/ROCm'
+            for candidate in ('gpu', 'gpu-omp'):
+                if candidate in built:
+                    device = candidate
+                    break
+            if device == 'cpu':
+                print(f"GPU detected ({vendor}) but no GPU backend is built "
+                      f"(available: {built or 'none'}), using CPU")
+            else:
+                print(f"GPU detected ({vendor}), using GPU acceleration "
+                      f"via device={device!r}")
         else:
             print("No GPU detected, using CPU")
 
-        device = 'gpu' if use_gpu else 'cpu'
         return cls(device=device, max_memory_gb=max_memory_gb)
 
     @classmethod
@@ -97,10 +123,14 @@ class DeviceConfig:
     @classmethod
     def gpu(cls, use_precalculated_dets: bool = True,
             max_memory_gb: int = -1) -> 'DeviceConfig':
-        """Force NVHPC Thrust GPU execution.
+        """Force NVHPC Thrust GPU execution. **NVIDIA only.**
 
-        Requires SBD compiled with THRUST (the ``_core_gpu`` extension,
+        Requires SBD compiled with THRUST (the ``_core_gpu_thrust`` extension,
         i.e. ``SBD_BUILD_BACKEND=gpu``, or the default ``auto``).
+
+        There is no AMD equivalent: upstream SBD wires the Thrust path to
+        ``nvc++ -cuda``, so no rocThrust configuration exists to build. On an AMD
+        host use :meth:`gpu_omp` instead.
         """
         return cls(device='gpu',
                    use_precalculated_dets=use_precalculated_dets,
@@ -108,20 +138,26 @@ class DeviceConfig:
 
     @classmethod
     def gpu_omp(cls, max_memory_gb: int = -1) -> 'DeviceConfig':
-        """Force OpenMP target-offload GPU execution.
+        """Force OpenMP target-offload GPU execution. Works on NVIDIA **and AMD**.
 
         Requires SBD compiled with the OMP-offload backend (the
         ``_core_gpu_omp_offload`` extension), which the default
-        ``SBD_BUILD_BACKEND=auto`` builds whenever ``nvc++`` is present; narrow
-        it to ``gpu_omp_offload`` to build only this one. The backend uses
-        ``nvc++ -mp=gpu`` with NVHPC's ``libnvomp`` runtime.
+        ``SBD_BUILD_BACKEND=auto`` builds whenever a GPU compiler is present;
+        narrow it to ``gpu_omp_offload`` to build only this one.
 
-        It installs alongside the CPU and Thrust backends -- backends are
-        imported lazily, one per process, which is what keeps them apart. The
+        One module and one device string serve both vendors -- the same source
+        and macros, compiled by ``nvc++ -mp=gpu`` with NVHPC's ``libnvomp``, or by
+        ``amdclang++ --offload-arch=gfx*`` with LLVM's ``libomp``/``libomptarget``.
+        ``sbd.get_backend('gpu-omp').__sbd_offload_target__`` reports which, e.g.
+        ``'amdgcn-amd-amdhsa:gfx90a'``.
+
+        It installs alongside the CPU backend (and Thrust, on NVIDIA) -- backends
+        are imported lazily, one per process, which is what keeps them apart. The
         one combination to avoid in a single process is this backend together
-        with the CPU one: they share ``libnvomp``, and loading ``_core_cpu``
-        first leaves it initialised host-only, after which offload regions run
-        on the host. See :func:`sbd.has_backend_conflict`.
+        with the CPU one: they share an OpenMP runtime (``libnvomp`` on NVIDIA,
+        ``libomp`` on AMD), and loading ``_core_cpu`` first leaves it initialised
+        host-only, after which offload regions run on the host. See
+        :func:`sbd.has_backend_conflict`.
         """
         return cls(device='gpu-omp', max_memory_gb=max_memory_gb)
 
@@ -162,12 +198,21 @@ class DeviceConfig:
 
     @classmethod
     def _check_hip(cls) -> bool:
-        """Check if HIP/ROCm is available (cached)."""
+        """Check if HIP/ROCm is available (cached).
+
+        The timeout is much longer than the CUDA probe's on purpose: rocm-smi is
+        a Python program that enumerates devices, measured at 1.1-1.3 s on an
+        8-GCD MI250X node, where nvidia-smi answers in tens of milliseconds. The
+        2 s used here originally left barely 1.5x of margin and DID flake --
+        reporting no AMD GPU on a machine with eight, which then sent
+        DeviceConfig.auto() to the CPU backend. The result is cached, so a
+        generous timeout costs at most one slow call per process.
+        """
         if cls._hip_cache is not None:
             return cls._hip_cache
         try:
             result = subprocess.run(
-                ['rocm-smi'], capture_output=True, timeout=2
+                ['rocm-smi'], capture_output=True, timeout=30
             )
             cls._hip_cache = result.returncode == 0
         except Exception:
@@ -238,11 +283,16 @@ def get_device_info() -> dict:
         try:
             result = subprocess.run(
                 ['rocm-smi', '--showid'],
-                capture_output=True, text=True, timeout=2,
+                capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0:
-                info['gpu_count'] = len([l for l in result.stdout.split('\n')
-                                        if 'GPU' in l])
+                # Count DISTINCT GPU indices, not lines mentioning "GPU":
+                # --showid prints several lines per device (Device Name, Device
+                # ID, Rev, Subsystem ID, GUID), so a line count reported 40 for
+                # the 8 GCDs of a 4-card MI250X node.
+                import re
+                ids = re.findall(r'GPU\[(\d+)\]', result.stdout)
+                info['gpu_count'] = len(set(ids))
         except Exception:
             pass
     

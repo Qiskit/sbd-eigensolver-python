@@ -190,10 +190,70 @@ def get_mpi_config():
     sys.exit(1)
 
 
-def _resolve_gpu_arch():
-    """Return the nvc++ ``-gpu=<arch>`` value, or None to let nvc++ decide.
+def _amdgpu_arch(compiler):
+    """Ask ROCm which GPU this machine has, e.g. 'gfx90a'. None if it cannot.
+
+    Uses the amdgpu-arch that ships BESIDE the chosen compiler, never one found
+    on PATH. ROCm installs versioned trees side by side and also exposes
+    /usr/bin/amdgpu-arch via alternatives, so a PATH lookup can easily report
+    the arch from a different ROCm than the one doing the compiling. Note that
+    amdgpu-arch lives only in lib/llvm/bin, not in the prefix's bin, so resolve
+    the compiler symlink before looking next to it.
+
+    Prints one line per GPU, so dedupe. Returns None on a GPU-less build host
+    (a container stage, a login node), which the caller turns into a request to
+    set SBD_GPU_ARCH explicitly.
+    """
+    here = os.path.dirname(os.path.realpath(compiler))
+    probe = os.path.join(here, 'amdgpu-arch')
+    if not os.path.exists(probe):
+        return None
+    try:
+        out = subprocess.check_output([probe], universal_newlines=True,
+                                      stderr=subprocess.DEVNULL, timeout=30)
+    except Exception:
+        return None
+    arches = sorted({ln.strip() for ln in out.splitlines() if ln.strip()})
+    return ','.join(arches) or None
+
+
+def _gpu_arch_flags(vendor, arch):
+    """Compiler flags that pin the GPU architecture, for compile AND link.
+
+    Returned as a list so an unset arch contributes nothing at all.
+
+    The two vendors spell this differently, and AMD cannot take a comma list:
+    nvc++ accepts -gpu=cc80,cc90,cc100 as one flag, while clang wants a repeated
+    --offload-arch=. Both MUST be passed at link as well as compile -- see the
+    long note on the Thrust extension below for what silently goes missing
+    otherwise.
+    """
+    if not arch:
+        return []
+    if vendor == 'amd':
+        return [f'--offload-arch={a}' for a in arch.split(',') if a]
+    return [f'-gpu={arch}']
+
+
+def _resolve_gpu_arch(vendor='nvidia', compiler=None):
+    """Return the GPU architecture to target, or None to let the toolchain pick.
 
     OPTIONAL BY DESIGN.
+
+    On AMD the arch is auto-DETECTED rather than left implicit: unset, we ask
+    ROCm's amdgpu-arch what this machine has (e.g. gfx90a for MI250X, gfx942 for
+    MI300X) and pin that. amdclang++ has no useful built-in default the way
+    nvc++ does, so if detection fails -- a build host with no GPU -- SBD_GPU_ARCH
+    becomes mandatory and the build stops with that message. Several
+    architectures can be named at once (gfx90a,gfx942); each becomes its own
+    --offload-arch flag. As on NVIDIA there is no JIT fallback, so an
+    architecture that is not listed will not run.
+
+    Verify what actually landed rather than trusting the flag:
+
+        llvm-objdump --offloading <the built _core_gpu_omp_offload*.so>
+
+    The NVIDIA contract is unchanged:
 
     * Set (e.g. ``cc90``, or ``cc80,cc90,cc100`` for a portable
       multi-architecture binary): honored exactly, and passed at BOTH compile
@@ -228,6 +288,29 @@ def _resolve_gpu_arch():
               "now that the LLVM path is gone). Honoring it as a back-compat "
               "alias. Please switch to SBD_GPU_ARCH.")
         return legacy
+
+    if vendor == 'amd':
+        detected = _amdgpu_arch(compiler) if compiler else None
+        if detected:
+            print(f"Notice: SBD_GPU_ARCH is not set; detected {detected} via "
+                  "amdgpu-arch and\n"
+                  "        targeting exactly that. If this artifact will run "
+                  "anywhere else --\n"
+                  "        a container image, a shared filesystem, a mixed-GPU "
+                  "cluster -- set\n"
+                  "        SBD_GPU_ARCH to every architecture you need, e.g. "
+                  "gfx90a,gfx942.\n"
+                  "        There is no JIT fallback, so an unlisted "
+                  "architecture cannot run.")
+            return detected
+        # The caller turns this into a hard error. Not a silent pass: unlike
+        # nvc++, amdclang++ has no built-in default worth inheriting, so a build
+        # with no arch at all produces a module that runs nowhere.
+        print("Notice: SBD_GPU_ARCH is not set and amdgpu-arch could not "
+              "report an\n"
+              "        architecture (normal on a build host with no AMD GPU).")
+        return None
+
     print("Notice: SBD_GPU_ARCH is not set; letting nvc++ target the GPU of the\n"
           "        machine this toolchain was installed on. Fine for a local\n"
           "        build. If this artifact will run anywhere else -- a container\n"
@@ -239,29 +322,30 @@ def _resolve_gpu_arch():
     return None
 
 
-def _route_build_through_nvhpc(nvc_path):
-    """Configure distutils + sysconfig so a setup() call uses nvc++.
+def _route_build_through_gpu_compiler(gpu_path, vendor='nvidia'):
+    """Configure distutils + sysconfig so a setup() call uses the GPU compiler.
 
-    Called by both the Thrust and OMP-offload extension blocks (both
-    compile with nvc++). Idempotent — second call is a no-op.
+    Called by the extension blocks that need it: Thrust and OMP-offload on
+    NVIDIA (both nvc++), OMP-offload on AMD (amdclang++). Idempotent — second
+    call is a no-op.
 
     Effect: distutils' UnixCCompiler will pick up CC/CXX/LDSHARED from
     os.environ and use them for every Extension in this setup() call.
     Also clears CFLAGS/CXXFLAGS/CPPFLAGS and rewrites sysconfig to drop
-    gcc-specific tokens nvc++ rejects (RHEL 9 CPython injects a long
-    list — see comment below).
+    tokens the chosen compiler rejects (see the two lists below).
 
-    Co-builds with the CPU extension are safe: nvc++ accepts the CPU
-    block's `-fopenmp -O3 -std=c++17` flags (treats -fopenmp as -mp).
+    Co-builds with the CPU extension are safe under either vendor: both nvc++
+    and amdclang++ accept the CPU block's `-fopenmp -O3 -std=c++17` (nvc++
+    treats -fopenmp as -mp; amdclang++ IS clang, so it takes them natively).
     """
-    if os.environ.get('_SBD_NVHPC_ROUTING_APPLIED'):
+    if os.environ.get('_SBD_GPU_ROUTING_APPLIED'):
         return
-    os.environ['_SBD_NVHPC_ROUTING_APPLIED'] = '1'
+    os.environ['_SBD_GPU_ROUTING_APPLIED'] = '1'
 
-    # Respect user-set CC/CXX (e.g. cross-toolchain); otherwise pin nvc++.
-    os.environ.setdefault('CC',       nvc_path)
-    os.environ.setdefault('CXX',      nvc_path)
-    os.environ.setdefault('LDSHARED', f'{nvc_path} -shared')
+    # Respect user-set CC/CXX (e.g. cross-toolchain); otherwise pin the GPU one.
+    os.environ.setdefault('CC',       gpu_path)
+    os.environ.setdefault('CXX',      gpu_path)
+    os.environ.setdefault('LDSHARED', f'{gpu_path} -shared')
     os.environ.setdefault('CFLAGS',   '')
     os.environ.setdefault('CXXFLAGS', '')
     os.environ.setdefault('CPPFLAGS', '')
@@ -274,29 +358,52 @@ def _route_build_through_nvhpc(nvc_path):
     # (requires v3+). distutils pulls these from sysconfig in addition
     # to os.environ.CFLAGS, so blanking the latter alone is not enough
     # — we rewrite the sysconfig dict itself.
+    #
+    # amdclang++ needs FAR less scrubbing, because it is clang and accepts the
+    # gcc spellings. Measured against ROCm 10.0 / AMD clang 23 with
+    # --offload-arch=gfx90a, every token above compiles clean EXCEPT
+    # -fcf-protection, which is rejected as "option 'cf-protection=return'
+    # cannot be specified on this target" -- the flag is applied to the amdgcn
+    # device pass too, and there it is meaningless. -march=x86-64-v2 is fine for
+    # clang and is deliberately NOT rewritten to v3 here; that rewrite exists
+    # only because nvc++ requires v3+.
     _cfg = sysconfig.get_config_vars()
-    _strip_tokens = (
-        '-grecord-gcc-switches',
-        '-Wp,-D_FORTIFY_SOURCE=2',
-        '-Wp,-D_GLIBCXX_ASSERTIONS',
-        '-fstack-protector-strong',
-        '-fasynchronous-unwind-tables',
-        '-fstack-clash-protection',
-        '-fcf-protection',
-        '-fwrapv',
-        '-Wno-unused-result',
-    )
+    if vendor == 'amd':
+        _strip_tokens = (
+            '-fcf-protection',
+        )
+    else:
+        _strip_tokens = (
+            '-grecord-gcc-switches',
+            '-Wp,-D_FORTIFY_SOURCE=2',
+            '-Wp,-D_GLIBCXX_ASSERTIONS',
+            '-fstack-protector-strong',
+            '-fasynchronous-unwind-tables',
+            '-fstack-clash-protection',
+            '-fcf-protection',
+            '-fwrapv',
+            '-Wno-unused-result',
+        )
     for _k in list(_cfg.keys()):
         _v = _cfg[_k]
         if not isinstance(_v, str):
             continue
         for _bad in _strip_tokens:
             _v = _v.replace(_bad, '')
-        _v = _v.replace('-march=x86-64-v2', '-march=x86-64-v3')
+        # nvc++ only: it rejects x86-64-v2 and requires v3+. clang accepts v2,
+        # so leave it alone there rather than silently raising the CPU baseline
+        # of the AMD build above what the caller's Python asked for.
+        if vendor != 'amd':
+            _v = _v.replace('-march=x86-64-v2', '-march=x86-64-v3')
         # conda's Python bakes '-B $CONDA_PREFIX/compiler_compat' into
         # CC/CXX/LDSHARED/LDCXXSHARED. nvc++ rejects -B and hands the
         # path to the linker as an input file, so drop just that flag
         # and keep conda's -L/-rpath entries intact.
+        #
+        # Dropped for amdclang++ too, for a different reason: clang accepts -B
+        # perfectly well, but that directory holds conda's own (old) `ld`, and
+        # the offload link runs through clang-linker-wrapper -> ld.lld. Letting
+        # -B redirect the linker there invites a mismatch for no benefit.
         _v = re.sub(r'-B\s*\S*compiler_compat\S*', '', _v)
         _cfg[_k] = re.sub(r' +', ' ', _v).strip()
 
@@ -320,6 +427,88 @@ def find_nvidia_hpc_sdk():
         print(f"Found nvc++ in PATH: {nvcxx_path}")
         return nvcxx_path, True
     return None, False
+
+
+def find_rocm_toolchain():
+    """Locate amdclang++ for the AMD OpenMP target-offload backend.
+
+    Deliberately the same shape as find_nvidia_hpc_sdk(): an explicit env var,
+    else PATH. ROCM_HOME is this project's knob, matching NVHPC_HOME, and its
+    job is picking a specific ROCm on a node with several installed -- common,
+    since ROCm ships side-by-side versioned trees.
+
+    Neither variable is required. A PATH lookup already covers both the
+    module-based case (`module add rocm/<ver>` prepends its bin) and a stock
+    install (ROCm's packages leave amdclang++ in /usr/bin via alternatives), and
+    not every cluster provides modules.
+
+    amdclang++ IS LLVM clang -- ROCm ships it with the amdgcn OpenMP offload
+    runtime and matching device libraries already built, so nothing has to be
+    compiled from source to get offload working. Unlike the NVHPC branch there
+    is no need to touch PATH: amdclang++ finds its device libraries relative to
+    its own InstalledDir, so invoking it by absolute path is enough.
+    """
+    import shutil
+    rocm_home = os.environ.get('ROCM_HOME') or None
+    if rocm_home:
+        # $ROCM_HOME/bin/amdclang++ is normally a symlink to the second path;
+        # older layouts only have lib/llvm/bin.
+        for rel in ('bin/amdclang++', 'lib/llvm/bin/amdclang++'):
+            cand = os.path.join(rocm_home, rel)
+            if os.path.exists(cand):
+                print(f"Found ROCm at: {rocm_home}")
+                return cand, True
+        print(f"Warning: ROCM_HOME set to {rocm_home} but amdclang++ not found")
+    amdcxx_path = shutil.which('amdclang++')
+    if amdcxx_path:
+        print(f"Found amdclang++ in PATH: {amdcxx_path}")
+        return amdcxx_path, True
+    return None, False
+
+
+def detect_gpu_toolchain():
+    """Pick the GPU toolchain to build with: ('nvidia'|'amd'|None, compiler).
+
+    NVHPC is probed first only because it is the long-established path here; a
+    machine with exactly one GPU toolchain installed gets that one either way.
+    SBD_GPU_VENDOR forces the choice for the rare host carrying both (a build
+    node serving a mixed cluster), where the auto-answer would otherwise be an
+    accident of probe order.
+
+    Note the asymmetry in what each vendor can build: nvc++ drives BOTH the
+    Thrust and the OpenMP-offload backends, whereas ROCm drives OpenMP offload
+    only. Upstream SBD's Thrust path is wired to nvc++ flags (-cuda, -gpu=), so
+    there is no rocThrust configuration to build even though some HIP scaffolding
+    exists upstream.
+    """
+    forced = (os.environ.get('SBD_GPU_VENDOR') or '').strip().lower()
+    if forced not in ('', 'nvidia', 'amd', 'none'):
+        print(f"Error: Invalid SBD_GPU_VENDOR={forced!r}. "
+              "Valid values: nvidia, amd, none")
+        sys.exit(1)
+    if forced == 'none':
+        print("SBD_GPU_VENDOR=none - skipping GPU toolchain detection")
+        return None, None
+
+    if forced != 'amd':
+        nvcxx, ok = find_nvidia_hpc_sdk()
+        if ok:
+            return 'nvidia', nvcxx
+        if forced == 'nvidia':
+            print("Error: SBD_GPU_VENDOR=nvidia but nvc++ was not found. "
+                  "Set NVHPC_HOME.")
+            sys.exit(1)
+
+    if forced != 'nvidia':
+        amdcxx, ok = find_rocm_toolchain()
+        if ok:
+            return 'amd', amdcxx
+        if forced == 'amd':
+            print("Error: SBD_GPU_VENDOR=amd but amdclang++ was not found. "
+                  "Set ROCM_HOME, or put ROCm's bin directory on PATH.")
+            sys.exit(1)
+
+    return None, None
 
 
 # Get MPI configuration
@@ -389,10 +578,25 @@ if _conda_prefix:
         extra_link_args.append(f'-Wl,--rpath,{_conda_lib}')
         print(f"RPATH fallback appended last: {_conda_lib}")
 
-# Detect NVHPC. nvc++ is shared between two GPU backends here:
-#   1. _core_gpu_thrust       (Thrust + CUDA path,  nvc++ -cuda)
-#   2. _core_gpu_omp_offload  (OpenMP target offload, nvc++ -mp=gpu)
-gpu_compiler, has_nvhpc = find_nvidia_hpc_sdk()
+# Detect the GPU toolchain. What it can build depends on the vendor:
+#   NVIDIA (nvc++)        1. _core_gpu_thrust       (Thrust + CUDA,  nvc++ -cuda)
+#                         2. _core_gpu_omp_offload  (OMP offload,  nvc++ -mp=gpu)
+#   AMD (amdclang++)         _core_gpu_omp_offload  (OMP offload, --offload-arch)
+#
+# The OMP-offload backend is ONE module and ONE device string ('gpu-omp') for
+# both vendors: it is the same bindings.cpp with the same USE_GPU +
+# USE_OMP_OFFLOAD macros, just a different compiler driving it. A given install
+# serves one GPU vendor -- no wheels are published, every install compiles on the
+# target machine -- so a vendor-suffixed second device string would buy nothing
+# and would undo the deprecation of gpu_nvidia_omp() in favour of gpu_omp().
+# Which vendor a build targeted is recorded on the module as
+# __sbd_offload_target__ (e.g. 'amdgcn-amd-amdhsa:gfx90a') so it stays
+# introspectable.
+gpu_vendor, gpu_compiler = detect_gpu_toolchain()
+has_gpu_toolchain = gpu_compiler is not None
+# Only NVHPC can build the Thrust backend: upstream SBD wires that path to nvc++
+# flags (-cuda, -gpu=), with no rocThrust configuration.
+has_nvhpc = gpu_vendor == 'nvidia'
 
 # Determine which backends to build.
 #   auto                  : cpu, plus both GPU backends when nvc++ is present
@@ -422,14 +626,19 @@ build_gpu_omp_offload = False
 if build_backend in ('auto', 'all'):
     build_cpu = True
     build_gpu_thrust = has_nvhpc
-    build_gpu_omp_offload = has_nvhpc
+    build_gpu_omp_offload = has_gpu_toolchain
     if has_nvhpc:
         print("\nAuto-detected nvc++ - will build CPU, Thrust GPU and "
               "OMP-offload GPU backends")
+    elif gpu_vendor == 'amd':
+        # No Thrust here, so `auto` yields two backends rather than three.
+        print("\nAuto-detected amdclang++ - will build CPU and OMP-offload GPU "
+              "backends (Thrust is NVIDIA-only)")
     else:
-        print("\nnvc++ not found - will build CPU backend only")
-    if build_backend == 'all' and not has_nvhpc:
-        print("Error: SBD_BUILD_BACKEND=all requires NVHPC_HOME / nvc++.")
+        print("\nNo GPU compiler found - will build CPU backend only")
+    if build_backend == 'all' and not has_gpu_toolchain:
+        print("Error: SBD_BUILD_BACKEND=all requires a GPU toolchain "
+              "(NVHPC_HOME / nvc++, or ROCM_HOME / amdclang++).")
         sys.exit(1)
 elif build_backend == 'cpu':
     build_cpu = True
@@ -437,14 +646,25 @@ elif build_backend == 'cpu':
 elif build_backend in ('gpu', 'gpu_thrust'):
     build_gpu_thrust = True
     print(f"\nBuilding Thrust GPU backend only (SBD_BUILD_BACKEND={build_backend})")
+    if gpu_vendor == 'amd':
+        # Fail rather than warn: on AMD this is not a maybe-it-links situation,
+        # there is no rocThrust configuration to build at all. Silently falling
+        # back to CPU under a name that says 'gpu' is exactly the confusion the
+        # AMD path is meant to remove.
+        print("Error: the Thrust backend is NVIDIA-only (upstream wires it to "
+              "nvc++ -cuda).\n"
+              "       On AMD use SBD_BUILD_BACKEND=gpu_omp_offload, or leave it "
+              "unset for CPU + OMP-offload.")
+        sys.exit(1)
     if not has_nvhpc:
         print("Warning: nvc++ not found, GPU build may fail")
 elif build_backend == 'gpu_omp_offload':
     build_gpu_omp_offload = True
     print("\nBuilding GPU OpenMP target-offload backend only "
           "(SBD_BUILD_BACKEND=gpu_omp_offload)")
-    if not has_nvhpc:
-        print("Error: gpu_omp_offload requires NVHPC_HOME / nvc++.")
+    if not has_gpu_toolchain:
+        print("Error: gpu_omp_offload requires a GPU toolchain: NVHPC_HOME / "
+              "nvc++, or ROCM_HOME / amdclang++.")
         sys.exit(1)
 else:
     print(f"Error: Invalid SBD_BUILD_BACKEND='{build_backend}'")
@@ -505,13 +725,17 @@ if build_gpu_thrust:
     print(f"Using compiler: {gpu_compiler}")
     # Auto-route the build through nvc++ + sanitize sysconfig flags.
     # No-op if the user already set CC/CXX manually.
-    _route_build_through_nvhpc(gpu_compiler)
-    gpu_arch = _resolve_gpu_arch()
+    _route_build_through_gpu_compiler(gpu_compiler, 'nvidia')
+    gpu_arch = _resolve_gpu_arch('nvidia', gpu_compiler)
     # Emitted only when the user asked for a specific arch; otherwise omitted
     # entirely so nvc++ picks the build machine's GPU (see _resolve_gpu_arch).
-    gpu_arch_flags = [f'-gpu={gpu_arch}'] if gpu_arch else []
+    gpu_arch_flags = _gpu_arch_flags('nvidia', gpu_arch)
     print(f"NVHPC -gpu= arch: {gpu_arch} (set SBD_GPU_ARCH to override; "
           "nvc++ accepts cc<XX> and sm_<XX>)")
+    # Stamped for the same reason as the offload backend: so a built module can
+    # be asked what it targets. Unambiguously NVIDIA, but the architecture is
+    # not, and an arch mismatch is the usual reason a module refuses to run.
+    thrust_target = f'cuda:{gpu_arch or "toolchain-default"}'
 
     gpu_thrust_ext = Extension(
         'sbd._core_gpu_thrust',
@@ -532,6 +756,7 @@ if build_gpu_thrust:
             '-fPIC',
             *gpu_arch_flags,
             '-DSBD_MODULE_NAME=_core_gpu_thrust',
+            f'-DSBD_OFFLOAD_TARGET="{thrust_target}"',
         ],
         # NOTE: -cudalib (no value) makes nvc++ blanket-link every CUDA
         # library NVHPC ships, including math libs SBD never calls
@@ -569,21 +794,62 @@ if build_gpu_thrust:
 
 if build_gpu_omp_offload:
     print("\nConfiguring GPU OpenMP target-offload backend (_core_gpu_omp_offload)")
-    print(f"Using compiler: {gpu_compiler}")
-    # Auto-route the build through nvc++ + sanitize sysconfig flags.
-    _route_build_through_nvhpc(gpu_compiler)
-    offload_arch = _resolve_gpu_arch()
-    offload_arch_flags = [f'-gpu={offload_arch}'] if offload_arch else []
-    print(f"NVHPC -gpu= arch: {offload_arch} (set SBD_GPU_ARCH to override)")
+    print(f"Using compiler: {gpu_compiler}  (vendor: {gpu_vendor})")
+    # Auto-route the build through the GPU compiler + sanitize sysconfig flags.
+    _route_build_through_gpu_compiler(gpu_compiler, gpu_vendor)
+    offload_arch = _resolve_gpu_arch(gpu_vendor, gpu_compiler)
+    offload_arch_flags = _gpu_arch_flags(gpu_vendor, offload_arch)
 
-    gpu_omp_offload_ext = Extension(
-        'sbd._core_gpu_omp_offload',
-        ['python/bindings.cpp'],
-        include_dirs=include_dirs,
-        libraries=libraries,
-        library_dirs=library_dirs,
-        language='c++',
-        extra_compile_args=[
+    if gpu_vendor == 'amd':
+        print(f"ROCm offload arch: {offload_arch} "
+              "(set SBD_GPU_ARCH to override, e.g. gfx90a or gfx90a,gfx942)")
+        if not offload_arch:
+            # No baked-in default exists for amdclang++, and an unpinned build
+            # would produce a module that cannot run anywhere.
+            print("Error: could not detect the AMD GPU architecture and "
+                  "SBD_GPU_ARCH is not set.\n"
+                  "       Set it explicitly, e.g. SBD_GPU_ARCH=gfx90a "
+                  "(MI250X) or gfx942 (MI300X).\n"
+                  "       `amdgpu-arch` on a machine with the target GPU "
+                  "prints the right value.")
+            sys.exit(1)
+        offload_target = f'amdgcn-amd-amdhsa:{offload_arch}'
+        # -fopenmp-offload-mandatory: refuse to emit a host fallback path at
+        # COMPILE time. It pairs with the runtime OMP_TARGET_OFFLOAD=MANDATORY
+        # that __init__.py sets before importing this backend; together they
+        # make a device-less rank a loud failure rather than a silent host run
+        # returning a plausible energy.
+        #
+        # No sbd_nvhpc_compat.h here: that shim exists because nvc++ lowers
+        # __builtin_ffsl inside `declare target` to a host-only symbol. clang
+        # lowers those builtins to device intrinsics natively, and the shim is
+        # #ifdef __NVCOMPILER anyway, so including it would be a no-op.
+        offload_compile_args = [
+            '-O3', '-std=c++17', '-fPIC',
+            '-fopenmp', '-fopenmp-targets=amdgcn-amd-amdhsa',
+            *offload_arch_flags,
+            '-fopenmp-offload-mandatory',
+            '-DSBD_TRADMODE',
+            '-DUSE_GPU',
+            '-DUSE_OMP_OFFLOAD',
+            '-DOMPI_SKIP_MPICXX',
+            '-DSBD_MODULE_NAME=_core_gpu_omp_offload',
+            f'-DSBD_OFFLOAD_TARGET="{offload_target}"',
+            # Selects the AMD device-visibility variables in bindings.cpp, so
+            # the NVIDIA build keeps reading CUDA_VISIBLE_DEVICES first exactly
+            # as before.
+            '-DSBD_OFFLOAD_VENDOR_AMD',
+            # Upstream headers are template-heavy and noisy under clang; these
+            # are style warnings in vendored code, not actionable here.
+            '-Wno-sign-compare', '-Wno-unused-variable',
+        ]
+        offload_link_args = extra_link_args + [
+            '-fopenmp', *offload_arch_flags,
+        ]
+    else:
+        print(f"NVHPC -gpu= arch: {offload_arch} (set SBD_GPU_ARCH to override)")
+        offload_target = f'nvptx64-nvidia-cuda:{offload_arch or "toolchain-default"}'
+        offload_compile_args = [
             '-O3', '-std=c++17', '-fPIC',
             '-mp=gpu',
             *offload_arch_flags,
@@ -593,16 +859,27 @@ if build_gpu_omp_offload:
             '-DUSE_OMP_OFFLOAD',
             '-DOMPI_SKIP_MPICXX',
             '-DSBD_MODULE_NAME=_core_gpu_omp_offload',
+            f'-DSBD_OFFLOAD_TARGET="{offload_target}"',
             # Force-include nvc++ shim so __builtin_ffsl / __builtin_popcountl
             # inside #pragma omp declare target lower to portable inlines
             # rather than __blt_pgi_ffsl (host-only NVHPC symbol that nvlink
             # can't resolve from device code).
             '-include', 'python/sbd_nvhpc_compat.h',
-        ],
-        extra_link_args=extra_link_args + [
+        ]
+        offload_link_args = extra_link_args + [
             '-mp=gpu',
             *offload_arch_flags,
-        ],
+        ]
+
+    gpu_omp_offload_ext = Extension(
+        'sbd._core_gpu_omp_offload',
+        ['python/bindings.cpp'],
+        include_dirs=include_dirs,
+        libraries=libraries,
+        library_dirs=library_dirs,
+        language='c++',
+        extra_compile_args=offload_compile_args,
+        extra_link_args=offload_link_args,
     )
     ext_modules.append(gpu_omp_offload_ext)
 
@@ -620,5 +897,6 @@ if build_cpu:
 if build_gpu_thrust:
     print("  - Thrust GPU backend:             sbd._core_gpu_thrust")
 if build_gpu_omp_offload:
-    print("  - OpenMP-offload GPU backend:     sbd._core_gpu_omp_offload")
+    print("  - OpenMP-offload GPU backend:     sbd._core_gpu_omp_offload"
+          f"  ({offload_target})")
 print()

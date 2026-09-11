@@ -9,13 +9,14 @@ SBD (Selected Basis Diagonalization) is a high-performance library for quantum c
 **Key Features:**
 - **TPB diagonalization** for quantum chemistry Hamiltonians
 - Three backends, selected per call at runtime via `device=`:
-  `'cpu'` (host OpenMP), `'gpu'` (NVHPC Thrust/CUDA) and `'gpu-omp'` (NVHPC
-  OpenMP target offload). All three can be built into one install; each is
-  imported only when first used
+  `'cpu'` (host OpenMP), `'gpu'` (NVHPC Thrust/CUDA, NVIDIA only) and
+  `'gpu-omp'` (OpenMP target offload, **NVIDIA or AMD**). All the backends your
+  toolchain supports can be built into one install; each is imported only when
+  first used
 - MPI parallelization
 - Integration with [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) for SQD workflows
 
-In addition to TPB, this package also contains experimental support for SBD's **General-Determinant Basis (GDP)** method. However, SBD's **Creation/Annihilation operator (CAOP)** method is currently not supported by this wrapper; users who need it should reference and use the C++ CLI apps in the upstream submodule (`vendor/sbd-upstream/apps/`).
+In addition to TPB, this package also contains experimental support for SBD's **General-Determinant Basis (GDB)** method. However, SBD's **Creation/Annihilation operator (CAOP)** method is currently not supported by this wrapper; users who need it should reference and use the C++ CLI apps in the upstream submodule (`vendor/sbd-upstream/apps/`).
 
 > [!NOTE]
 > This package is newly open-sourced. The Python API follows semantic versioning, but the build configuration and GPU backends have been exercised on a limited set of platforms — please report issues.
@@ -28,16 +29,20 @@ In addition to TPB, this package also contains experimental support for SBD's **
 
 **For the GPU backends** — optional; without them you get a CPU-only install:
 
+***On NVIDIA*** (both the Thrust and the OpenMP-offload backend):
+
 - *to build:* [NVIDIA HPC SDK](https://developer.nvidia.com/hpc-sdk) (`nvc++`).
   `SBD_GPU_ARCH` is **optional**: unset, nvc++ targets the GPU of the machine
   the toolchain was installed on; set, it is honored exactly and may name
   several generations at once (`cc80,cc90,cc100`) — see
-  [Environment Variables](#environment-variables). Set it for any build that
-  will run elsewhere, since no PTX is embedded and an unlisted architecture has
-  no JIT fallback. No GPU needs to be present on the build machine.
-- *to run:* a CUDA-capable GPU, and an MPI **built with CUDA support** — the GPU
-  paths pass device pointers to `MPI_Allreduce`, and a non-CUDA-aware MPI stalls
-  there. conda-forge's `mpich`/`openmpi` are not CUDA-aware.
+  [Environment Variables](#environment-variables). 
+
+***On AMD*** (the OpenMP-offload backend only):
+
+- *to build:* ROCm LLVM toolchain (`amdclang++`).
+  `SBD_GPU_ARCH` is optional here on a GPU system and is **detected** with
+  ROCm's `amdgpu-arch` (e.g. `gfx90a` on MI250X, `gfx942` on MI300X). However, on a GPU-less build host, you must
+  set it. see [Environment Variables](#environment-variables).
 
 Either install path compiles the C++ extension on the target machine;
 no pre-built wheels are published. The resulting binary depends on the
@@ -80,41 +85,54 @@ etc.), advance the local submodule and rebuild:
 
 ```bash
 git submodule update --remote vendor/sbd-upstream
+```
+
+After the upstream sbd code is cloned, run:
+```
 pip install -e . --no-build-isolation --force-reinstall --no-deps
 ```
 
 ### Environment Variables
 
 ```bash
-# --- required ONLY for the NVIDIA GPU backends (Thrust and OpenMP target-offload) ---
-#     Adjust the path.
+# --- NVIDIA GPU backends (Thrust and OpenMP target-offload): point at NVHPC.
+#     Only needed if nvc++ is not already on PATH. Adjust the path.
 export NVHPC_HOME=/opt/nvidia/hpc_sdk/Linux_x86_64/2025/compilers
 
-# --- OPTIONAL. Unset: nvc++ targets the GPU of the machine this toolchain was
-#     installed on -- right for a local build on the machine you will run on.
-#     Set it to pin the target, including SEVERAL generations at once:
-#       A100: cc80    H100: cc90    GB200 / B200: cc100
-#       ccall-major   one target per major generation
-#     Set it whenever the build TRAVELS -- a container image, a shared
-#     filesystem, a mixed-GPU cluster. No PTX is embedded, so an architecture
-#     that is not listed has no JIT fallback and simply will not run.
-export SBD_GPU_ARCH=cc80,cc90,cc100
+# --- AMD GPU backend (OpenMP target-offload): point at ROCm LLVM toolchain
+#     amdclang++ is found on $ROCM_HOME/bin
+export ROCM_HOME=/opt/rocm
 
-#     Verify what actually landed rather than trusting the flag:
-#       cuobjdump --list-elf $(python -c "import sbd,glob,os; \
-#         print(glob.glob(os.path.join(os.path.dirname(sbd.__file__),'_core_gpu_thrust*.so'))[0])")
+# --- OPTIONAL. Only for a host with BOTH GPU toolchains installed, where the
+#     auto-answer would be an accident of probe order: nvidia | amd | none
+export SBD_GPU_VENDOR=amd
+
+# --- OPTIONAL GPU architecture, spelled per vendor.
+#     NVIDIA: unset, nvc++ targets the GPU of the machine this toolchain was
+#       installed on. Set it to pin the target, including SEVERAL at once:
+#         A100: cc80    H100: cc90    GB200 / B200: cc100
+#         ccall-major   one target per major generation
+#     AMD: unset, the arch is DETECTED with ROCm's `amdgpu-arch`. Set it to pin,
+#       or when building on a host with no GPU (where detection cannot work and
+#       the build stops asking for it):
+#         MI250X: gfx90a    MI300X: gfx942    (several: gfx90a,gfx942)
+export SBD_GPU_ARCH=cc80,cc90,cc100     # NVIDIA
+export SBD_GPU_ARCH=gfx90a              # AMD
 
 # --- optional overrides; each has a working default ---
-#     Which backends to build: defaults to CPU always, plus both GPU
-#     backends (Thrust and OpenMP target-offload) when nvc++ is found.
+#     Which backends to build: defaults to CPU always, plus every GPU backend the
+#     detected toolchain supports -- Thrust AND OpenMP-offload under nvc++,
+#     OpenMP-offload only under amdclang++ (there is no rocThrust path).
 #     Set it only to narrow that:
-#       cpu               CPU only -- skip GPU even if nvc++ is present
-#       gpu               Thrust GPU only, no CPU -- errors if nvc++ missing
-#       gpu_omp_offload   OpenMP target-offload GPU only
+#       cpu               CPU only -- skip GPU even if a GPU compiler is present
+#       gpu               Thrust GPU only, no CPU -- NVIDIA only, errors on AMD
+#       gpu_omp_offload   OpenMP target-offload GPU only (either vendor)
 export SBD_BUILD_BACKEND=cpu
 
 #     MPI: defaults to whatever mpi4py is linked against. Set this only
 #     for layouts that cannot be inferred.
+#     NOTE: Every GPU backend hands MPI device pointers, so use a GPU-aware MPI:
+#           CUDA-aware on NVIDIA, ROCm-aware on AMD.
 export MPI_HOME=/path/to/mpi
 
 #     BLAS: defaults to whatever the linker finds, including a
@@ -133,11 +151,12 @@ conda create -y -n sbd -c conda-forge \
 conda activate sbd                         # always activate first
 
 # Install mpi4py against the host MPI
-# For GPU backends, the host MPI must be CUDA-aware.
+# For any GPU backend the host MPI must be GPU-aware:
+# CUDA-aware on NVIDIA, ROCm-aware on AMD.
 export MPI_HOME=/path/to/mpi
 MPICC=$MPI_HOME/bin/mpicc python -m pip install --no-binary=mpi4py --no-cache-dir mpi4py
-# NOTE: If you need only the CPU backend and no host MPI is available, run the command below,
-# which conda will choose a compatible MPI.
+# NOTE: If you need only the CPU backend and no host MPI is available, let conda
+# pick a compatible one with the command below (it is not GPU-aware).
 # conda install -y -c conda-forge mpi4py
 
 # confirm which MPI mpi4py uses -- setup.py builds against exactly this
@@ -156,9 +175,22 @@ pip install sbd-eigensolver
 ```bash
 python -c "import sbd; print(sbd.available_backends())"
 # CPU only:                       ['cpu']
-# NVHPC Thrust:                   ['gpu']
+# NVIDIA, default build:          ['cpu', 'gpu', 'gpu-omp']
+# AMD, default build:             ['cpu', 'gpu-omp']
 # OMP-offload-only install:       ['gpu-omp']
 ```
+
+On a GPU build, confirm which vendor and architecture the offload backend
+targets — one `'gpu-omp'` device serves both vendors, so the name alone does not
+say:
+
+```bash
+python -c "import sbd; print(sbd.get_backend('gpu-omp').__sbd_offload_target__)"
+# amdgcn-amd-amdhsa:gfx90a        AMD MI250X
+# nvptx64-nvidia-cuda:cc90        NVIDIA H100
+```
+
+The Thrust backend is stamped too (`cuda:cc90`); the CPU backend reports `None`.
 
 ## Examples
 
@@ -303,19 +335,36 @@ The optional `device` parameter overrides the default set by `init()`.
 
 ## Backend Architecture
 
-- Each backend is a separate pybind11 module compiled from the same `python/bindings.cpp` source with different `-D` macros (`SBD_THRUST` for the Thrust path, `USE_GPU + USE_OMP_OFFLOAD` for OMP-offload, neither for CPU). The Thrust and OMP-offload paths both compile with NVHPC `nvc++` (with `-cuda` and `-mp=gpu` respectively); CPU compiles with gcc/clang. Distinct C++ namespaces — no symbol collision when multiple coexist.
+- Each backend is a separate pybind11 module compiled from the same `python/bindings.cpp` source with different `-D` macros (`SBD_THRUST` for the Thrust path, `USE_GPU + USE_OMP_OFFLOAD` for OMP-offload, neither for CPU). On NVIDIA the Thrust and OMP-offload paths both compile with NVHPC `nvc++` (`-cuda` and `-mp=gpu` respectively); on AMD the OMP-offload path compiles with ROCm `amdclang++` (`-fopenmp-targets=amdgcn-amd-amdhsa --offload-arch=gfx*`); CPU compiles with gcc/clang. Distinct C++ namespaces — no symbol collision when multiple coexist.
+- **`'gpu-omp'` is vendor-neutral by design:** one module, one device string, for both NVIDIA and AMD. It is the same source with the same macros and only the compiler differs, and since no wheels are published — every install compiles on the target machine — an install serves one GPU vendor. `__sbd_offload_target__` records which one. Aliases (`gpu-amd-omp`, `gpu-rocm-omp`, `rocm`, `gpu-nvidia-omp`, …) resolve to it so a vendor-flavoured guess lands correctly.
+- **Thrust is NVIDIA-only.** Upstream SBD wires that path to `nvc++ -cuda`, so there is no rocThrust configuration to build; `SBD_BUILD_BACKEND=gpu` fails fast on AMD rather than quietly producing a CPU-only install under a name that says `gpu`.
 - `get_backend(device)` resolves the `device=` string and returns the appropriate module; all wrapper functions accept an optional `device` parameter. Aliases for back-compat live in `sbd._device_aliases`.
 - GPU device assignment: `gpu_id = mpi_rank % num_gpus` (set per `tpb_diag()` call in `bindings.cpp`); same logic for both Thrust and OMP-offload paths.
 - Backends differ in which phases run on the GPU vs the host. Davidson and the matvec (`mult`) live on the GPU under both Thrust and OMP-offload. The diagonal-Hamiltonian preconditioner (`makeQChamDiagTerms`) is GPU-resident under Thrust but runs on the host under OMP-offload (no `#pragma omp target` port in `tpb/qcham.h`).
+- Verify what GPU architecture is supported in the binary:
+  ```
+  NVIDIA: cuobjdump --list-elf   <the built _core_gpu_thrust*.so>
+  AMD:    llvm-objdump --offloading <the built _core_gpu_omp_offload*.so>
+  ```
+  Or just ask the module what it was built for:
+  ```
+       python -c "import sbd; \
+         print(sbd.get_backend('gpu-omp').__sbd_offload_target__)"
+         -> amdgcn-amd-amdhsa:gfx90a
+  ```
 
 ## Troubleshooting
 
-**GPU not building:** Check `which nvc++` and set `NVHPC_HOME`.
+**GPU not building:** On NVIDIA check `which nvc++` and set `NVHPC_HOME`. On AMD
+check `which amdclang++` and set `ROCM_HOME`. The build prints which toolchain it
+picked (`Found amdclang++ in PATH: …` / `Found NVIDIA HPC SDK at: …`) and, for
+the offload backend, the resolved architecture; on a host with both toolchains
+force the choice with `SBD_GPU_VENDOR=amd|nvidia`.
 
 **MPI errors:** Verify `MPI_HOME`, check `python -c "from mpi4py import MPI; print(MPI.Get_version())"`.
 
-**OMP-offload runs all land on GPU 0 in multi-GPU jobs:** symptom — every MPI rank shows large memory only on GPU 0 in `nvidia-smi`. The bindings call `omp_set_default_device(mpi_rank % n_dev)`, but `omp_get_num_devices()` can return 0 in some dlopen scenarios. The bindings fall back to parsing `CUDA_VISIBLE_DEVICES` to recover the device count, so make sure that env var is exported and lists all your GPUs (e.g. `0,1,2,3`). Slurm/`srun --gres=gpu:N` and OpenMPI's default binding policy already do this; if you've custom-restricted `CUDA_VISIBLE_DEVICES` to a single GPU per rank, set it manually before launch.
+**OMP-offload runs all land on GPU 0 in multi-GPU jobs:** symptom — every MPI rank shows large memory only on GPU 0 in `nvidia-smi` (or `rocm-smi`). The bindings call `omp_set_default_device(mpi_rank % n_dev)`, but `omp_get_num_devices()` can return 0 in some dlopen scenarios. The bindings fall back to counting the entries in the vendor's device-visibility variable — `CUDA_VISIBLE_DEVICES` on NVIDIA, `ROCR_VISIBLE_DEVICES` or `HIP_VISIBLE_DEVICES` on AMD — so make sure the relevant one is exported and lists all your GPUs (e.g. `0,1,2,3`). Slurm/`srun --gres=gpu:N` and OpenMPI's default binding policy already do this; if you've custom-restricted it to a single GPU per rank, set it manually before launch.
 
----
+**Ranks die with `Bus error` or `SIGSEGV` inside the MPI's own copy path** (`MPIR_Localcopy`, `ucp_worker_progress`, ...) **on a GPU backend:** the MPI is not GPU-aware and was handed a device pointer. Rebuild UCX `--with-cuda` / `--with-rocm`, and confirm with `ucx_info -d | grep -i 'Transport: cuda'` (or `rocm`). Two things mislead here. A partly GPU-aware stack fails in only one place: an MPICH with GPU support *disabled* over a CUDA-aware UCX ran OMP-offload fine and crashed only in Thrust, because the inter-rank path went through UCX while the local-copy path did not. And on AMD a non-ROCm-aware MPI does not crash at all — ROCm maps device memory into the process address space, so the host copy succeeds and merely stages everything through the host aperture (measured on MI250X, XNACK off, 8 ranks) — so a working AMD run is not evidence that the MPI is ROCm-aware.
 
 **Repository:** https://github.com/Qiskit/sbd-eigensolver-python

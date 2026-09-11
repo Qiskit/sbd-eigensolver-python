@@ -51,14 +51,30 @@ __version__ = version("sbd-eigensolver")
 # same directory succeeds on the device. Loading one backend per process is
 # therefore what makes co-resident .so files safe, and lets a single
 # environment serve all three.
+#
+# The AMD build has the same SHAPE of hazard -- there _core_cpu and
+# _core_gpu_omp_offload share LLVM's libomp, with only the offload one pulling
+# in libomptarget -- so the same one-backend-per-process discipline applies. It
+# has not been reproduced on AMD, and it should not need to be: the discipline
+# below prevents it either way, and OMP_TARGET_OFFLOAD=MANDATORY (set before the
+# import, further down) turns a demotion to the host into an abort rather than a
+# plausible wrong answer.
 # ---------------------------------------------------------------------------
 
 # (module name, canonical device, aliases)
+#
+# 'gpu-omp' is vendor-NEUTRAL: the same module serves NVIDIA (nvc++ -mp=gpu) and
+# AMD (amdclang++ --offload-arch=gfx*), since it is the same source with the same
+# macros and only the compiler differs. The vendor-flavoured names are aliases so
+# that guessing 'gpu-amd-omp' or 'rocm' lands on the right backend instead of
+# raising; get_backend('gpu-omp').__sbd_offload_target__ reports what a given
+# install was actually built for.
 _BACKEND_SPECS = (
     ('_core_cpu',             'cpu',     ()),
     ('_core_gpu_thrust',      'gpu',     ('gpu-thrust', 'gpu-nvidia', 'cuda')),
     ('_core_gpu_omp_offload', 'gpu-omp', ('gpu-omp-offload', 'gpu-nvhpc-omp',
-                                          'gpu-nvidia-omp')),
+                                          'gpu-nvidia-omp', 'gpu-amd-omp',
+                                          'gpu-rocm-omp', 'rocm')),
 )
 
 _backends = {}          # device -> imported module, populated on first use
@@ -237,17 +253,35 @@ _gpu_check_cache = None
 
 
 def _gpu_available():
-    """Check if GPU is available via nvidia-smi (cached)."""
+    """Check whether any GPU is present, via nvidia-smi or rocm-smi (cached).
+
+    rocm-smi is consulted as well as nvidia-smi because the 'gpu-omp' backend
+    serves AMD too. Checking only nvidia-smi made device='auto' resolve to 'cpu'
+    on an AMD host that had a perfectly good OMP-offload backend built -- a
+    silent downgrade to the slow path.
+
+    This asks about HARDWARE only. Whether a backend was compiled for it is a
+    separate question, answered by _scan_backends(); _resolve_device() needs both.
+    """
     global _gpu_check_cache
     if _gpu_check_cache is not None:
         return _gpu_check_cache
-    try:
-        result = subprocess.run(
-            ['nvidia-smi'], capture_output=True, timeout=2
-        )
-        _gpu_check_cache = result.returncode == 0
-    except Exception:
-        _gpu_check_cache = False
+    _gpu_check_cache = False
+    # Generous timeout for rocm-smi's sake: it is a Python program that
+    # enumerates devices and takes over a second on a multi-GCD node, where
+    # nvidia-smi answers in tens of milliseconds. Too short a timeout here
+    # reports "no GPU" on a machine that has them, silently selecting 'cpu'.
+    # Cached, so this is paid at most once per process.
+    for probe in ('nvidia-smi', 'rocm-smi'):
+        try:
+            result = subprocess.run(
+                [probe], capture_output=True, timeout=30
+            )
+            if result.returncode == 0:
+                _gpu_check_cache = True
+                break
+        except Exception:
+            continue
     return _gpu_check_cache
 
 
@@ -283,8 +317,11 @@ def init(device='cpu', comm_backend='mpi'):
 
     Args:
         device: Default compute device — 'cpu', 'gpu', 'gpu-omp', or 'auto'.
+                'gpu' is the NVIDIA-only Thrust backend; 'gpu-omp' is OpenMP
+                target offload and serves NVIDIA and AMD alike.
                 Aliases: 'gpu-thrust' / 'gpu-nvidia' / 'cuda' (= 'gpu');
-                         'gpu-omp-offload' / 'gpu-nvhpc-omp' / 'gpu-nvidia-omp' (= 'gpu-omp').
+                         'gpu-omp-offload' / 'gpu-nvhpc-omp' / 'gpu-nvidia-omp' /
+                         'gpu-amd-omp' / 'gpu-rocm-omp' / 'rocm' (= 'gpu-omp').
         comm_backend: Communication backend — 'mpi'.
 
     Raises:
