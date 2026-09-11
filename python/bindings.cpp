@@ -430,6 +430,10 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             hipSetDevice(myDevice);
 #endif
 #endif
+#ifdef USE_OMP_OFFLOAD
+            // Assign OMP-offload device based on MPI rank.
+            sbd_pin_offload_device(mpi_rank);
+#endif
 
             // Output variables
             double energy;
