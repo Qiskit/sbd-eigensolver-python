@@ -274,7 +274,10 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
           py::arg("bit_length"),
           py::arg("total_bit_length"));
 
-    m.def("makestring", &sbd::makestring,
+    // Upstream 93ebabe made makestring a template (const DetT&), so its address
+    // is no longer a single function pointer. Instantiate for the type the
+    // Python API passes -- a list of ints -- which keeps the signature as it was.
+    m.def("makestring", &sbd::makestring<std::vector<size_t>>,
           "Convert bitstring to string representation",
           py::arg("config"),
           py::arg("bit_length"),
