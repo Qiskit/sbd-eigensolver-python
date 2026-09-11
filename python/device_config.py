@@ -17,6 +17,7 @@ This module provides utilities to easily switch between CPU and GPU execution
 without changing user code.
 """
 
+import re
 import subprocess
 
 
@@ -212,9 +213,15 @@ class DeviceConfig:
             return cls._hip_cache
         try:
             result = subprocess.run(
-                ['rocm-smi'], capture_output=True, timeout=30
+                ['rocm-smi', '--showid'], capture_output=True, text=True,
+                timeout=30,
             )
-            cls._hip_cache = result.returncode == 0
+            # Require a GPU[<n>] line, not just exit 0: rocm-smi can succeed on
+            # a GPU-less build host, and auto() would pick an unrunnable backend.
+            cls._hip_cache = (
+                result.returncode == 0
+                and re.search(r'GPU\[\d+\]', result.stdout or '') is not None
+            )
         except Exception:
             cls._hip_cache = False
         return cls._hip_cache
@@ -290,7 +297,6 @@ def get_device_info() -> dict:
                 # --showid prints several lines per device (Device Name, Device
                 # ID, Rev, Subsystem ID, GUID), so a line count reported 40 for
                 # the 8 GCDs of a 4-card MI250X node.
-                import re
                 ids = re.findall(r'GPU\[(\d+)\]', result.stdout)
                 info['gpu_count'] = len(set(ids))
         except Exception:

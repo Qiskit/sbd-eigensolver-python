@@ -28,6 +28,7 @@ Device switching (CPU/GPU) within the same process:
 """
 
 import os
+import re
 from importlib.metadata import version
 import subprocess
 
@@ -267,19 +268,22 @@ def _gpu_available():
     if _gpu_check_cache is not None:
         return _gpu_check_cache
     _gpu_check_cache = False
-    # Generous timeout for rocm-smi's sake: it is a Python program that
-    # enumerates devices and takes over a second on a multi-GCD node, where
-    # nvidia-smi answers in tens of milliseconds. Too short a timeout here
-    # reports "no GPU" on a machine that has them, silently selecting 'cpu'.
-    # Cached, so this is paid at most once per process.
-    for probe in ('nvidia-smi', 'rocm-smi'):
+    # Per-probe timeouts so nvidia-smi cannot inherit rocm-smi's 30 s, and
+    # rocm-smi needs a GPU[<n>] line since it can exit 0 with no GPU present.
+    for probe, args, timeout in (
+        ('nvidia-smi', [], 5),
+        ('rocm-smi', ['--showid'], 30),
+    ):
         try:
             result = subprocess.run(
-                [probe], capture_output=True, timeout=30
+                [probe, *args], capture_output=True, text=True, timeout=timeout
             )
-            if result.returncode == 0:
-                _gpu_check_cache = True
-                break
+            if result.returncode != 0:
+                continue
+            if probe == 'rocm-smi' and not re.search(r'GPU\[\d+\]', result.stdout or ''):
+                continue
+            _gpu_check_cache = True
+            break
         except Exception:
             continue
     return _gpu_check_cache

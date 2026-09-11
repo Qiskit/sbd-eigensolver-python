@@ -449,16 +449,20 @@ def find_rocm_toolchain():
     its own InstalledDir, so invoking it by absolute path is enough.
     """
     import shutil
-    rocm_home = os.environ.get('ROCM_HOME') or None
-    if rocm_home:
+    # ROCM_HOME (this project's knob, matching NVHPC_HOME) wins over ROCM_PATH
+    # (ROCm's own variable, usually set by a module file).
+    for var in ('ROCM_HOME', 'ROCM_PATH'):
+        rocm_home = os.environ.get(var) or None
+        if not rocm_home:
+            continue
         # $ROCM_HOME/bin/amdclang++ is normally a symlink to the second path;
         # older layouts only have lib/llvm/bin.
         for rel in ('bin/amdclang++', 'lib/llvm/bin/amdclang++'):
             cand = os.path.join(rocm_home, rel)
             if os.path.exists(cand):
-                print(f"Found ROCm at: {rocm_home}")
+                print(f"Found ROCm at: {rocm_home} (via {var})")
                 return cand, True
-        print(f"Warning: ROCM_HOME set to {rocm_home} but amdclang++ not found")
+        print(f"Warning: {var} set to {rocm_home} but amdclang++ not found")
     amdcxx_path = shutil.which('amdclang++')
     if amdcxx_path:
         print(f"Found amdclang++ in PATH: {amdcxx_path}")
