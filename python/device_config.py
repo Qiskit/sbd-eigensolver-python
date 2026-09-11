@@ -100,7 +100,7 @@ class DeviceConfig:
         """Force NVHPC Thrust GPU execution.
 
         Requires SBD compiled with THRUST (the ``_core_gpu`` extension,
-        i.e. ``SBD_BUILD_BACKEND=gpu`` or ``=both``).
+        i.e. ``SBD_BUILD_BACKEND=gpu``, or the default ``auto``).
         """
         return cls(device='gpu',
                    use_precalculated_dets=use_precalculated_dets,
@@ -111,11 +111,17 @@ class DeviceConfig:
         """Force OpenMP target-offload GPU execution.
 
         Requires SBD compiled with the OMP-offload backend (the
-        ``_core_gpu_omp_offload`` extension, i.e.
-        ``SBD_BUILD_BACKEND=gpu_omp_offload``). The backend uses
-        ``nvc++ -mp=gpu`` with NVHPC's ``libnvomp`` runtime; it cannot
-        coexist in a single Python process with the CPU or Thrust GPU
-        backends (different OpenMP runtimes — install separately).
+        ``_core_gpu_omp_offload`` extension), which the default
+        ``SBD_BUILD_BACKEND=auto`` builds whenever ``nvc++`` is present; narrow
+        it to ``gpu_omp_offload`` to build only this one. The backend uses
+        ``nvc++ -mp=gpu`` with NVHPC's ``libnvomp`` runtime.
+
+        It installs alongside the CPU and Thrust backends -- backends are
+        imported lazily, one per process, which is what keeps them apart. The
+        one combination to avoid in a single process is this backend together
+        with the CPU one: they share ``libnvomp``, and loading ``_core_cpu``
+        first leaves it initialised host-only, after which offload regions run
+        on the host. See :func:`sbd.has_backend_conflict`.
         """
         return cls(device='gpu-omp', max_memory_gb=max_memory_gb)
 
@@ -244,19 +250,41 @@ def get_device_info() -> dict:
 
 
 def print_device_info():
-    """Print information about available compute devices."""
+    """Print the compiled backends, then the hardware they could run on.
+
+    Backends come first because they are what actually constrains a run: the
+    hardware being present says nothing about whether a backend was compiled
+    for it. An earlier version printed "CPU Available: Always" unconditionally
+    while sbd.available_backends() returned [] -- reported as issue #9.
+    """
     info = get_device_info()
-    
-    print("="*60)
+
+    from . import available_backends, backend_load_errors, has_backend_conflict
+    backends = available_backends()
+    errors = backend_load_errors()
+
+    print("=" * 60)
     print("SBD Device Information")
-    print("="*60)
-    
+    print("=" * 60)
+
+    print(f"Compiled backends: {', '.join(backends) if backends else 'NONE'}")
+    if not backends:
+        print("  Nothing was built, or nothing could be loaded. This install")
+        print('  cannot run: solve_sci will raise "Backend not available".')
+    for device, reason in sorted(errors.items()):
+        print(f"  {device:8} unavailable ({reason})")
+    if has_backend_conflict():
+        print("  WARNING: OMP-offload is loaded alongside CPU/Thrust. Offload")
+        print("           regions will silently run on the host even though the")
+        print("           GPU query below succeeds. Give _core_gpu_omp_offload.so")
+        print("           a directory of its own and rebuild.")
+
+    print("-" * 60)
+    print("Hardware detected (independent of what was compiled):")
     if info['gpu_available']:
-        print(f"✓ GPU Available: {info['gpu_type']}")
-        if info['gpu_count'] > 0:
-            print(f"  GPU Count: {info['gpu_count']}")
+        print(f"  GPU: {info['gpu_type']}"
+              + (f", count {info['gpu_count']}" if info['gpu_count'] > 0 else ""))
     else:
-        print("✗ No GPU detected")
-    
-    print(f"✓ CPU Available: Always")
-    print("="*60)
+        print("  GPU: none detected")
+    print("  CPU: always present")
+    print("=" * 60)
