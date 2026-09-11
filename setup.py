@@ -137,39 +137,31 @@ def _mpi_config_from_mpicc():
     elsewhere (Debian's Open MPI uses /usr/lib/<triple>/openmpi/include), and
     mpicc is the thing that knows where its own headers live.
 
-    `-show` is tried first because BOTH Open MPI and MPICH understand it and it
-    prints the whole command line. `--showme:compile`/`--showme:link` are an Open
-    MPI-ism -- MPICH's wrapper treats `--showme:compile` as a source file and
-    tries to compile it (exit 127), so probing that first would silently rule out
-    MPICH, which this package claims to support.
+    `-show` prints the whole command line and is understood by both Open MPI and
+    MPICH -- checked against openmpi 5.0.10 and mpich 5.0.1. Open MPI's
+    `--showme:compile` is deliberately not tried: it yields nothing `-show` does
+    not, and MPICH's wrapper treats it as a source file and tries to compile it.
 
-    Returns (include_dirs, library_dirs, libraries), or None if mpicc is absent
-    or neither form yields any flags.
+    Returns (include_dirs, library_dirs, libraries), or None if mpicc is absent or
+    prints no usable flags.
     """
-    def _parse(tokens):
-        inc, lib, libs = [], [], []
-        for t in tokens:
-            for pfx, acc in (('-I', inc), ('-L', lib), ('-l', libs)):
-                if t.startswith(pfx) and t[2:] and t[2:] not in acc:
-                    acc.append(t[2:])
-                    break
-        return inc, lib, libs
+    try:
+        tokens = subprocess.check_output(
+            ['mpicc', '-show'], universal_newlines=True,
+            stderr=subprocess.DEVNULL).split()
+    except Exception:
+        return None
 
-    for probe in (['-show'], ['--showme:compile', '--showme:link']):
-        tokens = []
-        try:
-            for arg in probe:
-                tokens += subprocess.check_output(
-                    ['mpicc', arg], universal_newlines=True,
-                    stderr=subprocess.DEVNULL).split()
-        except Exception:
-            continue
-        inc, lib, libs = _parse(tokens)
-        if inc or lib:
-            # MPICH reports -lmpi -lpmpi, Open MPI just -lmpi; either is what the
-            # wrapper itself would link. Fall back to -lmpi if neither said so.
-            return inc, lib, libs or ['mpi']
-    return None
+    inc, lib, libs = [], [], []
+    for token in tokens:
+        for prefix, acc in (('-I', inc), ('-L', lib), ('-l', libs)):
+            if token.startswith(prefix) and token[2:] and token[2:] not in acc:
+                acc.append(token[2:])       # MPICH repeats -I/-L; collapse them
+                break
+    if not (inc or lib):
+        return None
+    # Open MPI names -lmpi, MPICH -lmpi -lpmpi; take what the wrapper says.
+    return inc, lib, libs or ['mpi']
 
 
 def get_mpi_config():
