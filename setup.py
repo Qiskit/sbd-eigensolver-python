@@ -828,14 +828,18 @@ if build_gpu_thrust:
     # not, and an arch mismatch is the usual reason a module refuses to run.
     thrust_target = f'cuda:{gpu_arch or "toolchain-default"}'
 
-    # Upstream passes the arch AND two sub-options at both compile and link
-    # (CMakeLists sbd_configure_diag, thrust branch):
+    # DELIBERATE divergence from upstream, which passes
     #     -gpu=${SBD_GPU_ARCH},mem:unified,interceptdeallocations
-    # mem:unified puts device allocations in managed memory, which is what makes
-    # a device pointer host-accessible; interceptdeallocations lets the runtime
-    # reclaim them. We had neither, which is a real divergence from the reference
-    # build -- and a candidate explanation for the container Thrust segfault in
-    # MPIR_Localcopy, where a non-GPU-aware MPI host-copied a device pointer.
+    # (CMakeLists sbd_configure_diag, thrust branch). mem:unified puts device
+    # allocations in managed memory. Measured on 8x H100, h2o-1em4 (2.38e6
+    # determinants), 8 ranks on a 4x2 grid: Davidson went from 0.32 s to
+    # 0.75-0.86 s over three runs -- about 2.5x slower -- for bit-identical
+    # energies. Its plausible benefit is letting a non-GPU-aware MPI host-copy a
+    # device pointer, and SBD_NON_CUDA_AWARE_MPI below covers that directly. So
+    # the default stays the separate-memory build we have been validating, rather
+    # than a slower one users would need to understand in order to opt out of.
+    # It is still reachable without patching this file, since the whole value is
+    # passed through:  SBD_GPU_ARCH=cc90,mem:unified,interceptdeallocations
     # Upstream's thrust branch also carries two MPI-safety options. Mirror them
     # as BUILD-TIME env vars of the same name -- they are -D defines compiled into
     # the extension, so they must be set before `pip install` and changing one
@@ -855,9 +859,7 @@ if build_gpu_thrust:
         print("Thrust build-time options baked in: "
               + " ".join(d[2:] for d in _thrust_opt_defines))
 
-    _thrust_gpu_opts = 'mem:unified,interceptdeallocations'
-    thrust_gpu_flags = [f'-gpu={gpu_arch},{_thrust_gpu_opts}' if gpu_arch
-                        else f'-gpu={_thrust_gpu_opts}']
+    thrust_gpu_flags = list(gpu_arch_flags)
 
     gpu_thrust_ext = Extension(
         'sbd._core_gpu_thrust',
