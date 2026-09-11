@@ -358,7 +358,7 @@ The optional `device` parameter overrides the default set by `init()`.
     SBD_NON_CUDA_AWARE_MPI=1         stage every device buffer through host memory
     SBD_THRUST_SAFE_MPI_ALLREDUCE=1  stage only the allreduce (a subset of the above)
     ```
-    Both trade speed for reach: staging copies each buffer GPU-to-host and back, and the reduction then runs host-side rather than using the device collectives. Reach for them when a GPU backend crashes inside the MPI itself rather than in SBD.
+    Both make the Thrust path stage device buffers through host memory instead of handing MPI device pointers, so they add copies whose cost grows with how much data crosses MPI. Treat them as a compatibility fallback rather than a tuning knob: reach for them when a GPU backend crashes inside the MPI itself rather than in SBD. (On a single 8-GPU node the allreduce-only variant measured no slower than the default, but do not assume that holds for larger buffers or across nodes.)
 - Verify what GPU architecture is supported in the binary:
   ```
   NVIDIA: cuobjdump --list-elf   <the built _core_gpu_thrust*.so>
