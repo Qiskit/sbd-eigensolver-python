@@ -156,14 +156,6 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
     // ========================================================================
     // Bind TPB SBD configuration structure
     // ========================================================================
-        // bit_length must be in [1, 63]. bitadvance() (framework/bit_manipulation.h)
-        // computes ((size_t)1 << bit_length) - 1: at 64 that shift is undefined
-        // behavior for a 64-bit size_t (in practice, x86-64 shift instructions mask
-        // the count mod 64, so 1<<64 commonly evaluates as 1<<0=1, zeroing the mask
-        // bitadvance relies on -- silently corrupting determinant enumeration rather
-        // than crashing). Nothing upstream validates this; it is enforced here so
-        // every caller (direct API or either example script) is protected once,
-        // rather than only where a script happens to document the constraint.
         // h_comm_size is deliberately NOT exposed. Upstream declares the field
         // (sbdiag.h) but never reads it: diag() shadows it with a local
         //     h_comm_size = mpi_size / (task_comm_size * base_comm_size)
@@ -201,19 +193,8 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                       "Carryover ratio")
         .def_readwrite("threshold", &sbd::tpb::SBD::threshold,
                       "Carryover threshold")
-        .def_property("bit_length",
-                      [](const sbd::tpb::SBD &self) { return self.bit_length; },
-                      [](sbd::tpb::SBD &self, size_t value) {
-                          if (value < 1 || value > 63) {
-                              throw std::invalid_argument(
-                                  "bit_length must be in [1, 63] (got "
-                                  + std::to_string(value)
-                                  + "); 64 is undefined behavior in bitadvance(), "
-                                    "and 0 is meaningless.");
-                          }
-                          self.bit_length = value;
-                      },
-                      "Bit length for determinant representation. Must be 1-63.")
+        .def_readwrite("bit_length", &sbd::tpb::SBD::bit_length,
+                      "Bit length for determinant representation")
         .def_readwrite("dump_matrix_form_wf", &sbd::tpb::SBD::dump_matrix_form_wf,
                       "Filename to dump wavefunction in matrix form")
 #ifdef SBD_THRUST
@@ -276,19 +257,8 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                       "Weight truncation threshold applied before heatbath expansion")
         .def_readwrite("heatbath_batch_size", &sbd::gdb::SBD::heatbath_batch_size,
                       "Heatbath expansion batch size")
-        .def_property("bit_length",
-                      [](const sbd::gdb::SBD &self) { return self.bit_length; },
-                      [](sbd::gdb::SBD &self, size_t value) {
-                          if (value < 1 || value > 63) {
-                              throw std::invalid_argument(
-                                  "bit_length must be in [1, 63] (got "
-                                  + std::to_string(value)
-                                  + "); 64 is undefined behavior in bitadvance(), "
-                                    "and 0 is meaningless.");
-                          }
-                          self.bit_length = value;
-                      },
-                      "Bit length for determinant representation. Must be 1-63.")
+        .def_readwrite("bit_length", &sbd::gdb::SBD::bit_length,
+                      "Bit length for determinant representation")
         ;
 
     // ========================================================================

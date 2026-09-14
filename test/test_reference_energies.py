@@ -63,21 +63,14 @@ def _case_id(case) -> str:
 # throws "det_vector: elem_size mismatch" if a later diagonalization needs a different
 # one. Two molecules can therefore share a process only if they agree on it.
 #
-# The word count is ``ceil(2 * norb / bit_length)``, so a ``bit_length`` of 63 keeps it
-# at 1 for every reference molecule up to 31 orbitals: h2o (24), n2 (18) and nh3 (29).
+# The word count is ``ceil(2 * norb / bit_length)``, so a ``bit_length`` of 64 keeps it
+# at 1 for every reference molecule up to 32 orbitals: h2o (24), n2 (18) and nh3 (29).
 # The two larger ones, c2h2 (38) and c4h4 (44), would need 2 words and so cannot share
 # a process with these; adding them means a separate module, or forking per test.
 #
-# 63, not 64: bitadvance() (framework/bit_manipulation.h) computes
-# ((size_t)1 << bit_length) - 1, undefined behavior at 64 for a 64-bit size_t. That
-# path is unreachable from tpb_diag_from_files as this test calls it (bitadvance is
-# only reachable via mpi_redistribution/mpi_sort_bitarray, which TPB's file-loading
-# path never calls), but the config setter now enforces the range for every caller
-# regardless -- see #22-adjacent bindings.cpp validation.
-#
-# ``bit_length`` does not affect the result. Verified across 8, 20, 32, 48 and 63,
+# ``bit_length`` does not affect the result. Verified across 8, 20, 32, 48 and 64,
 # which span word counts 6 down to 1: the h2o energy was identical to ten digits.
-BIT_LENGTH = 63
+BIT_LENGTH = 64
 
 
 def _diagonalize(backend, fcidump, det_file, **overrides):
