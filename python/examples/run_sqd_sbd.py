@@ -93,6 +93,13 @@ def parse_args():
     sqd.add_argument("--occupancies_tol", type=float, default=1e-5,
                      help="Outer-loop convergence on the average orbital "
                           "occupancies.")
+    sqd.add_argument("--max_dim", type=int, default=None,
+                     help="Cap on single-spin strings per sector, so the subspace "
+                          "cannot exceed max_dim^2. This is the lever for runaway "
+                          "setup cost: SBD's helper construction (MakeHelpers) is "
+                          "host-side and superlinear in determinants per spin, and "
+                          "grows between iterations as carryover accumulates. "
+                          "Unset means no cap.")
     sqd.add_argument("--sqd_carryover_threshold", type=float, default=1e-4,
                      help="SQD keeps every determinant whose |coefficient| is at "
                           "least this, and carries it into the next iteration's "
@@ -131,6 +138,20 @@ def parse_args():
                      help="0=density only (default, sufficient for SQD), 1=full RDM")
     sbd.add_argument("--sbd_do_shuffle", "--shuffle", "--do_shuffle", type=int,
                      default=0, dest="do_shuffle")
+    sbd.add_argument("--sbd_use_precalculated_dets", type=int, default=1,
+                     choices=[0, 1],
+                     help="Thrust only. 1 precomputes a determinant index for every "
+                          "(alpha,beta) pair -- D_size x adets x bdets words on the "
+                          "GPU, i.e. the whole subspace, which is what runs out of "
+                          "memory on large runs. 0 uses per-thread storage instead: "
+                          "slower per matvec, far less memory, and it is the ONLY "
+                          "setting under which --sbd_max_memory_gb_for_determinants "
+                          "takes effect (mult_thrust.h:257-273).")
+    sbd.add_argument("--sbd_max_memory_gb_for_determinants", "--gpu-memory",
+                     type=int, default=-1,
+                     help="Thrust only, and only with --sbd_use_precalculated_dets 0: "
+                          "cap the per-thread determinant buffer in GB. -1 means "
+                          "uncapped.")
     sbd.add_argument("--sbd_bit_length", "--bit_length", type=int, default=20,
                      dest="bit_length",
                      help="Bits packed into each size_t of the bitstring "
@@ -279,6 +300,8 @@ def main():
         "do_rdm": args.do_rdm,
         "do_shuffle": args.do_shuffle,
         "bit_length": args.bit_length,
+        "use_precalculated_dets": bool(args.sbd_use_precalculated_dets),
+        "max_memory_gb_for_determinants": args.sbd_max_memory_gb_for_determinants,
         "adet_comm_size": args.adet_comm_size,
         "bdet_comm_size": args.bdet_comm_size,
         "task_comm_size": args.task_comm_size,
@@ -348,6 +371,7 @@ def main():
             energy_tol=args.energy_tol,
             occupancies_tol=args.occupancies_tol,
             carryover_threshold=args.sqd_carryover_threshold,
+            max_dim=args.max_dim,
             sci_solver=sbd_solver,
             symmetrize_spin=True,
             callback=callback,

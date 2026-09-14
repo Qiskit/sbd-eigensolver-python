@@ -491,6 +491,22 @@ def _create_sbd_config(config_dict: dict | None = None, backend=None, device_con
     sbd_data.bit_length = SBD_DEFAULT_BIT_LENGTH
 
     if config_dict:
+        # Warn on keys the config object does not carry, instead of dropping them.
+        # Two ways this bites: a typo, and the Thrust-only attributes
+        # (use_precalculated_dets, max_memory_gb_for_determinants) which exist only
+        # when the extension was built with SBD_THRUST -- so on a CPU or
+        # OMP-offload backend they are absent and a caller asking for them would
+        # otherwise get silence.
+        unknown = [k for k in config_dict if not hasattr(sbd_data, k)]
+        if unknown:
+            import warnings
+            warnings.warn(
+                "sbd_config keys ignored because this backend's config object does "
+                f"not have them: {', '.join(sorted(unknown))}. Thrust-only settings "
+                "are absent unless the extension was built with the Thrust backend; "
+                "anything else is likely a typo.",
+                RuntimeWarning, stacklevel=3,
+            )
         for key, value in config_dict.items():
             if hasattr(sbd_data, key):
                 setattr(sbd_data, key, value)
