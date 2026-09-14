@@ -137,21 +137,82 @@ full list, which is grouped by layer.
 
 #### SQD Parameter Guide
 
-SQD samples bitstrings from a quantum device, uses **configuration recovery** to
-correct noisy samples using an orbital occupancy vector, then subsamples into
-batches for diagonalization. Occupancies are averaged across batches and fed back
-to configuration recovery — this self-consistent loop typically converges in 3–5
-iterations. On the first iteration, no occupancies are available yet, so the raw
-samples are simply filtered by correct electron count (Hamming weight
-postselection).
+SQD samples bitstrings from a quantum device, repairs the noisy ones against an
+orbital-occupancy estimate (**configuration recovery**), subsamples them into
+batches, and diagonalizes each batch. What makes it a *loop* is that two results
+feed back into the next iteration.
+
+**How each iteration builds its subspace.** Three sources, concatenated in this
+priority order (qiskit-addon-sqd `fermion.py:551`):
+
+```
+strs_a = include_a  ++  carryover_strings_a  ++  samples_a    then dedupe, truncate to max_dim, sort
+```
+
+1. **`include_a`** — configurations passed as `include_configurations`. Static:
+   fixed before the loop, present every iteration, never updated.
+2. **`carryover_strings_a`** — from the *previous* iteration's wavefunction. Every
+   determinant whose `|coefficient|` is at least `--sqd_carryover_threshold`
+   survives, ranked by `|c|^2`.
+3. **`samples_a`** — drawn fresh this iteration, sorted by marginal probability.
+
+The order matters when `max_dim` is set: `include` and `carryover` are kept ahead of
+fresh samples, so if those two already fill the cap, this iteration's new samples are
+truncated away entirely.
+
+The samples are not re-used raw counts. Each iteration re-runs configuration
+recovery from the *original* bitstrings using the occupancies from the previous
+iteration's best batch (`fermion.py:502`), then subsamples. Recovery is **not
+cumulative** — it always re-derives from the raw samples, just with a better
+occupancy estimate each time. On iteration 1 there are no occupancies yet, so the
+raw samples are only filtered by electron count (Hamming-weight postselection).
+
+So exactly two things flow from iteration N to N+1, and neither is a tolerance:
+the **average orbital occupancies** (into recovery, source 3) and the
+**wavefunction amplitudes** (into carryover, source 2).
+
+**Parameters, by what they actually do.**
+
+*Shapes the subspace — changes the numbers you compute:*
 
 | Parameter | What it controls | Typical values |
 |-----------|-----------------|----------------|
-| `--counts FILE` | Load hardware bitstrings from a JSON file (use one or the other) | 10K–1M+ shots |
+| `--counts FILE` | Load hardware bitstrings from a JSON file (use this or `--samples`) | 10K–1M+ shots |
 | `--samples N` | Generate N random bitstrings at the target Hamming weights; plumbing check only, energy not meaningful | any |
-| `--samples_per_batch` | Subspace dimension per batch (accuracy vs. cost) | 300–800 (small), 1M+ (production) |
-| `--num_batches` | Independent subsamples for averaging occupancies | 3–10 (small), up to 100 (large) |
-| `--max_iterations` | SQD self-consistent loop iterations (not the inner `--sbd_max_it`) | 3–5 |
+| `--samples_per_batch` | Dominant control on subspace dimension. With `symmetrize_spin` the alpha and beta string sets are merged, so the subspace is up to `(2N)^2`, not `N^2` | see the cost note below |
+| `--num_batches` | Independent subsamples per iteration; occupancies are averaged across them | 3–10 (small), up to 100 (large) |
+| `--sqd_carryover_threshold` | `\|coefficient\|` cutoff for carrying a determinant into the next iteration. **Lower it to carry more** | `1e-4` default |
+| `include_configurations`, `max_dim` | Static floor, and the cap that truncates. Not exposed by this script | — |
+
+*Decides when to stop — changes nothing about the subspace:*
+
+| Parameter | What it controls | Typical values |
+|-----------|-----------------|----------------|
+| `--max_iterations` | Hard cap on loop iterations (not the inner `--sbd_max_it`) | 3–12 |
+| `--energy_tol` | Iteration-to-iteration change in energy | `1e-8` default |
+| `--occupancies_tol` | Largest change in any single orbital occupancy — an infinity norm, not an average | `1e-5` default |
+
+**Both stopping criteria must hold in the same iteration** — the test is an `and`
+(`fermion.py:584`). A run that reaches `--max_iterations` may be converged in
+energy while one stubborn orbital's occupancy is still moving, and loosening only
+one tolerance will not stop it. Watch the per-batch energies: while they still
+disagree, the loop has not converged regardless of what the total says.
+
+Neither tolerance is comparable to `--sbd_eps`, which is the residual norm inside a
+single diagonalization, not an energy difference between iterations.
+
+**A note on cost.** Small subspaces are dominated by Python-side work — parsing the
+counts file, configuration recovery over every raw bitstring, subsampling — not by
+the diagonalization. Measured on 8×H100 for a 45-orbital / 46-electron case with 1M
+sampled bitstrings, 3 batches, 3 iterations: `samples_per_batch=300` (subspace
+360,000) took 254 s, and `samples_per_batch=3000` (subspace 36,000,000 — 100× larger)
+took 326 s, only 1.28× longer, while lowering the energy by about 3 Ha. If a run
+looks cheap, the subspace is probably too small to be using the hardware.
+
+**SBD's own carryover plays no part in any of this.** `carryover_type` and friends
+are SBD's separate iterative scheme, for re-running SBD's CLI against its own
+`--carryover_adetfile`. They are deliberately not flags on this driver, and setting
+them through `sbd_config` cannot change an SQD result.
 
 **MPI work distribution:** All ranks diagonalize each batch together, then move
 to the next batch sequentially. Within each diagonalization, ranks form a 4D grid:
@@ -199,77 +260,6 @@ When using more than one rank, specify at least `--adet_comm_size`. Examples:
 with its own field names rather than TPB's. It is not exercised by these examples
 or by the test suite, so its decomposition is unvalidated and is deliberately not
 documented further here.
-
-## How the SQD loop changes the subspace each iteration
-
-A frequent question, so here is what actually happens. Each iteration rebuilds the
-subspace from three sources, in this priority order (qiskit-addon-sqd
-`fermion.py:551`):
-
-```
-strs_a = include_a  ++  carryover_strings_a  ++  samples_a      then dedupe, truncate to max_dim, sort
-```
-
-1. **`include_a`** — configurations you passed as `include_configurations`. Static:
-   fixed before the loop, present in every iteration, never updated.
-2. **`carryover_strings_a`** — from the *previous* iteration's wavefunction. Every
-   determinant whose `|coefficient|` is at least `--sqd_carryover_threshold`
-   survives, ranked by `|c|^2`. Lower the threshold to carry more.
-3. **`samples_a`** — freshly drawn this iteration, sorted by marginal probability.
-
-The samples are not simply re-used raw counts. Each iteration runs **configuration
-recovery** first: it starts again from the *original* bitstrings and re-repairs them
-using the average orbital occupancies from the previous iteration's best batch
-(`fermion.py:502`), then subsamples `num_batches` batches of `samples_per_batch`
-from that refreshed distribution. Recovery is not cumulative — it always re-derives
-from the raw samples, just with better occupancies each time.
-
-So exactly **two** things flow from iteration N into N+1, and neither is a
-tolerance:
-
-| channel | what it carries | where it lands |
-|---|---|---|
-| average orbital occupancies | a better estimate of which orbitals are occupied | configuration recovery, step 3 |
-| wavefunction amplitudes | which determinants were important | `carryover_strings_*`, step 2 |
-
-### Which parameter does what
-
-The three SQD parameters split cleanly, and it is worth keeping them apart:
-
-**Shapes the subspace** — changes what actually gets diagonalized:
-
-- `--sqd_carryover_threshold` (default `1e-4`) — the cutoff on `|coefficient|` for
-  surviving into the next iteration. **Lower it to carry more determinants
-  forward**, raise it to carry fewer. This is the only one of the three that
-  changes any number you compute.
-- `--samples_per_batch`, `--num_batches` — how many fresh samples enter, and how
-  many independent subspaces are diagonalized per iteration.
-- `include_configurations`, `max_dim` (not currently exposed by this script) — the
-  static floor, and the cap that truncates.
-
-**Decides when to stop** — changes nothing about the subspace, only how many
-iterations run:
-
-- `--energy_tol` (default `1e-8`) — the iteration-to-iteration change in energy.
-- `--occupancies_tol` (default `1e-5`) — the largest change in any single orbital
-  occupancy (an infinity norm, not an average).
-
-**Both stopping criteria must be satisfied in the same iteration** — the test is an
-`and` (`fermion.py:584`). A run that keeps iterating to `--max_iterations` may be
-converged in energy while the occupancies are still moving, or vice versa. Loosening
-only one will not stop it.
-
-One thing these tolerances are *not*: comparable to `--sbd_eps`. That is a residual
-norm inside a single diagonalization, not an energy difference between iterations.
-
-Two consequences worth knowing:
-
-- **Priority matters when `max_dim` is set.** `include` and `carryover` come first,
-  so if they already fill `max_dim`, fresh samples are truncated away.
-- **SBD's own carryover plays no part in this.** `carryover_type` and friends are
-  SBD's separate iterative scheme, for re-running SBD's CLI against its own
-  `--carryover_adetfile`. They are deliberately not flags on this driver, and setting them
-  through `sbd_config` cannot change an SQD result.
 
 ## Backend Selection
 
