@@ -221,12 +221,43 @@ using the average orbital occupancies from the previous iteration's best batch
 from that refreshed distribution. Recovery is not cumulative — it always re-derives
 from the raw samples, just with better occupancies each time.
 
-So exactly **two** things flow from iteration N into N+1:
+So exactly **two** things flow from iteration N into N+1, and neither is a
+tolerance:
 
-| channel | carries | controlled by |
+| channel | what it carries | where it lands |
 |---|---|---|
-| average orbital occupancies | improves recovery of the raw bitstrings | `--occupancies_tol` (convergence only) |
-| wavefunction amplitudes | selects which determinants carry over | `--sqd_carryover_threshold` |
+| average orbital occupancies | a better estimate of which orbitals are occupied | configuration recovery, step 3 |
+| wavefunction amplitudes | which determinants were important | `carryover_strings_*`, step 2 |
+
+### Which parameter does what
+
+The three SQD parameters split cleanly, and it is worth keeping them apart:
+
+**Shapes the subspace** — changes what actually gets diagonalized:
+
+- `--sqd_carryover_threshold` (default `1e-4`) — the cutoff on `|coefficient|` for
+  surviving into the next iteration. **Lower it to carry more determinants
+  forward**, raise it to carry fewer. This is the only one of the three that
+  changes any number you compute.
+- `--samples_per_batch`, `--num_batches` — how many fresh samples enter, and how
+  many independent subspaces are diagonalized per iteration.
+- `include_configurations`, `max_dim` (not currently exposed by this script) — the
+  static floor, and the cap that truncates.
+
+**Decides when to stop** — changes nothing about the subspace, only how many
+iterations run:
+
+- `--energy_tol` (default `1e-8`) — the iteration-to-iteration change in energy.
+- `--occupancies_tol` (default `1e-5`) — the largest change in any single orbital
+  occupancy (an infinity norm, not an average).
+
+**Both stopping criteria must be satisfied in the same iteration** — the test is an
+`and` (`fermion.py:584`). A run that keeps iterating to `--max_iterations` may be
+converged in energy while the occupancies are still moving, or vice versa. Loosening
+only one will not stop it.
+
+One thing these tolerances are *not*: comparable to `--sbd_eps`. That is a residual
+norm inside a single diagonalization, not an energy difference between iterations.
 
 Two consequences worth knowing:
 
