@@ -171,9 +171,11 @@ def main():
         _grid = (args.task_comm_size * args.adet_comm_size
                  * args.bdet_comm_size)
         if size % _grid:
-            print(f"  WARNING: {size} ranks is not a multiple of {_grid}; SBD "
-                  f"derives its helper dimension by integer division, so some "
-                  f"ranks may go unused")
+            print(f"  ERROR: {size} ranks is not a multiple of {_grid}. SBD "
+                  f"derives the helper dimension by integer division and then "
+                  f"requires task x adet x bdet x helper == ranks exactly, so this "
+                  f"will abort in TaskCommunicator with 'MPI Size of twister is not "
+                  f"a square of a integer'. Use a multiple of {_grid} ranks.")
         print(f"\nInput files:")
         print(f"  FCIDUMP: {args.fcidump}")
         print(f"  Alpha dets: {args.adetfile}")

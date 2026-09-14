@@ -275,9 +275,15 @@ into a fourth, "helper" dimension, computed as
 `ranks / (task_comm_size × adet_comm_size × bdet_comm_size)`.
 
 So 8 ranks with `--adet_comm_size 2 --bdet_comm_size 2` is valid: the grid is
-`1 × 2 × 2` and the helper dimension absorbs the remaining factor of 2. Because
-that division is integer, a rank count that is *not* a multiple silently leaves
-ranks unused rather than failing.
+`1 × 2 × 2` and the helper dimension absorbs the remaining factor of 2.
+
+A rank count that is **not** a multiple does not run with idle ranks — it **aborts**.
+SBD derives the helper dimension by integer division and then requires
+`task × adet × bdet × helper == ranks` exactly (`TaskCommunicator`,
+`chemistry/tpb/helper.h`), so e.g. 8 ranks with a grid of 3 gives
+`helper = 2`, `3 × 2 = 6 ≠ 8`, and the run stops with
+`ValueError: MPI Size of twister is not a square of a integer`. That message names
+neither the grid nor the rank count, so if you see it, check this arithmetic first.
 
 When using more than one rank, specify at least `--adet_comm_size`. Examples:
 

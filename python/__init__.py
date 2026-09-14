@@ -530,37 +530,6 @@ def sort_bitarray(dets, device=None):
     return get_backend(device).sort_bitarray(dets)
 
 
-def _warn_rank_grid(sbd_data, *, gdb=False):
-    """Warn when the rank count is not a multiple of the requested grid.
-
-    SBD does not validate this. `DetBasisCommunicator` is pure modular arithmetic
-    and `diag()` derives the helper dimension by INTEGER division
-    (`mpi_size / (task * base)`), so a rank count that does not divide evenly just
-    yields a smaller helper dimension and leaves the remainder idle -- correct
-    answer, fewer resources, no message. Warn rather than raise: upstream accepts
-    it, and refusing to run would override a choice that is legal, merely wasteful.
-    """
-    try:
-        size = _global_comm.Get_size()
-        if gdb:
-            grid = int(sbd_data.t_comm_size) * int(sbd_data.b_comm_size)
-            names = "t_comm_size x b_comm_size"
-        else:
-            grid = (int(sbd_data.task_comm_size) * int(sbd_data.adet_comm_size)
-                    * int(sbd_data.bdet_comm_size))
-            names = "task_comm_size x adet_comm_size x bdet_comm_size"
-    except Exception:            # never let a diagnostic break the call
-        return
-    if grid > 0 and size % grid:
-        import warnings
-        warnings.warn(
-            f"{size} MPI ranks is not a multiple of {grid} ({names}). SBD derives "
-            f"the helper dimension by integer division, so {size % grid} rank(s) "
-            f"will sit idle. Use a multiple of {grid} ranks, or adjust the grid.",
-            RuntimeWarning, stacklevel=3,
-        )
-
-
 def tpb_diag_from_files(fcidumpfile, adetfile, sbd_data,
                         loadname="", savename="", device=None):
     """
@@ -580,7 +549,6 @@ def tpb_diag_from_files(fcidumpfile, adetfile, sbd_data,
     """
     _ensure_initialized()
     backend = get_backend(device)
-    _warn_rank_grid(sbd_data, gdb=False)
     return backend.tpb_diag_from_files(
         _global_comm, sbd_data, fcidumpfile, adetfile, loadname, savename
     )
@@ -606,7 +574,6 @@ def tpb_diag(fcidump, adet, bdet, sbd_data,
     """
     _ensure_initialized()
     backend = get_backend(device)
-    _warn_rank_grid(sbd_data, gdb=False)
     return backend.tpb_diag(
         _global_comm, sbd_data, fcidump, adet, bdet, loadname, savename
     )
@@ -643,7 +610,6 @@ def gdb_diag(fcidump, det, sbd_data,
     """
     _ensure_initialized()
     backend = get_backend(device)
-    _warn_rank_grid(sbd_data, gdb=True)
     return backend.gdb_diag(
         _global_comm, sbd_data, fcidump, det, loadname, savename
     )

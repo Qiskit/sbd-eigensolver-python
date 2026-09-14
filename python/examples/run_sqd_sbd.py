@@ -162,8 +162,9 @@ def parse_args():
     # ---- MPI decomposition: hardware shape, not physics ----------------------
     mpi = p.add_argument_group(
         "MPI decomposition",
-        "Rank grid. task x adet x bdet must divide the rank count; the remainder "
-        "becomes the derived helper dimension.")
+        "Rank grid. task x adet x bdet must DIVIDE the rank count exactly: the "
+        "quotient becomes the derived helper dimension, and SBD aborts if the "
+        "product does not come back to the rank count.")
     mpi.add_argument("--adet_comm_size", type=int, default=1)
     mpi.add_argument("--bdet_comm_size", type=int, default=1)
     mpi.add_argument("--task_comm_size", type=int, default=1)
