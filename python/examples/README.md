@@ -182,7 +182,8 @@ the **average orbital occupancies** (into recovery, source 3) and the
 | `--samples_per_batch` | Dominant control on subspace dimension. With `symmetrize_spin` the alpha and beta string sets are merged, so the subspace is up to `(2N)^2`, not `N^2` | `3000` (default); see the cost note below |
 | `--num_batches` | Independent subsamples per iteration; occupancies are averaged across them | 3–10 (small), up to 100 (large) |
 | `--sqd_carryover_threshold` | `\|coefficient\|` cutoff for carrying a determinant into the next iteration. **Lower it to carry more** | `1e-4` (default) |
-| `include_configurations`, `max_dim` | Static floor, and the cap that truncates. Not exposed by this script | — |
+| `--max_dim` | Cap on strings per spin sector, so the subspace cannot exceed `max_dim^2`. The main brake on runaway setup cost | unset (no cap) |
+| `include_configurations` | Static floor, present in every iteration. Not exposed by this script | — |
 
 *Decides when to stop — changes nothing about the subspace:*
 
@@ -200,6 +201,8 @@ the **average orbital occupancies** (into recovery, source 3) and the
 | `--sbd_max_it` | Cap on Davidson iterations. Reaching it before `--sbd_eps` returns a partially converged vector **with no warning** — watch the `tol=` values SBD prints, and cross-batch agreement | `10` |
 | `--sbd_max_nb` | Davidson basis vectors (block size) | `10` |
 | `--sbd_method` | 0=Davidson, 1=Davidson+Ham, 2=Lanczos, 3=Lanczos+Ham | `0` |
+| `--sbd_use_precalculated_dets` | Thrust only. `1` precomputes a determinant index for **every** (α,β) pair — the whole subspace, on the GPU. `0` uses per-thread storage: slower per matvec, far less memory | `1` |
+| `--sbd_max_memory_gb_for_determinants` | Thrust only, and **only consulted when `--sbd_use_precalculated_dets 0`** (`mult_thrust.h:257-273`). Caps the per-thread buffer in GB | `-1` (uncapped) |
 
 For reference, upstream's own `TPB_SBD` struct defaults are looser still (`max_it=1`,
 `eps=1e-4`), and `run_sbd_diag.py` uses `eps=1e-3`. On the h2o counts case,
@@ -221,6 +224,23 @@ sampled bitstrings, 3 batches, 3 iterations: `samples_per_batch=300` (subspace
 360,000) took 254 s, and `samples_per_batch=3000` (subspace 36,000,000 — 100× larger)
 took 326 s, only 1.28× longer, while lowering the energy by about 3 Ha. If a run
 looks cheap, the subspace is probably too small to be using the hardware.
+
+**When the subspace or memory runs away.** The subspace grows every iteration —
+carryover accumulates on top of fresh samples — so a run that starts comfortably can
+fail later. Two symptoms, one cause. Setup time exploding between iterations (the
+`Elapsed time for helper construction` line) is host-side work: `MakeHelpers` is
+superlinear in determinants per spin, and no GPU setting affects it. A
+`cudaErrorMemoryAllocation` on the Thrust backend is the determinant index, which by
+default is allocated over the entire subspace.
+
+Reach for them in this order. **`--max_dim`** bounds the subspace directly and fixes
+both symptoms at once. **Raising `--sqd_carryover_threshold`** carries fewer
+determinants forward, which is the right move when the *growth* between iterations is
+the problem rather than the starting size. **`--sbd_use_precalculated_dets 0`**
+(optionally with `--sbd_max_memory_gb_for_determinants N`) cuts GPU memory at some
+cost per matvec. Note the diagonalization itself is rarely the bottleneck: an
+800M-determinant Davidson solve measured 1.0 s against 9.3 s of helper construction
+in the same iteration, so tune the subspace, not the solver.
 
 **SBD's own carryover plays no part in any of this.** `carryover_type` and friends
 are SBD's separate iterative scheme, for re-running SBD's CLI against its own
