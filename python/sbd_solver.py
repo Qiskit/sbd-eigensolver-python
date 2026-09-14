@@ -214,51 +214,46 @@ def _solve_sci_core(
     occupancies_b = density[1::2]
     occupancies = (occupancies_a, occupancies_b)
 
-    co_strings_a = _sbd_dets_to_ci_strings(
-        results["carryover_adet"], norb, backend, sbd_data.bit_length
-    )
-    co_strings_b = _sbd_dets_to_ci_strings(
-        results["carryover_bdet"], norb, backend, sbd_data.bit_length
-    )
+    # Read wavefunction coefficients from the binary dump.
+    #
+    # SaveMatrixFormWF (upstream chemistry/tpb/restart.h) writes the FULL input
+    # subspace -- adet x bdet, row-major, and it self-checks that total -- never
+    # the carryover subset, whatever carryover_type is set to. Sizing this read
+    # against the carryover counts therefore never matched under the default
+    # carryover_type=1 / ratio=0.1, and the previous code answered the mismatch by
+    # substituting a uniform array: a correctly-shaped, normalised matrix that
+    # looks like a wavefunction and carries no information. That was silent, and
+    # it mattered -- qiskit-addon-sqd selects the next iteration's determinants by
+    # amplitude magnitude (fermion.py, _carryover_* / weights_a / weights_b), so
+    # every iteration after the first was seeded from uniform weights. See #19.
+    #
+    # The dump is requested unconditionally above, so neither a missing file nor a
+    # size mismatch is a situation to paper over: both mean the run did not do what
+    # was asked, and a loud failure is the only honest response.
+    n_a = len(strings_a)
+    n_b = len(strings_b)
+    if not wf_dump_file.exists():
+        raise RuntimeError(
+            f"SBD wrote no wavefunction dump at {wf_dump_file}. It is requested on "
+            "every call, so a missing file means the diagonalization did not "
+            "complete as expected."
+        )
+    flat = np.fromfile(str(wf_dump_file), dtype=np.float64)
+    if flat.size != n_a * n_b:
+        raise RuntimeError(
+            f"wavefunction dump at {wf_dump_file} holds {flat.size} amplitudes, "
+            f"expected {n_a * n_b} ({n_a} alpha x {n_b} beta over the input "
+            "subspace). SaveMatrixFormWF writes the full subspace; a different "
+            "size means the dump and the subspace have diverged."
+        )
 
-    # Read wavefunction coefficients from binary dump
-    n_alpha_co = len(co_strings_a)
-    n_beta_co = len(co_strings_b)
-    amplitudes = None
-    if n_alpha_co > 0 and n_beta_co > 0 and wf_dump_file.exists():
-        flat = np.fromfile(str(wf_dump_file), dtype=np.float64)
-        if flat.size == n_alpha_co * n_beta_co:
-            amplitudes = flat.reshape(n_alpha_co, n_beta_co)
-
-    # Build SCIState with fallbacks if wavefunction file is missing/malformed
-    if amplitudes is not None:
-        sci_state = SCIState(
-            amplitudes=amplitudes,
-            ci_strs_a=co_strings_a,
-            ci_strs_b=co_strings_b,
-            norb=norb,
-            nelec=nelec,
-        )
-    elif n_alpha_co > 0 and n_beta_co > 0:
-        amplitudes = np.ones((n_alpha_co, n_beta_co)) / np.sqrt(n_alpha_co * n_beta_co)
-        sci_state = SCIState(
-            amplitudes=amplitudes,
-            ci_strs_a=co_strings_a,
-            ci_strs_b=co_strings_b,
-            norb=norb,
-            nelec=nelec,
-        )
-    else:
-        n_a = len(strings_a)
-        n_b = len(strings_b)
-        amplitudes = np.ones((n_a, n_b)) / np.sqrt(n_a * n_b)
-        sci_state = SCIState(
-            amplitudes=amplitudes,
-            ci_strs_a=strings_a,
-            ci_strs_b=strings_b,
-            norb=norb,
-            nelec=nelec,
-        )
+    sci_state = SCIState(
+        amplitudes=flat.reshape(n_a, n_b),
+        ci_strs_a=strings_a,
+        ci_strs_b=strings_b,
+        norb=norb,
+        nelec=nelec,
+    )
 
     return SCIResult(energy, sci_state, orbital_occupancies=occupancies)
 

@@ -14,11 +14,14 @@ The standalone `run_sbd_diag.py` script needs nothing beyond what
 
 The SQD examples — `run_sqd_sbd.py` and `run_sqd_sbd.ipynb` — wrap SBD
 with the qiskit-addon-sqd self-consistent loop, which pulls in three
-extra Python packages. Install them once into the same venv:
+extra Python packages. Install them once into the same environment SBD
+was built in:
 
 ```bash
-source ~/venvs/<your-sbd-venv>/bin/activate
-pip install pyscf qiskit "qiskit-addon-sqd>=0.13.1"
+conda activate sbd          # the env from the Installation section of ../../README.md
+pip install qiskit "qiskit-addon-sqd>=0.13.1"
+# pyscf is already there if you used the conda recipe in ../../README.md;
+# otherwise:  conda install -y -c conda-forge pyscf
 ```
 
 - **`pyscf`** — reads FCIDUMP, restores 4-fold integral symmetry.
@@ -148,8 +151,10 @@ postselection).
 | `--max_iterations` | SQD self-consistent loop iterations (not SBD `--iteration`) | 3–5 |
 
 **MPI work distribution:** All ranks diagonalize each batch together, then move
-to the next batch sequentially. Within each diagonalization, ranks form a 3D grid:
-`adet_comm_size × bdet_comm_size × task_comm_size = total ranks`. More batches
+to the next batch sequentially. Within each diagonalization, ranks form a 4D grid:
+`task_comm_size × adet_comm_size × bdet_comm_size × helper`, where the helper
+dimension is not set directly — SBD derives it as
+`ranks / (task_comm_size × adet_comm_size × bdet_comm_size)`. More batches
 increases wall time linearly but does not require more ranks.
 
 ### 3. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
@@ -166,20 +171,37 @@ pytest --nbmake run_sqd_sbd.ipynb      # what CI runs; needs the nbtest extra
 
 ## MPI Decomposition
 
-Total MPI ranks must equal `task_comm_size × adet_comm_size × bdet_comm_size`.
+Total MPI ranks must be a **multiple** of
+`task_comm_size × adet_comm_size × bdet_comm_size` — not equal to it. SBD splits
+the ranks you asked for across those three dimensions and puts whatever remains
+into a fourth, "helper" dimension, computed as
+`ranks / (task_comm_size × adet_comm_size × bdet_comm_size)`.
+
+So 8 ranks with `--adet_comm_size 2 --bdet_comm_size 2` is valid: the grid is
+`1 × 2 × 2` and the helper dimension absorbs the remaining factor of 2. Because
+that division is integer, a rank count that is *not* a multiple silently leaves
+ranks unused rather than failing.
 
 When using more than one rank, specify at least `--adet_comm_size`. Examples:
 
-| Ranks | Decomposition |
-|-------|---------------|
-| 1 | default (all = 1) |
-| 2 | `--adet_comm_size 2` |
-| 4 | `--adet_comm_size 2 --bdet_comm_size 2` |
-| 8 | `--adet_comm_size 2 --bdet_comm_size 2 --task_comm_size 2` |
+| Ranks | Decomposition | Helper |
+|-------|---------------|--------|
+| 1 | default (all = 1) | 1 |
+| 2 | `--adet_comm_size 2` | 1 |
+| 4 | `--adet_comm_size 2 --bdet_comm_size 2` | 1 |
+| 8 | `--adet_comm_size 2 --bdet_comm_size 2` | 2 |
+| 8 | `--adet_comm_size 2 --bdet_comm_size 2 --task_comm_size 2` | 1 |
+
+**GDB** (`gdb_diag`) decomposes differently: `t_comm_size × b_comm_size × helper`,
+with its own field names rather than TPB's. It is not exercised by these examples
+or by the test suite, so its decomposition is unvalidated and is deliberately not
+documented further here.
 
 ## Backend Selection
 
-All compiled backends load eagerly at import. Select per-call via `--device`:
+Every backend the toolchain supported was compiled into this one install, and
+each is imported **lazily, on first use** — normally one per process. Select
+per-call via `--device`:
 
 ```bash
 --device cpu       # host OpenMP (default)
@@ -188,18 +210,28 @@ All compiled backends load eagerly at import. Select per-call via `--device`:
 --device auto      # GPU if available, else CPU
 ```
 
-`gpu-omp` links a different OpenMP runtime (`libnvomp`) than `cpu`/`gpu`, so it is
-normally built into its own install — see the [Python Bindings README](../../README.md).
-`sbd.available_backends()` reports what the current install actually has.
+`sbd.available_backends()` reports what this install actually has (a static scan
+— it does not import anything, so it is safe to call outside `mpirun`), and
+`sbd.loaded_backends()` reports what the current process has pulled in.
 
-Within Python, backends can also be switched at runtime without re-initialization:
+Lazy loading is what makes the three backends safe to co-install: see
+[Backend Architecture](../../README.md#backend-architecture) in the Python
+Bindings README for why. One consequence is worth knowing when you write your
+own driver — **do not import the CPU and `gpu-omp` backends into the same
+process.** They share NVHPC's `libnvomp`, and loading `_core_cpu` first leaves
+it initialised host-only, after which offload regions run on the host while
+device queries still report a GPU. `sbd.has_backend_conflict()` returns True if
+that has happened. Loading `cpu` and `gpu` (Thrust) together is fine.
+
+Within Python, backends can be selected per call — no re-initialization needed:
 
 ```python
 import sbd
 
 # No init() needed — auto-initializes on first call
 result_cpu = sbd.tpb_diag(..., device='cpu')
-result_gpu = sbd.tpb_diag(..., device='gpu')
+result_gpu = sbd.tpb_diag(..., device='gpu')     # fine alongside 'cpu'
+# result_omp = sbd.tpb_diag(..., device='gpu-omp')   # NOT in the same process as 'cpu'
 ```
 
 ## Available Test Data

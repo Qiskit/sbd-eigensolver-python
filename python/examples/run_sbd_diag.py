@@ -164,7 +164,16 @@ def main():
         print(f"  Method: Davidson")
         print(f"  Max iterations: {config.max_it}")
         print(f"  Tolerance: {config.eps}")
-        print(f"  MPI configuration: {args.task_comm_size} × {args.adet_comm_size} × {args.bdet_comm_size} = {size} ranks")
+        print(f"  MPI ranks: {size}")
+        print(f"  MPI configuration: task_comm_size={args.task_comm_size} "
+              f"adet_comm_size={args.adet_comm_size} "
+              f"bdet_comm_size={args.bdet_comm_size}")
+        _grid = (args.task_comm_size * args.adet_comm_size
+                 * args.bdet_comm_size)
+        if size % _grid:
+            print(f"  WARNING: {size} ranks is not a multiple of {_grid}; SBD "
+                  f"derives its helper dimension by integer division, so some "
+                  f"ranks may go unused")
         print(f"\nInput files:")
         print(f"  FCIDUMP: {args.fcidump}")
         print(f"  Alpha dets: {args.adetfile}")

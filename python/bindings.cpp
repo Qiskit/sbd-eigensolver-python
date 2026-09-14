@@ -14,10 +14,16 @@
  * @file python/bindings.cpp
  * @brief Python bindings for SBD TPB diagonalization using pybind11
  *
- * This file is compiled three times with different module names + flags:
+ * This file is compiled once per backend, with different module names + flags:
  * - _core_cpu                : CPU backend (host OpenMP via -fopenmp)
  * - _core_gpu_thrust         : Thrust GPU backend  (with -DSBD_THRUST,    nvc++ -cuda)
- * - _core_gpu_omp_offload    : OpenMP-offload GPU  (with -DUSE_OMP_OFFLOAD, nvc++ -mp=gpu)
+ * - _core_gpu_omp_offload    : OpenMP-offload GPU  (with -DUSE_OMP_OFFLOAD), built by
+ *                              nvc++ -mp=gpu on NVIDIA, or amdclang++
+ *                              --offload-arch=gfx* on AMD. ONE module and one
+ *                              'gpu-omp' device string serve both vendors --
+ *                              same source, same macros, different compiler --
+ *                              with the target recorded as
+ *                              __sbd_offload_target__ (see SBD_OFFLOAD_TARGET).
  *
  * The module name is controlled by the SBD_MODULE_NAME macro.
  */
@@ -54,6 +60,55 @@ MPI_Comm get_mpi_comm(py::object py_comm) {
     return *comm_ptr;
 }
 
+#ifdef USE_OMP_OFFLOAD
+/**
+ * Pin this rank to one offload device: device = mpi_rank % n_devices.
+ *
+ * Note: when this .so is loaded via Python dlopen, the symbol
+ * omp_get_num_devices binds to libomp.so's stub (which returns 0 because libomp
+ * itself doesn't manage offload devices) instead of libomptarget's working
+ * version. omp_set_default_device IS shared between the two, so once we know the
+ * count we can still set the device correctly. So fall back to counting the
+ * entries in the vendor's device-visibility variable when the count reads 0.
+ *
+ * The variable to read is vendor-specific, and the order is decided at COMPILE
+ * time from the target this module was built for rather than by probing all of
+ * them: that keeps the NVIDIA build reading exactly CUDA_VISIBLE_DEVICES first,
+ * as it always has. The other vendor's names are still listed as a fallback,
+ * which costs nothing (they are unset on a single-vendor host) and helps on an
+ * oddly-configured node.
+ */
+static void sbd_pin_offload_device(int mpi_rank) {
+    int n_dev = omp_get_num_devices();
+    if (n_dev <= 0) {
+        static const char* const kVisibleVars[] = {
+#ifdef SBD_OFFLOAD_VENDOR_AMD
+            "ROCR_VISIBLE_DEVICES",   // AMD: honoured by the ROCm OMP runtime
+            "HIP_VISIBLE_DEVICES",    // AMD: HIP-level equivalent
+            "CUDA_VISIBLE_DEVICES",
+#else
+            "CUDA_VISIBLE_DEVICES",   // NVIDIA
+            "ROCR_VISIBLE_DEVICES",
+            "HIP_VISIBLE_DEVICES",
+#endif
+        };
+        for (const char* var : kVisibleVars) {
+            const char* val = std::getenv(var);
+            if (val && *val) {
+                n_dev = 1;
+                for (const char* p = val; *p; ++p) {
+                    if (*p == ',') ++n_dev;
+                }
+                break;
+            }
+        }
+    }
+    if (n_dev > 0) {
+        omp_set_default_device(mpi_rank % n_dev);
+    }
+}
+#endif
+
 // Module name is set by compiler flag, e.g.
 //   -DSBD_MODULE_NAME=_core_cpu | _core_gpu_thrust | _core_gpu_omp_offload
 #ifndef SBD_MODULE_NAME
@@ -66,6 +121,21 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
     m.doc() = "Python bindings for SBD (Selected Basis Diagonalization) library - GPU backend";
 #else
     m.doc() = "Python bindings for SBD (Selected Basis Diagonalization) library - CPU backend";
+#endif
+
+    // Which GPU target this module was compiled for:
+    //   gpu-omp on AMD     "amdgcn-amd-amdhsa:gfx90a"
+    //   gpu-omp on NVIDIA  "nvptx64-nvidia-cuda:cc90"
+    //   gpu (Thrust)       "cuda:cc90"
+    //   cpu                None
+    // For the OMP-offload backend this is the only way to tell the vendor apart,
+    // since one module and one device string ('gpu-omp') serve both. For Thrust
+    // the vendor is never in doubt but the architecture is -- and an arch
+    // mismatch is the usual reason a module built elsewhere will not run here.
+#ifdef SBD_OFFLOAD_TARGET
+    m.attr("__sbd_offload_target__") = py::str(SBD_OFFLOAD_TARGET);
+#else
+    m.attr("__sbd_offload_target__") = py::none();
 #endif
 
     // Initialize mpi4py
@@ -204,7 +274,10 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
           py::arg("bit_length"),
           py::arg("total_bit_length"));
 
-    m.def("makestring", &sbd::makestring,
+    // Upstream 93ebabe made makestring a template (const DetT&), so its address
+    // is no longer a single function pointer. Instantiate for the type the
+    // Python API passes -- a list of ints -- which keeps the signature as it was.
+    m.def("makestring", &sbd::makestring<std::vector<size_t>>,
           "Convert bitstring to string representation",
           py::arg("config"),
           py::arg("bit_length"),
@@ -259,29 +332,7 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
 #endif
 #ifdef USE_OMP_OFFLOAD
             // Assign OMP-offload device based on MPI rank.
-            //
-            // Note: when this .so is loaded via Python dlopen, the symbol
-            // omp_get_num_devices binds to libomp.so's stub (which returns 0
-            // because libomp itself doesn't manage offload devices) instead
-            // of libomptarget's working version. omp_set_default_device
-            // IS shared between the two, so once we know the count we can
-            // still set the device correctly. Fall back to parsing
-            // CUDA_VISIBLE_DEVICES when omp_get_num_devices reports 0.
-            {
-                int n_dev = omp_get_num_devices();
-                if (n_dev <= 0) {
-                    const char* cvd = std::getenv("CUDA_VISIBLE_DEVICES");
-                    if (cvd && *cvd) {
-                        n_dev = 1;
-                        for (const char* p = cvd; *p; ++p) {
-                            if (*p == ',') ++n_dev;
-                        }
-                    }
-                }
-                if (n_dev > 0) {
-                    omp_set_default_device(mpi_rank % n_dev);
-                }
-            }
+            sbd_pin_offload_device(mpi_rank);
 #endif
             
             // Output variables. Since upstream PR#71 the TPB det lists are
@@ -381,6 +432,10 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             myDevice = mpi_rank % numDevices;
             hipSetDevice(myDevice);
 #endif
+#endif
+#ifdef USE_OMP_OFFLOAD
+            // Assign OMP-offload device based on MPI rank.
+            sbd_pin_offload_device(mpi_rank);
 #endif
 
             // Output variables
@@ -488,29 +543,7 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
 #endif
 #ifdef USE_OMP_OFFLOAD
             // Assign OMP-offload device based on MPI rank.
-            //
-            // Note: when this .so is loaded via Python dlopen, the symbol
-            // omp_get_num_devices binds to libomp.so's stub (which returns 0
-            // because libomp itself doesn't manage offload devices) instead
-            // of libomptarget's working version. omp_set_default_device
-            // IS shared between the two, so once we know the count we can
-            // still set the device correctly. Fall back to parsing
-            // CUDA_VISIBLE_DEVICES when omp_get_num_devices reports 0.
-            {
-                int n_dev = omp_get_num_devices();
-                if (n_dev <= 0) {
-                    const char* cvd = std::getenv("CUDA_VISIBLE_DEVICES");
-                    if (cvd && *cvd) {
-                        n_dev = 1;
-                        for (const char* p = cvd; *p; ++p) {
-                            if (*p == ',') ++n_dev;
-                        }
-                    }
-                }
-                if (n_dev > 0) {
-                    omp_set_default_device(mpi_rank % n_dev);
-                }
-            }
+            sbd_pin_offload_device(mpi_rank);
 #endif
             
             // Output variables. co_adet/co_bdet are det_vector<...half> since
