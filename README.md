@@ -238,7 +238,7 @@ from qiskit_addon_sqd.fermion import diagonalize_fermionic_hamiltonian
 # MPI.COMM_WORLD when mpi_comm is not provided.
 sbd_solver = partial(
     solve_sci_batch,
-    sbd_config={"method": 0, "eps": 1e-8, "max_it": 10, "max_nb": 10},
+    sbd_config={"method": 0, "eps": 1e-5, "max_it": 10, "max_nb": 10},
     device_config=DeviceConfig.gpu(),        # or .cpu(), .gpu_omp()
     fcidump_path="data/h2o/fcidump.txt",     # optional: reuse one FCIDUMP across batches
 )

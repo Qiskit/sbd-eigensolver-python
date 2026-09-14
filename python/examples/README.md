@@ -179,9 +179,9 @@ the **average orbital occupancies** (into recovery, source 3) and the
 |-----------|-----------------|----------------|
 | `--counts FILE` | Load hardware bitstrings from a JSON file (use this or `--samples`) | 10K–1M+ shots |
 | `--samples N` | Generate N random bitstrings at the target Hamming weights; plumbing check only, energy not meaningful | any |
-| `--samples_per_batch` | Dominant control on subspace dimension. With `symmetrize_spin` the alpha and beta string sets are merged, so the subspace is up to `(2N)^2`, not `N^2` | see the cost note below |
+| `--samples_per_batch` | Dominant control on subspace dimension. With `symmetrize_spin` the alpha and beta string sets are merged, so the subspace is up to `(2N)^2`, not `N^2` | `3000` (default); see the cost note below |
 | `--num_batches` | Independent subsamples per iteration; occupancies are averaged across them | 3–10 (small), up to 100 (large) |
-| `--sqd_carryover_threshold` | `\|coefficient\|` cutoff for carrying a determinant into the next iteration. **Lower it to carry more** | `1e-4` default |
+| `--sqd_carryover_threshold` | `\|coefficient\|` cutoff for carrying a determinant into the next iteration. **Lower it to carry more** | `1e-4` (default) |
 | `include_configurations`, `max_dim` | Static floor, and the cap that truncates. Not exposed by this script | — |
 
 *Decides when to stop — changes nothing about the subspace:*
@@ -191,6 +191,19 @@ the **average orbital occupancies** (into recovery, source 3) and the
 | `--max_iterations` | Hard cap on loop iterations (not the inner `--sbd_max_it`) | 3–12 |
 | `--energy_tol` | Iteration-to-iteration change in energy | `1e-8` default |
 | `--occupancies_tol` | Largest change in any single orbital occupancy — an infinity norm, not an average | `1e-5` default |
+
+*Inner solver (SBD) — per diagonalization, not per loop:*
+
+| Parameter | What it controls | Default |
+|-----------|-----------------|---------|
+| `--sbd_eps` | Davidson stop: **norm of the residual vector**, not an energy. Error in the energy goes roughly as `\|R\|^2/gap`, so this already implies far better energy accuracy than `--energy_tol` asks for. Tighten it for a near-degenerate system | `1e-5` |
+| `--sbd_max_it` | Cap on Davidson iterations. Reaching it before `--sbd_eps` returns a partially converged vector **with no warning** — watch the `tol=` values SBD prints, and cross-batch agreement | `10` |
+| `--sbd_max_nb` | Davidson basis vectors (block size) | `10` |
+| `--sbd_method` | 0=Davidson, 1=Davidson+Ham, 2=Lanczos, 3=Lanczos+Ham | `0` |
+
+For reference, upstream's own `TPB_SBD` struct defaults are looser still (`max_it=1`,
+`eps=1e-4`), and `run_sbd_diag.py` uses `eps=1e-3`. On the h2o counts case,
+`eps=1e-5` and `eps=1e-8` give the same energy to ten decimal places.
 
 **Both stopping criteria must hold in the same iteration** — the test is an `and`
 (`fermion.py:584`). A run that reaches `--max_iterations` may be converged in

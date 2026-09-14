@@ -77,7 +77,10 @@ def parse_args():
         "SQD loop (qiskit-addon-sqd)",
         "Controls the outer self-consistent loop: how it batches, when it stops, "
         "and what it carries from one iteration to the next.")
-    sqd.add_argument("--samples_per_batch", type=int, default=300)
+    sqd.add_argument("--samples_per_batch", type=int, default=3000,
+                     help="Dominant control on subspace size. With "
+                          "symmetrize_spin the alpha and beta string sets "
+                          "merge, so the subspace is up to (2N)^2.")
     sqd.add_argument("--num_batches", type=int, default=3)
     sqd.add_argument("--max_iterations", type=int, default=5,
                      help="SQD self-consistent loop iterations. NOT the SBD "
@@ -107,14 +110,20 @@ def parse_args():
                      choices=[0, 1, 2, 3], dest="method",
                      help="0=Davidson, 1=Davidson+Ham, 2=Lanczos, 3=Lanczos+Ham")
     sbd.add_argument("--sbd_eps", "--tolerance", "--eps", type=float,
-                     default=1e-8, dest="eps",
+                     default=1e-5, dest="eps",
                      help="SBD Davidson stopping tolerance for ONE "
                           "diagonalization: the NORM OF THE RESIDUAL VECTOR, not "
                           "an energy. Energy error goes roughly as |R|^2/gap, so "
-                          "this is not on the same scale as --energy_tol.")
+                          "1e-5 already implies far better energy accuracy than "
+                          "--energy_tol asks for. Tighten it for a near-degenerate "
+                          "system, where a small gap amplifies the residual.")
     sbd.add_argument("--sbd_max_it", "--iteration", "--max_it", type=int,
-                     default=100, dest="max_it",
-                     help="Max SBD Davidson iterations per diagonalization")
+                     default=10, dest="max_it",
+                     help="Max SBD Davidson iterations per diagonalization. This is "
+                          "a CAP, not a criterion: if it is reached before --sbd_eps, "
+                          "SBD returns the partially converged vector without "
+                          "warning. Watch the per-iteration `tol=` values it prints, "
+                          "and cross-batch agreement.")
     sbd.add_argument("--sbd_max_nb", "--block", "--max_nb", type=int, default=10,
                      dest="max_nb")
     sbd.add_argument("--sbd_do_rdm", "--rdm", "--do_rdm", type=int, default=0,
