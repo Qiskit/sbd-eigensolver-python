@@ -19,13 +19,15 @@ from pathlib import Path
 
 import pytest
 
-# The reference molecules live in the vendored upstream SBD checkout, which is a git
-# submodule. It is not present in an sdist or a fresh clone until the submodule is
-# initialized, so tests that need it are skipped rather than failing.
+# Test data. Both of these are simply expected to exist: the tests only ever run from a
+# git checkout -- the sdist ships neither test/ nor the reference data, only the vendored
+# headers needed to compile -- and that checkout must have the submodule initialized
+# anyway, since setup.py compiles against vendor/sbd-upstream/include. A checkout without
+# it cannot build the extension, so `import sbd` fails long before any path here is read.
+#
+# So a missing file means a broken checkout or a move that did not update this file, and
+# the tests should fail and say so rather than skip and report success.
 DATA_DIR = Path(__file__).resolve().parents[1] / "vendor" / "sbd-upstream" / "data"
-
-# The curated h2o counts shipped with the examples. Unlike the reference data above this
-# is part of the repository proper, so it is always present.
 COUNTS_PATH = (
     Path(__file__).resolve().parents[1] / "python" / "examples" / "count_dict_h2o.json"
 )
@@ -60,12 +62,7 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(scope="session")
 def data_dir() -> Path:
-    """Path to the vendored reference data, skipping the test if it is absent."""
-    if not DATA_DIR.is_dir():
-        pytest.skip(
-            f"reference data not found at {DATA_DIR}; "
-            "run 'git submodule update --init --recursive'"
-        )
+    """Path to the vendored reference data."""
     return DATA_DIR
 
 
@@ -132,6 +129,4 @@ def device_config():
 @pytest.fixture(scope="session")
 def counts_path() -> Path:
     """Path to the curated h2o counts file used by the examples."""
-    if not COUNTS_PATH.is_file():
-        pytest.skip(f"counts file not found at {COUNTS_PATH}")
     return COUNTS_PATH
