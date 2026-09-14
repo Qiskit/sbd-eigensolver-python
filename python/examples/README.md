@@ -233,14 +233,16 @@ superlinear in determinants per spin, and no GPU setting affects it. A
 `cudaErrorMemoryAllocation` on the Thrust backend is the determinant index, which by
 default is allocated over the entire subspace.
 
-Reach for them in this order. **`--max_dim`** bounds the subspace directly and fixes
-both symptoms at once. **Raising `--sqd_carryover_threshold`** carries fewer
-determinants forward, which is the right move when the *growth* between iterations is
-the problem rather than the starting size. **`--sbd_use_precalculated_dets 0`**
-(optionally with `--sbd_max_memory_gb_for_determinants N`) cuts GPU memory at some
-cost per matvec. Note the diagonalization itself is rarely the bottleneck: an
-800M-determinant Davidson solve measured 1.0 s against 9.3 s of helper construction
-in the same iteration, so tune the subspace, not the solver.
+**`--max_dim`** is the fix: it bounds the subspace directly and clears both symptoms
+at once. **Raising `--sqd_carryover_threshold`** carries fewer determinants forward,
+which is the right move when the *growth* between iterations is the problem rather
+than the starting size. The Thrust-only `--sbd_use_precalculated_dets 0` (optionally
+with `--sbd_max_memory_gb_for_determinants N`) trades matvec speed for GPU memory,
+but it bounds only that one buffer and not the subspace, so it is no substitute for
+`--max_dim` and is rarely what a capped run needs. Note the diagonalization itself
+is rarely the bottleneck: an 800M-determinant Davidson solve measured 1.0 s against
+9.3 s of helper construction in the same iteration, so tune the subspace, not the
+solver.
 
 **SBD's own carryover plays no part in any of this.** `carryover_type` and friends
 are SBD's separate iterative scheme, for re-running SBD's CLI against its own
