@@ -478,7 +478,14 @@ def _create_sbd_config(config_dict: dict | None = None, backend=None, device_con
     sbd_data.init = 0
     sbd_data.do_shuffle = 0
     sbd_data.do_rdm = 0
-    sbd_data.carryover_type = 1
+    # SBD's carryover is NOT consumed on this path: it is SBD's own iterative
+    # mechanism (its CLI writes it out with --carryover_adetfile and you re-run),
+    # whereas the SQD loop selects its own determinants from the amplitudes we
+    # return. Since _solve_sci_core discards results["carryover_*"], asking SBD to
+    # compute it is pure work -- for carryover_type=2 that includes building
+    # singles-extended determinant lists. Default it off; a caller who wants it
+    # can still set carryover_type through sbd_config.
+    sbd_data.carryover_type = 0
     sbd_data.ratio = 0.1
     sbd_data.threshold = 1e-4
     sbd_data.bit_length = SBD_DEFAULT_BIT_LENGTH

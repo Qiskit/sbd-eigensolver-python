@@ -197,6 +197,46 @@ with its own field names rather than TPB's. It is not exercised by these example
 or by the test suite, so its decomposition is unvalidated and is deliberately not
 documented further here.
 
+## How the SQD loop changes the subspace each iteration
+
+A frequent question, so here is what actually happens. Each iteration rebuilds the
+subspace from three sources, in this priority order (qiskit-addon-sqd
+`fermion.py:551`):
+
+```
+strs_a = include_a  ++  carryover_strings_a  ++  samples_a      then dedupe, truncate to max_dim, sort
+```
+
+1. **`include_a`** — configurations you passed as `include_configurations`. Static:
+   fixed before the loop, present in every iteration, never updated.
+2. **`carryover_strings_a`** — from the *previous* iteration's wavefunction. Every
+   determinant whose `|coefficient|` is at least `--sqd_carryover_threshold`
+   survives, ranked by `|c|^2`. Lower the threshold to carry more.
+3. **`samples_a`** — freshly drawn this iteration, sorted by marginal probability.
+
+The samples are not simply re-used raw counts. Each iteration runs **configuration
+recovery** first: it starts again from the *original* bitstrings and re-repairs them
+using the average orbital occupancies from the previous iteration's best batch
+(`fermion.py:502`), then subsamples `num_batches` batches of `samples_per_batch`
+from that refreshed distribution. Recovery is not cumulative — it always re-derives
+from the raw samples, just with better occupancies each time.
+
+So exactly **two** things flow from iteration N into N+1:
+
+| channel | carries | controlled by |
+|---|---|---|
+| average orbital occupancies | improves recovery of the raw bitstrings | `--occupancies_tol` (convergence only) |
+| wavefunction amplitudes | selects which determinants carry over | `--sqd_carryover_threshold` |
+
+Two consequences worth knowing:
+
+- **Priority matters when `max_dim` is set.** `include` and `carryover` come first,
+  so if they already fill `max_dim`, fresh samples are truncated away.
+- **SBD's own carryover plays no part in this.** `--carryover_type` and friends are
+  SBD's separate iterative scheme, for re-running SBD's CLI against its own
+  `--carryover_adetfile`. They are not flags on this driver, and setting them
+  through `sbd_config` cannot change an SQD result.
+
 ## Backend Selection
 
 Every backend the toolchain supported was compiled into this one install, and

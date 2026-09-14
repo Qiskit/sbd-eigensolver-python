@@ -129,27 +129,6 @@ def parse_args():
                           "bitadvance() shifts a 64-bit size_t by this amount, "
                           "so 64 is undefined behavior.")
 
-    # ---- SBD's own carryover: NOT consumed on this path -----------------------
-    # SBD selects determinants to carry into a subsequent SBD run and returns them
-    # as carryover_adet/carryover_bdet -- that is SBD's own iterative scheme,
-    # driven by re-running its CLI with --carryover_adetfile. On the SQD path the
-    # outer loop does its own selection from the amplitudes, and sbd_solver.py
-    # does not read SBD's carryover at all, so these change nothing about the
-    # result. Verified: carryover_type 0/1/2/3 give bit-identical energies.
-    # Kept because the flags exist in scripts, and because they matter to
-    # run_sbd_diag.py, which calls tpb_diag() directly.
-    sbdco = p.add_argument_group(
-        "SBD carryover (no effect on SQD results)",
-        "SBD's own determinant-carryover, used by its standalone iterative "
-        "workflow. The SQD loop selects its own -- see "
-        "--sqd_carryover_threshold.")
-    sbdco.add_argument("--sbd_carryover_type", "--carryover_type", type=int,
-                       default=1, dest="carryover_type")
-    sbdco.add_argument("--sbd_carryover_ratio", "--carryover_ratio", "--ratio",
-                       type=float, default=0.1, dest="ratio")
-    sbdco.add_argument("--sbd_carryover_threshold", "--carryover_threshold",
-                       "--threshold", type=float, default=1e-4, dest="threshold")
-
     # ---- MPI decomposition: hardware shape, not physics ----------------------
     mpi = p.add_argument_group(
         "MPI decomposition",
@@ -290,9 +269,6 @@ def main():
         "max_time": 3600.0,
         "do_rdm": args.do_rdm,
         "do_shuffle": args.do_shuffle,
-        "carryover_type": args.carryover_type,
-        "ratio": args.ratio,
-        "threshold": args.threshold,
         "bit_length": args.bit_length,
         "adet_comm_size": args.adet_comm_size,
         "bdet_comm_size": args.bdet_comm_size,
@@ -341,12 +317,6 @@ def main():
         print("MPI grid     : "
               f"task={args.task_comm_size} adet={args.adet_comm_size} "
               f"bdet={args.bdet_comm_size}")
-        # SBD's carryover is computed and discarded on this path (see the argument
-        # group). Setting it changes nothing, so say so rather than let someone
-        # tune it and wonder why nothing moves.
-        if (args.carryover_type, args.ratio, args.threshold) != (1, 0.1, 1e-4):
-            print("  NOTE: --sbd_carryover_* has no effect on SQD results; the "
-                  "loop selects its own determinants (--sqd_carryover_threshold).")
         print("Starting SQD loop...")
         t0 = time.perf_counter()
 
