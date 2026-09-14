@@ -156,6 +156,13 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
     // ========================================================================
     // Bind TPB SBD configuration structure
     // ========================================================================
+        // h_comm_size is deliberately NOT exposed. Upstream declares the field
+        // (sbdiag.h) but never reads it: diag() shadows it with a local
+        //     h_comm_size = mpi_size / (task_comm_size * base_comm_size)
+        // and passes THAT to DetBasisCommunicator. So the attribute could only
+        // ever report 1 and ignore whatever you assigned, which is worse than
+        // absent -- see issue #22. The helper dimension is derived; to change it,
+        // change the rank count or the other three sizes.
     py::class_<sbd::tpb::SBD>(m, "TPB_SBD", py::module_local(), "Configuration for TPB diagonalization")
         .def(py::init<>())
         .def_readwrite("task_comm_size", &sbd::tpb::SBD::task_comm_size,
@@ -164,8 +171,6 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                       "Alpha determinant communicator size")
         .def_readwrite("bdet_comm_size", &sbd::tpb::SBD::bdet_comm_size,
                       "Beta determinant communicator size")
-        .def_readwrite("h_comm_size", &sbd::tpb::SBD::h_comm_size,
-                      "Helper communicator size")
         .def_readwrite("method", &sbd::tpb::SBD::method,
                       "Diagonalization method (0=Davidson, 1=Davidson+Ham, 2=Lanczos, 3=Lanczos+Ham)")
         .def_readwrite("max_it", &sbd::tpb::SBD::max_it,
@@ -208,14 +213,19 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
     // uses. It therefore has one determinant list instead of two, and one basis
     // communicator (b_comm) instead of the adet/bdet pair.
     // ========================================================================
+        // h_comm_size is deliberately NOT exposed. Upstream declares the field
+        // (sbdiag.h) but never reads it: diag() shadows it with a local
+        //     h_comm_size = mpi_size / (task_comm_size * base_comm_size)
+        // and passes THAT to DetBasisCommunicator. So the attribute could only
+        // ever report 1 and ignore whatever you assigned, which is worse than
+        // absent -- see issue #22. The helper dimension is derived; to change it,
+        // change the rank count or the other three sizes.
     py::class_<sbd::gdb::SBD>(m, "GDB_SBD", py::module_local(), "Configuration for GDB diagonalization")
         .def(py::init<>())
         .def_readwrite("t_comm_size", &sbd::gdb::SBD::t_comm_size,
                       "Task communicator size")
         .def_readwrite("b_comm_size", &sbd::gdb::SBD::b_comm_size,
                       "Basis communicator size")
-        .def_readwrite("h_comm_size", &sbd::gdb::SBD::h_comm_size,
-                      "Helper communicator size")
         .def_readwrite("method", &sbd::gdb::SBD::method,
                       "Diagonalization method (0=Davidson, 1=Davidson+Ham, 2=Lanczos, 3=Lanczos+Ham)")
         .def_readwrite("max_it", &sbd::gdb::SBD::max_it,
@@ -414,7 +424,8 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             if (sbd_data.b_comm_size != 1) {
                 throw std::invalid_argument(
                     "gdb_diag requires b_comm_size == 1; distribute work over "
-                    "t_comm_size and h_comm_size instead");
+                    "t_comm_size, and over the derived helper dimension by "
+                    "changing the rank count (h_comm_size is not settable)");
             }
             if (det.empty()) {
                 throw std::invalid_argument("gdb_diag requires at least one determinant");
