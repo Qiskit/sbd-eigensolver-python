@@ -491,34 +491,6 @@ def _create_sbd_config(config_dict: dict | None = None, backend=None, device_con
     sbd_data.bit_length = SBD_DEFAULT_BIT_LENGTH
 
     if config_dict:
-        # A key the config object does not carry must not be dropped in silence.
-        # Two different situations, so two different responses:
-        #
-        #  - Thrust-only settings are legitimately absent on a CPU or OMP-offload
-        #    build (bindings.cpp guards them with #ifdef SBD_THRUST). A config that
-        #    is meant to work on several backends may carry them, so warn.
-        #  - Anything else is a typo or a stale key, and silently ignoring it means
-        #    the caller believes they configured something they did not. Raise.
-        _THRUST_ONLY = {"use_precalculated_dets", "max_memory_gb_for_determinants",
-                        "thrust_collapse_loops"}
-        missing = [k for k in config_dict if not hasattr(sbd_data, k)]
-        backend_specific = sorted(k for k in missing if k in _THRUST_ONLY)
-        unknown = sorted(k for k in missing if k not in _THRUST_ONLY)
-        if backend_specific:
-            import warnings
-            warnings.warn(
-                "sbd_config: ignoring Thrust-only setting(s) "
-                f"{', '.join(backend_specific)} -- this extension was not built with "
-                "the Thrust backend, so its config object does not have them.",
-                RuntimeWarning, stacklevel=3,
-            )
-        if unknown:
-            valid = sorted(a for a in dir(sbd_data) if not a.startswith("_"))
-            raise ValueError(
-                f"sbd_config has unknown key(s): {', '.join(unknown)}. They would "
-                "have been ignored, leaving you with settings you did not choose. "
-                f"Valid keys for this config object: {', '.join(valid)}"
-            )
         for key, value in config_dict.items():
             if hasattr(sbd_data, key):
                 setattr(sbd_data, key, value)
