@@ -828,6 +828,39 @@ if build_gpu_thrust:
     # not, and an arch mismatch is the usual reason a module refuses to run.
     thrust_target = f'cuda:{gpu_arch or "toolchain-default"}'
 
+    # DELIBERATE divergence from upstream, which passes
+    #     -gpu=${SBD_GPU_ARCH},mem:unified,interceptdeallocations
+    # (CMakeLists sbd_configure_diag, thrust branch). mem:unified puts device
+    # allocations in managed memory. Measured on 8x H100, h2o-1em4 (2.38e6
+    # determinants), 8 ranks on a 4x2 grid: Davidson went from 0.32 s to
+    # 0.75-0.86 s over three runs -- about 2.5x slower -- for bit-identical
+    # energies. Its plausible benefit is letting a non-GPU-aware MPI host-copy a
+    # device pointer, and SBD_NON_CUDA_AWARE_MPI below covers that directly. So
+    # the default stays the separate-memory build we have been validating, rather
+    # than a slower one users would need to understand in order to opt out of.
+    # It is still reachable without patching this file, since the whole value is
+    # passed through:  SBD_GPU_ARCH=cc90,mem:unified,interceptdeallocations
+    # Upstream's thrust branch also carries two MPI-safety options. Mirror them
+    # as BUILD-TIME env vars of the same name -- they are -D defines compiled into
+    # the extension, so they must be set before `pip install` and changing one
+    # means rebuilding. Setting them at run time does nothing.
+    #   SBD_NON_CUDA_AWARE_MPI=1        host-stage all MPI comm on device memory
+    #   SBD_THRUST_SAFE_MPI_ALLREDUCE=1 just the allreduce (a subset of the above)
+    # SBD_NON_CUDA_AWARE_MPI is the supported way to build for an MPI that cannot
+    # address device memory, which is otherwise a hard requirement.
+    # Deliberately NOT mirrored: SBD_USE_NVTX / SBD_USE_NCCL / SBD_USE_CUBLAS
+    # (each needs link libraries we do not add) and SBD_COMPLEX (changes the
+    # element type, so it is an API change rather than a flag).
+    _thrust_opt_defines = []
+    for _opt in ('SBD_NON_CUDA_AWARE_MPI', 'SBD_THRUST_SAFE_MPI_ALLREDUCE'):
+        if (os.environ.get(_opt) or '').strip().lower() in ('1', 'on', 'true', 'yes'):
+            _thrust_opt_defines.append(f'-D{_opt}')
+    if _thrust_opt_defines:
+        print("Thrust build-time options baked in: "
+              + " ".join(d[2:] for d in _thrust_opt_defines))
+
+    thrust_gpu_flags = list(gpu_arch_flags)
+
     gpu_thrust_ext = Extension(
         'sbd._core_gpu_thrust',
         ['python/bindings.cpp'],
@@ -837,7 +870,11 @@ if build_gpu_thrust:
         language='c++',
         extra_compile_args=[
             '-DSBD_THRUST',
-            '-DSBD_TRADMODE',
+            # NOT -DSBD_TRADMODE: upstream's option is "Traditional (non-Thrust)
+            # CPU mode for tpb", default OFF, and its thrust branch does not set
+            # it -- only the omp5 branch does. mult.h:17 defines a `mult`
+            # overload unconditionally and SBD_TRADMODE merely adds a second one,
+            # so this was compiling an overload the Thrust path never calls.
             '-mp',
             '-cuda',
             '-fast',
@@ -845,7 +882,8 @@ if build_gpu_thrust:
             '--diag_suppress=declared_but_not_referenced,set_but_not_used',
             '-fmax-errors=0',
             '-fPIC',
-            *gpu_arch_flags,
+            *thrust_gpu_flags,
+            *_thrust_opt_defines,
             '-DSBD_MODULE_NAME=_core_gpu_thrust',
             f'-DSBD_OFFLOAD_TARGET="{thrust_target}"',
         ],
@@ -877,7 +915,7 @@ if build_gpu_thrust:
         # default -- observed as a Thrust-only failure on H100 from a fatbin
         # built for cc80,cc90,cc100. These builds embed no PTX, so there is no
         # JIT fallback to mask it.
-        extra_link_args=extra_link_args + ['-mp', '-cuda', *gpu_arch_flags,
+        extra_link_args=extra_link_args + ['-mp', '-cuda', *thrust_gpu_flags,
                                            '-lcudart'],
     )
     ext_modules.append(gpu_thrust_ext)
@@ -955,6 +993,11 @@ if build_gpu_omp_offload:
             # inside #pragma omp declare target lower to portable inlines
             # rather than __blt_pgi_ffsl (host-only NVHPC symbol that nvlink
             # can't resolve from device code).
+            #
+            # This is a DELIBERATE divergence from upstream, which instead does
+            # -D__builtin_ffsl=__ffsll and therefore has to add -cuda to the
+            # omp5 build to expose that CUDA intrinsic. The shim needs no CUDA
+            # in an OpenMP-offload translation unit, so -cuda stays off here.
             '-include', 'python/sbd_nvhpc_compat.h',
         ]
         offload_link_args = extra_link_args + [
