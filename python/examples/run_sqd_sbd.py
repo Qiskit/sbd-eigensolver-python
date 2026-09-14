@@ -304,19 +304,25 @@ def main():
         # Say which layer each setting belongs to. The two layers have knobs with
         # near-identical names and very different meanings, which is how the
         # unreachable ones went unnoticed.
+        # Print the FLAG spellings, not the internal dest names: "eps" and
+        # "carryover_threshold" are exactly the ambiguous labels this grouping
+        # exists to remove, so the banner has to name the layer too.
         print("SQD loop     : "
-              f"samples_per_batch={args.samples_per_batch} "
-              f"num_batches={args.num_batches} max_iterations={args.max_iterations}")
+              f"--samples_per_batch {args.samples_per_batch} "
+              f"--num_batches {args.num_batches} "
+              f"--max_iterations {args.max_iterations}")
         print("               "
-              f"energy_tol={args.energy_tol:g} "
-              f"occupancies_tol={args.occupancies_tol:g} "
-              f"carryover_threshold={args.sqd_carryover_threshold:g}")
+              f"--energy_tol {args.energy_tol:g} "
+              f"--occupancies_tol {args.occupancies_tol:g} "
+              f"--sqd_carryover_threshold {args.sqd_carryover_threshold:g}")
         print("SBD solver   : "
-              f"method={args.method} eps={args.eps:g} max_it={args.max_it} "
-              f"max_nb={args.max_nb} bit_length={args.bit_length}")
+              f"--sbd_method {args.method} --sbd_eps {args.eps:g} "
+              f"--sbd_max_it {args.max_it} --sbd_max_nb {args.max_nb} "
+              f"--sbd_bit_length {args.bit_length}")
         print("MPI grid     : "
-              f"task={args.task_comm_size} adet={args.adet_comm_size} "
-              f"bdet={args.bdet_comm_size}")
+              f"--task_comm_size {args.task_comm_size} "
+              f"--adet_comm_size {args.adet_comm_size} "
+              f"--bdet_comm_size {args.bdet_comm_size}")
         print("Starting SQD loop...")
         t0 = time.perf_counter()
 

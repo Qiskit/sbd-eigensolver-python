@@ -59,7 +59,8 @@ mpirun -np 8 python run_sbd_diag.py \
 
 **Key options:** `--device`, `--fcidump`, `--adetfile`, `--adet_comm_size`,
 `--bdet_comm_size`, `--task_comm_size`, `--method`, `--tolerance`, `--iteration`.
-Run `python run_sbd_diag.py --help` for the full list.
+(These keep their unprefixed names here: this driver *is* SBD. The SQD driver
+prefixes them `--sbd_*`.) Run `python run_sbd_diag.py --help` for the full list.
 
 **Requirements:** `sbd`, `mpi4py`
 
@@ -126,9 +127,11 @@ determinant list, giving a 275 × 275 = 75,625-determinant subspace at
 
 **Key options:** `--fcidump` (required), `--counts`, `--samples`,
 `--samples_per_batch`, `--num_batches`, `--max_iterations`, `--device`,
-MPI decomposition flags. SBD solver flags (`--method`, `--tolerance`,
-`--iteration`, etc.) have sensible defaults; run `python run_sqd_sbd.py --help`
-for the full list.
+MPI decomposition flags, and the SQD tolerances `--energy_tol` /
+`--occupancies_tol` / `--sqd_carryover_threshold`. Inner-solver flags are prefixed
+(`--sbd_eps`, `--sbd_max_it`, `--sbd_method`, ...) and have sensible defaults; the
+old unprefixed spellings still work. Run `python run_sqd_sbd.py --help` for the
+full list, which is grouped by layer.
 
 **Requirements:** see [Extra dependencies](#extra-dependencies-only-for-the-sqd-examples) above (`pyscf`, `qiskit`, `qiskit-addon-sqd`).
 
@@ -148,7 +151,7 @@ postselection).
 | `--samples N` | Generate N random bitstrings at the target Hamming weights; plumbing check only, energy not meaningful | any |
 | `--samples_per_batch` | Subspace dimension per batch (accuracy vs. cost) | 300–800 (small), 1M+ (production) |
 | `--num_batches` | Independent subsamples for averaging occupancies | 3–10 (small), up to 100 (large) |
-| `--max_iterations` | SQD self-consistent loop iterations (not SBD `--iteration`) | 3–5 |
+| `--max_iterations` | SQD self-consistent loop iterations (not the inner `--sbd_max_it`) | 3–5 |
 
 **MPI work distribution:** All ranks diagonalize each batch together, then move
 to the next batch sequentially. Within each diagonalization, ranks form a 4D grid:
@@ -263,9 +266,9 @@ Two consequences worth knowing:
 
 - **Priority matters when `max_dim` is set.** `include` and `carryover` come first,
   so if they already fill `max_dim`, fresh samples are truncated away.
-- **SBD's own carryover plays no part in this.** `--carryover_type` and friends are
+- **SBD's own carryover plays no part in this.** `carryover_type` and friends are
   SBD's separate iterative scheme, for re-running SBD's CLI against its own
-  `--carryover_adetfile`. They are not flags on this driver, and setting them
+  `--carryover_adetfile`. They are deliberately not flags on this driver, and setting them
   through `sbd_config` cannot change an SQD result.
 
 ## Backend Selection
