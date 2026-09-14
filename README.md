@@ -238,18 +238,27 @@ from qiskit_addon_sqd.fermion import diagonalize_fermionic_hamiltonian
 # MPI.COMM_WORLD when mpi_comm is not provided.
 sbd_solver = partial(
     solve_sci_batch,
-    sbd_config={"method": 0, "eps": 1e-8, "max_it": 100},
-    device_config=DeviceConfig.gpu(),  # or .cpu(), .gpu_omp()
+    sbd_config={"method": 0, "eps": 1e-8, "max_it": 10, "max_nb": 10},
+    device_config=DeviceConfig.gpu(),        # or .cpu(), .gpu_omp()
+    fcidump_path="data/h2o/fcidump.txt",     # optional: reuse one FCIDUMP across batches
 )
 
 result = diagonalize_fermionic_hamiltonian(
     hcore, eri, bit_array,
-    sci_solver=sbd_solver,
+    sci_solver=sbd_solver,                   # SBD plugs in here
     norb=norb, nelec=nelec,
-    samples_per_batch=300, num_batches=3, max_iterations=5,
+    samples_per_batch=3000, num_batches=3, max_iterations=5,
     symmetrize_spin=True,
 )
 ```
+
+`samples_per_batch` is the main accuracy/cost control and the easiest one to set too
+low. With `symmetrize_spin=True` the alpha and beta string sets are merged, so the
+subspace is up to `(2 x samples_per_batch)^2` — 3000 gives ~36M determinants. Small
+subspaces are dominated by counts parsing and configuration recovery rather than by
+the diagonalization, so a run that finishes suspiciously fast is usually not using
+the hardware. See the [SQD Parameter Guide](python/examples/README.md#sqd-parameter-guide)
+for how each parameter feeds the loop.
 
 See `python/examples/run_sqd_sbd.py` for a complete example.
 
