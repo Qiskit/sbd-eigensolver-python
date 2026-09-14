@@ -70,34 +70,94 @@ def parse_args():
                    help="cpu | gpu (NVHPC Thrust) | gpu-omp = gpu-nvidia-omp "
                         "(NVHPC OpenMP target offload) | auto")
 
-    # SQD outer-loop parameters
-    p.add_argument("--samples_per_batch", type=int, default=300)
-    p.add_argument("--num_batches", type=int, default=3)
-    p.add_argument("--max_iterations", type=int, default=5,
-                   help="SQD self-consistent loop iterations (not SBD solver iterations)")
+    # ---- SQD: the self-consistent loop (qiskit-addon-sqd owns these) ----------
+    # These are the knobs a user reasons about. Unprefixed names that our tooling
+    # already passes are kept as-is.
+    sqd = p.add_argument_group(
+        "SQD loop (qiskit-addon-sqd)",
+        "Controls the outer self-consistent loop: how it batches, when it stops, "
+        "and what it carries from one iteration to the next.")
+    sqd.add_argument("--samples_per_batch", type=int, default=300)
+    sqd.add_argument("--num_batches", type=int, default=3)
+    sqd.add_argument("--max_iterations", type=int, default=5,
+                     help="SQD self-consistent loop iterations. NOT the SBD "
+                          "Davidson iteration count -- that is --sbd_max_it.")
+    sqd.add_argument("--energy_tol", type=float, default=1e-8,
+                     help="Outer-loop convergence: stop when the energy changes "
+                          "by less than this between iterations. Not directly "
+                          "comparable to --sbd_eps, which is a residual norm, not "
+                          "an energy.")
+    sqd.add_argument("--occupancies_tol", type=float, default=1e-5,
+                     help="Outer-loop convergence on the average orbital "
+                          "occupancies.")
+    sqd.add_argument("--sqd_carryover_threshold", type=float, default=1e-4,
+                     help="SQD keeps every determinant whose |coefficient| is at "
+                          "least this, and carries it into the next iteration's "
+                          "subspace. Lower it to carry more. Distinct from "
+                          "--sbd_carryover_threshold, which SQD does not use.")
 
-    # SBD solver parameters (names match C++ CLI: sbd/include/sbd/chemistry/tpb/sbdiag.h)
-    p.add_argument("--method", type=int, default=0, choices=[0, 1, 2, 3],
-                   help="0=Davidson, 1=Davidson+Ham, 2=Lanczos, 3=Lanczos+Ham")
-    p.add_argument("--tolerance", "--eps", type=float, default=1e-8, dest="eps")
-    p.add_argument("--iteration", "--max_it", type=int, default=100, dest="max_it",
-                   help="Max SBD Davidson iterations per diagonalization")
-    p.add_argument("--block", "--max_nb", type=int, default=10, dest="max_nb")
-    p.add_argument("--rdm", "--do_rdm", type=int, default=0, dest="do_rdm",
-                   help="0=density only (default, sufficient for SQD), 1=full RDM")
-    p.add_argument("--shuffle", "--do_shuffle", type=int, default=0, dest="do_shuffle")
-    p.add_argument("--carryover_type", type=int, default=1)
-    p.add_argument("--carryover_ratio", "--ratio", type=float, default=0.1, dest="ratio")
-    p.add_argument("--carryover_threshold", "--threshold", type=float, default=1e-4, dest="threshold")
-    p.add_argument("--bit_length", type=int, default=20,
-                   help="Bits packed into each size_t of the bitstring representation "
-                        "(RIKEN default 20). Must be <= 63: bitadvance() shifts a "
-                        "64-bit size_t by this amount, so 64 is undefined behavior.")
+    # ---- SBD: the inner eigensolver -------------------------------------------
+    # Names match the C++ CLI (vendor/sbd-upstream/include/sbd/chemistry/tpb/
+    # sbdiag.h) but are prefixed here, because unprefixed --tolerance and
+    # --carryover_threshold read as SQD settings and are not.
+    sbd = p.add_argument_group(
+        "SBD solver (inner diagonalization)",
+        "Per-diagonalization settings. Old unprefixed spellings still work.")
+    sbd.add_argument("--sbd_method", "--method", type=int, default=0,
+                     choices=[0, 1, 2, 3], dest="method",
+                     help="0=Davidson, 1=Davidson+Ham, 2=Lanczos, 3=Lanczos+Ham")
+    sbd.add_argument("--sbd_eps", "--tolerance", "--eps", type=float,
+                     default=1e-8, dest="eps",
+                     help="SBD Davidson stopping tolerance for ONE "
+                          "diagonalization: the NORM OF THE RESIDUAL VECTOR, not "
+                          "an energy. Energy error goes roughly as |R|^2/gap, so "
+                          "this is not on the same scale as --energy_tol.")
+    sbd.add_argument("--sbd_max_it", "--iteration", "--max_it", type=int,
+                     default=100, dest="max_it",
+                     help="Max SBD Davidson iterations per diagonalization")
+    sbd.add_argument("--sbd_max_nb", "--block", "--max_nb", type=int, default=10,
+                     dest="max_nb")
+    sbd.add_argument("--sbd_do_rdm", "--rdm", "--do_rdm", type=int, default=0,
+                     dest="do_rdm",
+                     help="0=density only (default, sufficient for SQD), 1=full RDM")
+    sbd.add_argument("--sbd_do_shuffle", "--shuffle", "--do_shuffle", type=int,
+                     default=0, dest="do_shuffle")
+    sbd.add_argument("--sbd_bit_length", "--bit_length", type=int, default=20,
+                     dest="bit_length",
+                     help="Bits packed into each size_t of the bitstring "
+                          "representation (RIKEN default 20). Must be <= 63: "
+                          "bitadvance() shifts a 64-bit size_t by this amount, "
+                          "so 64 is undefined behavior.")
 
-    # MPI sub-communicator sizes
-    p.add_argument("--adet_comm_size", type=int, default=1)
-    p.add_argument("--bdet_comm_size", type=int, default=1)
-    p.add_argument("--task_comm_size", type=int, default=1)
+    # ---- SBD's own carryover: NOT consumed on this path -----------------------
+    # SBD selects determinants to carry into a subsequent SBD run and returns them
+    # as carryover_adet/carryover_bdet -- that is SBD's own iterative scheme,
+    # driven by re-running its CLI with --carryover_adetfile. On the SQD path the
+    # outer loop does its own selection from the amplitudes, and sbd_solver.py
+    # does not read SBD's carryover at all, so these change nothing about the
+    # result. Verified: carryover_type 0/1/2/3 give bit-identical energies.
+    # Kept because the flags exist in scripts, and because they matter to
+    # run_sbd_diag.py, which calls tpb_diag() directly.
+    sbdco = p.add_argument_group(
+        "SBD carryover (no effect on SQD results)",
+        "SBD's own determinant-carryover, used by its standalone iterative "
+        "workflow. The SQD loop selects its own -- see "
+        "--sqd_carryover_threshold.")
+    sbdco.add_argument("--sbd_carryover_type", "--carryover_type", type=int,
+                       default=1, dest="carryover_type")
+    sbdco.add_argument("--sbd_carryover_ratio", "--carryover_ratio", "--ratio",
+                       type=float, default=0.1, dest="ratio")
+    sbdco.add_argument("--sbd_carryover_threshold", "--carryover_threshold",
+                       "--threshold", type=float, default=1e-4, dest="threshold")
+
+    # ---- MPI decomposition: hardware shape, not physics ----------------------
+    mpi = p.add_argument_group(
+        "MPI decomposition",
+        "Rank grid. task x adet x bdet must divide the rank count; the remainder "
+        "becomes the derived helper dimension.")
+    mpi.add_argument("--adet_comm_size", type=int, default=1)
+    mpi.add_argument("--bdet_comm_size", type=int, default=1)
+    mpi.add_argument("--task_comm_size", type=int, default=1)
 
     # tempdir for the wavefunction.bin file that rank 0 writes and reads
     # each iteration. Only rank 0 touches it, so node-local /tmp is fine
@@ -265,6 +325,28 @@ def main():
                 print(f"  Batch {i}: E={total_e:.10f}, dim={dim:_}")
 
     if rank == 0:
+        # Say which layer each setting belongs to. The two layers have knobs with
+        # near-identical names and very different meanings, which is how the
+        # unreachable ones went unnoticed.
+        print("SQD loop     : "
+              f"samples_per_batch={args.samples_per_batch} "
+              f"num_batches={args.num_batches} max_iterations={args.max_iterations}")
+        print("               "
+              f"energy_tol={args.energy_tol:g} "
+              f"occupancies_tol={args.occupancies_tol:g} "
+              f"carryover_threshold={args.sqd_carryover_threshold:g}")
+        print("SBD solver   : "
+              f"method={args.method} eps={args.eps:g} max_it={args.max_it} "
+              f"max_nb={args.max_nb} bit_length={args.bit_length}")
+        print("MPI grid     : "
+              f"task={args.task_comm_size} adet={args.adet_comm_size} "
+              f"bdet={args.bdet_comm_size}")
+        # SBD's carryover is computed and discarded on this path (see the argument
+        # group). Setting it changes nothing, so say so rather than let someone
+        # tune it and wonder why nothing moves.
+        if (args.carryover_type, args.ratio, args.threshold) != (1, 0.1, 1e-4):
+            print("  NOTE: --sbd_carryover_* has no effect on SQD results; the "
+                  "loop selects its own determinants (--sqd_carryover_threshold).")
         print("Starting SQD loop...")
         t0 = time.perf_counter()
 
@@ -278,6 +360,9 @@ def main():
             nelec=(num_elec_a, num_elec_b),
             num_batches=args.num_batches,
             max_iterations=args.max_iterations,
+            energy_tol=args.energy_tol,
+            occupancies_tol=args.occupancies_tol,
+            carryover_threshold=args.sqd_carryover_threshold,
             sci_solver=sbd_solver,
             symmetrize_spin=True,
             callback=callback,
