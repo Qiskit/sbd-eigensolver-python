@@ -19,10 +19,18 @@ from pathlib import Path
 
 import pytest
 
-# The reference molecules live in the vendored upstream SBD checkout, which is a git
-# submodule. It is not present in an sdist or a fresh clone until the submodule is
-# initialized, so tests that need it are skipped rather than failing.
+# Test data. Both of these are simply expected to exist: the tests only ever run from a
+# git checkout -- the sdist ships neither test/ nor the reference data, only the vendored
+# headers needed to compile -- and that checkout must have the submodule initialized
+# anyway, since setup.py compiles against vendor/sbd-upstream/include. A checkout without
+# it cannot build the extension, so `import sbd` fails long before any path here is read.
+#
+# So a missing file means a broken checkout or a move that did not update this file, and
+# the tests should fail and say so rather than skip and report success.
 DATA_DIR = Path(__file__).resolve().parents[1] / "vendor" / "sbd-upstream" / "data"
+COUNTS_PATH = (
+    Path(__file__).resolve().parents[1] / "python" / "examples" / "count_dict_h2o.json"
+)
 
 
 # Slow tests are opt-in through a command-line flag rather than excluded by default,
@@ -54,12 +62,7 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(scope="session")
 def data_dir() -> Path:
-    """Path to the vendored reference data, skipping the test if it is absent."""
-    if not DATA_DIR.is_dir():
-        pytest.skip(
-            f"reference data not found at {DATA_DIR}; "
-            "run 'git submodule update --init --recursive'"
-        )
+    """Path to the vendored reference data."""
     return DATA_DIR
 
 
@@ -77,14 +80,13 @@ def pytest_report_header():
     return f"sbd {sbd.__version__}: backends built {available}, testing {requested}"
 
 
-@pytest.fixture(scope="session")
-def backend():
-    """The SBD backend to test, honoring SBD_TEST_DEVICE if it is set.
+def _requested_device() -> str | None:
+    """``SBD_TEST_DEVICE``, or ``None`` to mean whatever the build defaults to.
 
-    A backend named in ``SBD_TEST_DEVICE`` that was not compiled into this build is
-    reported as a skip, since which backends exist depends on how the package was
-    built. That a backend is missing is a fact about the build; that ``sbd`` itself is
-    missing is a failure, and is left to raise.
+    A backend named there but not compiled into this build is reported as a skip, since
+    which backends exist depends on how the package was built. That a backend is missing
+    is a fact about the build; that ``sbd`` itself is missing is a failure, and is left
+    to raise.
     """
     import sbd
 
@@ -92,4 +94,39 @@ def backend():
     available = sbd.available_backends()
     if device is not None and device not in available:
         pytest.skip(f"backend {device!r} was not built; available: {available}")
-    return sbd.get_backend(device)
+    return device
+
+
+@pytest.fixture(scope="session")
+def backend():
+    """The SBD backend module to test, for tests calling the extension directly."""
+    import sbd
+
+    return sbd.get_backend(_requested_device())
+
+
+@pytest.fixture(scope="session")
+def device_config():
+    """The same selection as ``backend``, in the form the solver wrappers take.
+
+    ``solve_sci`` and ``solve_sci_batch`` accept a ``DeviceConfig`` rather than a backend
+    module -- they resolve the module themselves from its ``device`` key -- so the two
+    fixtures exist to hand each layer the type it expects, off one shared setting.
+
+    ``None`` when nothing is requested is deliberate: it leaves the wrapper's own backend
+    resolution in the path, which is what an ordinary caller gets.
+    """
+    from sbd.device_config import DeviceConfig
+
+    device = _requested_device()
+    if device is None:
+        return None
+    # The generic constructor accepts every device key, including hyphenated ones like
+    # 'gpu-omp' that do not correspond to a classmethod name.
+    return DeviceConfig(device=device)
+
+
+@pytest.fixture(scope="session")
+def counts_path() -> Path:
+    """Path to the curated h2o counts file used by the examples."""
+    return COUNTS_PATH
