@@ -5,34 +5,7 @@ Examples demonstrating SBD's capabilities for quantum chemistry calculations.
 ## Overview
 
 - **Communication:** MPI for distributed computing
-- **Backends:** CPU (host OpenMP), GPU (NVHPC Thrust) and GPU (OpenMP target offload), switchable at runtime via `device` parameter
-
-## Extra dependencies (only for the SQD examples)
-
-The standalone `run_sbd_diag.py` script needs nothing beyond what
-`pip install -e .` already installed (`sbd`, `mpi4py`, `numpy`).
-
-The SQD examples — `run_sqd_sbd.py` and `run_sqd_sbd.ipynb` — wrap SBD
-with the qiskit-addon-sqd self-consistent loop, which pulls in three
-extra Python packages. Install them once into the same environment SBD
-was built in:
-
-```bash
-conda activate sbd          # the env from the Installation section of ../../README.md
-pip install qiskit "qiskit-addon-sqd>=0.13.1"
-# pyscf is already there if you used the conda recipe in ../../README.md;
-# otherwise:  conda install -y -c conda-forge pyscf
-```
-
-- **`pyscf`** — reads FCIDUMP, restores 4-fold integral symmetry.
-- **`qiskit`** — `BitArray` type for sampled-bitstring input.
-- **`qiskit-addon-sqd`** — the SQD loop (`diagonalize_fermionic_hamiltonian`).
-  Needs the **distributed (SPMD) support** that calls `sci_solver` on every MPI
-  rank; that shipped in 0.13.1, so the PyPI release suffices.
-
-`pyscf` is the heavy one (~150 MB plus `h5py`). qiskit-addon-sqd is a thin
-layer on top of upstream qiskit, so most of `qiskit`'s ~300 MB is what
-dominates the install size.
+- **Backends:** CPU (host OpenMP), GPU (NVHPC Thrust, NVIDIA only) and GPU (OpenMP target offload, NVIDIA and AMD), switchable at runtime via `device` parameter
 
 ## Examples
 
@@ -133,9 +106,9 @@ MPI decomposition flags, and the SQD tolerances `--energy_tol` /
 old unprefixed spellings still work. Run `python run_sqd_sbd.py --help` for the
 full list, which is grouped by layer.
 
-**Requirements:** see [Extra dependencies](#extra-dependencies-only-for-the-sqd-examples) above (`pyscf`, `qiskit`, `qiskit-addon-sqd`).
+**Requirements:** see [Integration with qiskit-addon-sqd](../../README.md#integration-with-qiskit-addon-sqd) in the Python Bindings README (`pyscf`, `qiskit`, `qiskit-addon-sqd`).
 
-See [SQD Parameters](#4-sqd-parameters) below for the full reference, grouped by SQD loop / SBD solver / MPI grid / checkpointing.
+See [SQD Parameters](#sqd-parameters) below for the full reference, grouped by SQD loop / SBD solver / MPI grid / checkpointing.
 
 ### 3. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
 
@@ -154,8 +127,8 @@ pytest --nbmake run_sqd_sbd.ipynb      # what CI runs; needs the nbtest extra
 Reference for every flag `run_sqd_sbd.py` accepts, grouped the way `--help`
 groups them: SQD loop, SBD solver, MPI grid, checkpointing.
 
-### **How each iteration builds its subspace.** 
-SQD samples bitstrings from a quantum device, repairs the noisy ones against an orbital-occupancy estimate
+**How each iteration builds its subspace.** SQD samples bitstrings from a
+quantum device, repairs the noisy ones against an orbital-occupancy estimate
 (**configuration recovery**), subsamples them into batches, and diagonalizes
 each batch. What makes it a *loop* is that two results feed back into the next
 iteration. Three sources, concatenated in this priority order inside
