@@ -230,8 +230,16 @@ def _solve_sci_core(
     # The dump is requested unconditionally above, so neither a missing file nor a
     # size mismatch is a situation to paper over: both mean the run did not do what
     # was asked, and a loud failure is the only honest response.
-    n_a = len(strings_a)
-    n_b = len(strings_b)
+    # Label the amplitudes with the lists that were actually diagonalized, not with
+    # the inputs. _ci_strings_to_sbd_dets ends in sort_bitarray, which sorts into
+    # SBD's canonical order AND removes duplicates, so adet/bdet can differ from
+    # strings_a/strings_b -- and the dump is written in adet/bdet order. Deriving the
+    # labels from adet/bdet makes the amplitudes and their labels come from one list
+    # by construction, instead of relying on the two orders agreeing.
+    solved_strings_a = _sbd_dets_to_ci_strings(adet, norb, backend, sbd_data.bit_length)
+    solved_strings_b = _sbd_dets_to_ci_strings(bdet, norb, backend, sbd_data.bit_length)
+    n_a = len(solved_strings_a)
+    n_b = len(solved_strings_b)
     if not wf_dump_file.exists():
         raise RuntimeError(
             f"SBD wrote no wavefunction dump at {wf_dump_file}. It is requested on "
@@ -242,15 +250,15 @@ def _solve_sci_core(
     if flat.size != n_a * n_b:
         raise RuntimeError(
             f"wavefunction dump at {wf_dump_file} holds {flat.size} amplitudes, "
-            f"expected {n_a * n_b} ({n_a} alpha x {n_b} beta over the input "
-            "subspace). SaveMatrixFormWF writes the full subspace; a different "
-            "size means the dump and the subspace have diverged."
+            f"expected {n_a * n_b} ({n_a} alpha x {n_b} beta over the "
+            "diagonalized subspace). SaveMatrixFormWF writes the full subspace; a "
+            "different size means the dump and the subspace have diverged."
         )
 
     sci_state = SCIState(
         amplitudes=flat.reshape(n_a, n_b),
-        ci_strs_a=strings_a,
-        ci_strs_b=strings_b,
+        ci_strs_a=solved_strings_a,
+        ci_strs_b=solved_strings_b,
         norb=norb,
         nelec=nelec,
     )
