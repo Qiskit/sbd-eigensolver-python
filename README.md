@@ -257,7 +257,7 @@ low. With `symmetrize_spin=True` the alpha and beta string sets are merged, so t
 subspace is up to `(2 x samples_per_batch)^2` — 3000 gives ~36M determinants. Small
 subspaces are dominated by counts parsing and configuration recovery rather than by
 the diagonalization, so a run that finishes suspiciously fast is usually not using
-the hardware. See the [SQD Parameter Guide](python/examples/README.md#sqd-parameter-guide)
+the hardware. See [SQD Parameters](python/examples/README.md#sqd-parameters)
 for how each parameter feeds the loop.
 
 See `python/examples/run_sqd_sbd.py` for a complete example.
@@ -343,7 +343,6 @@ and replaces the determinant communicators with a single basis communicator:
 |-----------|---------|-------------|
 | `b_comm_size` | 1 | Basis communicator size (must be 1 for `gdb_diag`) |
 | `t_comm_size` | 1 | Task communicator size |
-| `h_comm_size` | 1 | Helper communicator size |
 | `seed` | 1729 | Seed for the initial vector |
 | `heatbath_cutoff` | 1e-4 | Heatbath expansion cutoff |
 | `heatbath_truncation` | 0.0 | Weight truncation applied before heatbath expansion |
