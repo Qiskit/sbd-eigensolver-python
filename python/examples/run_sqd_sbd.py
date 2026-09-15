@@ -70,34 +70,145 @@ def parse_args():
                    help="cpu | gpu (NVHPC Thrust) | gpu-omp = gpu-nvidia-omp "
                         "(NVHPC OpenMP target offload) | auto")
 
-    # SQD outer-loop parameters
-    p.add_argument("--samples_per_batch", type=int, default=300)
-    p.add_argument("--num_batches", type=int, default=3)
-    p.add_argument("--max_iterations", type=int, default=5,
-                   help="SQD self-consistent loop iterations (not SBD solver iterations)")
+    # ---- SQD: the self-consistent loop (qiskit-addon-sqd owns these) ----------
+    # These are the knobs a user reasons about. Unprefixed names that our tooling
+    # already passes are kept as-is.
+    sqd = p.add_argument_group(
+        "SQD loop (qiskit-addon-sqd)",
+        "Controls the outer self-consistent loop: how it batches, when it stops, "
+        "and what it carries from one iteration to the next.")
+    sqd.add_argument("--samples_per_batch", type=int, default=3000,
+                     help="Dominant control on subspace size. With "
+                          "symmetrize_spin the alpha and beta string sets "
+                          "merge, so the subspace is up to (2N)^2.")
+    sqd.add_argument("--num_batches", type=int, default=3)
+    sqd.add_argument("--max_iterations", type=int, default=5,
+                     help="SQD self-consistent loop iterations. NOT the SBD "
+                          "Davidson iteration count -- that is --sbd_max_it.")
+    sqd.add_argument("--energy_tol", type=float, default=1e-8,
+                     help="Outer-loop convergence: stop when the energy changes "
+                          "by less than this between iterations. Not directly "
+                          "comparable to --sbd_eps, which is a residual norm, not "
+                          "an energy.")
+    sqd.add_argument("--occupancies_tol", type=float, default=1e-5,
+                     help="Outer-loop convergence on the average orbital "
+                          "occupancies.")
+    sqd.add_argument("--max_dim", type=int, default=None,
+                     help="Cap on single-spin strings per sector, so the subspace "
+                          "cannot exceed max_dim^2. This is the lever for runaway "
+                          "setup cost: SBD's helper construction (MakeHelpers) is "
+                          "host-side and superlinear in determinants per spin, and "
+                          "grows between iterations as carryover accumulates. "
+                          "Unset means no cap.")
+    sqd.add_argument("--sqd_carryover_threshold", type=float, default=1e-4,
+                     help="SQD keeps every determinant whose |coefficient| is at "
+                          "least this, and carries it into the next iteration's "
+                          "subspace. Lower it to carry more. Distinct from "
+                          "--sbd_carryover_threshold, which SQD does not use.")
+    sqd.add_argument("--include_hf", action="store_true",
+                     help="Force the single Slater determinant with the lowest "
+                          "num_elec_a/num_elec_b orbital indices occupied into "
+                          "every iteration's subspace, regardless of whether the "
+                          "sampled bit_array contains it. Cheap correctness check: "
+                          "if this determinant's own diagonal energy beats the SQD "
+                          "result, the sampled pool is missing it (and probably its "
+                          "low-excitation neighbors), which forcing it in fixes "
+                          "directly rather than by enlarging max_dim/iterations.")
+    sqd.add_argument("--checkpoint_path", type=str, default=None,
+                     help="Write ci_strs_a/ci_strs_b/occupancies/energy to this "
+                          "path as JSON text (rank 0 only), every "
+                          "--checkpoint_frequency iterations. MUST be visible "
+                          "under the same path from every rank: --resume_from "
+                          "has no rank-0-reads-then-broadcasts step, every rank "
+                          "opens this path itself, so a per-node-local /tmp on a "
+                          "multi-node job would leave the other nodes' ranks "
+                          "unable to find it. Safe to read mid-run for progress; "
+                          "each write replaces the file (atomic rename), so a "
+                          "killed run still leaves its last completed checkpoint "
+                          "on disk.")
+    sqd.add_argument("--checkpoint_frequency", type=int, default=1,
+                     help="Write --checkpoint_path every this many iterations, "
+                          "plus always on the last one regardless of alignment. "
+                          "1 (default) checkpoints every iteration. Raise this "
+                          "to cut JSON-write overhead when ci_strs_a/b are large "
+                          "(one int per string, so --max_dim 100000 is up to "
+                          "200,000 ints per checkpoint) or iterations are fast "
+                          "enough that the write itself is a noticeable fraction "
+                          "of the per-iteration cost.")
+    sqd.add_argument("--resume_from", type=str, default=None,
+                     help="Seed this run's include_configurations and "
+                          "initial_occupancies from a previous --checkpoint_path's "
+                          "LAST recorded iteration. Not a bit-identical "
+                          "continuation (RNG state is fresh, and every string "
+                          "from that iteration becomes a permanent include -- not "
+                          "subject to carryover_threshold decay the way a true "
+                          "single-process continuation's own carryover would be), "
+                          "but starts the new run's subspace and configuration "
+                          "recovery from where the old one stopped rather than "
+                          "from raw samples again.")
 
-    # SBD solver parameters (names match C++ CLI: sbd/include/sbd/chemistry/tpb/sbdiag.h)
-    p.add_argument("--method", type=int, default=0, choices=[0, 1, 2, 3],
-                   help="0=Davidson, 1=Davidson+Ham, 2=Lanczos, 3=Lanczos+Ham")
-    p.add_argument("--tolerance", "--eps", type=float, default=1e-8, dest="eps")
-    p.add_argument("--iteration", "--max_it", type=int, default=100, dest="max_it",
-                   help="Max SBD Davidson iterations per diagonalization")
-    p.add_argument("--block", "--max_nb", type=int, default=10, dest="max_nb")
-    p.add_argument("--rdm", "--do_rdm", type=int, default=0, dest="do_rdm",
-                   help="0=density only (default, sufficient for SQD), 1=full RDM")
-    p.add_argument("--shuffle", "--do_shuffle", type=int, default=0, dest="do_shuffle")
-    p.add_argument("--carryover_type", type=int, default=1)
-    p.add_argument("--carryover_ratio", "--ratio", type=float, default=0.1, dest="ratio")
-    p.add_argument("--carryover_threshold", "--threshold", type=float, default=1e-4, dest="threshold")
-    p.add_argument("--bit_length", type=int, default=20,
-                   help="Bits packed into each size_t of the bitstring representation "
-                        "(RIKEN default 20). Must be <= 63: bitadvance() shifts a "
-                        "64-bit size_t by this amount, so 64 is undefined behavior.")
+    # ---- SBD: the inner eigensolver -------------------------------------------
+    # Names match the C++ CLI (vendor/sbd-upstream/include/sbd/chemistry/tpb/
+    # sbdiag.h) but are prefixed here, because unprefixed --tolerance and
+    # --carryover_threshold read as SQD settings and are not.
+    sbd = p.add_argument_group(
+        "SBD solver (inner diagonalization)",
+        "Per-diagonalization settings. Old unprefixed spellings still work.")
+    sbd.add_argument("--sbd_method", "--method", type=int, default=0,
+                     choices=[0, 1, 2, 3], dest="method",
+                     help="0=Davidson, 1=Davidson+Ham, 2=Lanczos, 3=Lanczos+Ham")
+    sbd.add_argument("--sbd_eps", "--tolerance", "--eps", type=float,
+                     default=1e-5, dest="eps",
+                     help="SBD Davidson stopping tolerance for ONE "
+                          "diagonalization: the NORM OF THE RESIDUAL VECTOR, not "
+                          "an energy. Energy error goes roughly as |R|^2/gap, so "
+                          "1e-5 already implies far better energy accuracy than "
+                          "--energy_tol asks for. Tighten it for a near-degenerate "
+                          "system, where a small gap amplifies the residual.")
+    sbd.add_argument("--sbd_max_it", "--iteration", "--max_it", type=int,
+                     default=10, dest="max_it",
+                     help="Max SBD Davidson iterations per diagonalization. This is "
+                          "a CAP, not a criterion: if it is reached before --sbd_eps, "
+                          "SBD returns the partially converged vector without "
+                          "warning. Watch the per-iteration `tol=` values it prints, "
+                          "and cross-batch agreement.")
+    sbd.add_argument("--sbd_max_nb", "--block", "--max_nb", type=int, default=10,
+                     dest="max_nb")
+    sbd.add_argument("--sbd_do_rdm", "--rdm", "--do_rdm", type=int, default=0,
+                     dest="do_rdm",
+                     help="0=density only (default, sufficient for SQD), 1=full RDM")
+    sbd.add_argument("--sbd_do_shuffle", "--shuffle", "--do_shuffle", type=int,
+                     default=0, dest="do_shuffle")
+    sbd.add_argument("--sbd_use_precalculated_dets", type=int, default=1,
+                     choices=[0, 1],
+                     help="Thrust only. 1 precomputes a determinant index for every "
+                          "(alpha,beta) pair -- D_size x adets x bdets words on the "
+                          "GPU, i.e. the whole subspace, which is what runs out of "
+                          "memory on large runs. 0 uses per-thread storage instead: "
+                          "slower per matvec, far less memory, and it is the ONLY "
+                          "setting under which --sbd_max_memory_gb_for_determinants "
+                          "takes effect (mult_thrust.h:257-273).")
+    sbd.add_argument("--sbd_max_memory_gb_for_determinants", "--gpu-memory",
+                     type=int, default=-1,
+                     help="Thrust only, and only with --sbd_use_precalculated_dets 0: "
+                          "cap the per-thread determinant buffer in GB. -1 means "
+                          "uncapped.")
+    sbd.add_argument("--sbd_bit_length", "--bit_length", type=int, default=20,
+                     dest="bit_length",
+                     help="Bits packed into each size_t of the bitstring "
+                          "representation (RIKEN default 20). Must be <= 63: "
+                          "bitadvance() shifts a 64-bit size_t by this amount, "
+                          "so 64 is undefined behavior.")
 
-    # MPI sub-communicator sizes
-    p.add_argument("--adet_comm_size", type=int, default=1)
-    p.add_argument("--bdet_comm_size", type=int, default=1)
-    p.add_argument("--task_comm_size", type=int, default=1)
+    # ---- MPI decomposition: hardware shape, not physics ----------------------
+    mpi = p.add_argument_group(
+        "MPI decomposition",
+        "Rank grid. task x adet x bdet must DIVIDE the rank count exactly: the "
+        "quotient becomes the derived helper dimension, and SBD aborts if the "
+        "product does not come back to the rank count.")
+    mpi.add_argument("--adet_comm_size", type=int, default=1)
+    mpi.add_argument("--bdet_comm_size", type=int, default=1)
+    mpi.add_argument("--task_comm_size", type=int, default=1)
 
     # tempdir for the wavefunction.bin file that rank 0 writes and reads
     # each iteration. Only rank 0 touches it, so node-local /tmp is fine
@@ -197,6 +308,33 @@ def main():
     # --- Load or generate bitstrings ---
     rand_seed = np.random.default_rng(42)
 
+    # --- include_configurations / initial_occupancies: forced references and resume ---
+    include_a: list[int] = []
+    include_b: list[int] = []
+    initial_occupancies = None
+    if args.include_hf:
+        # Lowest num_elec_a/num_elec_b orbital INDICES occupied -- not necessarily
+        # the true HF determinant if this basis isn't canonically ordered, but any
+        # single Slater determinant's own diagonal energy is a cheap, exact lower
+        # bound on how well a subspace containing it can do. If forcing it in moves
+        # the SQD result, the sampled pool was missing it.
+        include_a.append((1 << num_elec_a) - 1)
+        include_b.append((1 << num_elec_b) - 1)
+    if args.resume_from:
+        with open(args.resume_from) as f:
+            checkpoint = json.load(f)
+        last = checkpoint["iterations"][-1]
+        include_a.extend(last["ci_strs_a"])
+        include_b.extend(last["ci_strs_b"])
+        initial_occupancies = (
+            np.array(last["occupancies_a"]), np.array(last["occupancies_b"])
+        )
+        if rank == 0:
+            print(f"Resuming from {args.resume_from}: iteration {last['iteration']}, "
+                  f"{len(last['ci_strs_a'])} alpha / {len(last['ci_strs_b'])} beta "
+                  "strings carried in as include_configurations")
+    include_configurations = (include_a, include_b) if (include_a or include_b) else None
+
     if args.counts:
         bit_array = load_counts_as_bitarray(args.counts, norb * 2)
         if rank == 0:
@@ -230,10 +368,9 @@ def main():
         "max_time": 3600.0,
         "do_rdm": args.do_rdm,
         "do_shuffle": args.do_shuffle,
-        "carryover_type": args.carryover_type,
-        "ratio": args.ratio,
-        "threshold": args.threshold,
         "bit_length": args.bit_length,
+        "use_precalculated_dets": bool(args.sbd_use_precalculated_dets),
+        "max_memory_gb_for_determinants": args.sbd_max_memory_gb_for_determinants,
         "adet_comm_size": args.adet_comm_size,
         "bdet_comm_size": args.bdet_comm_size,
         "task_comm_size": args.task_comm_size,
@@ -253,6 +390,7 @@ def main():
 
     # --- Run SQD loop ---
     result_history = []
+    checkpoint_history: list[dict] = []
 
     def callback(results: list[SCIResult]):
         result_history.append(results)
@@ -263,8 +401,54 @@ def main():
                 total_e = r.energy + nuclear_repulsion_energy
                 dim = np.prod(r.sci_state.amplitudes.shape)
                 print(f"  Batch {i}: E={total_e:.10f}, dim={dim:_}")
+            due = (iteration % args.checkpoint_frequency == 0
+                   or iteration == args.max_iterations)
+            if args.checkpoint_path and due:
+                # Batch 0 only: multi-batch checkpoints would need to pick which
+                # batch's subspace to resume from, and the driver only ever uses
+                # num_batches=1 in practice. Whole file rewritten each call (not
+                # appended), so a killed run's last COMPLETE checkpoint survives.
+                # Always written on the last iteration regardless of frequency
+                # alignment, so a completed run's checkpoint reflects its true
+                # final state rather than whatever iteration happened to land on
+                # a multiple of --checkpoint_frequency.
+                r = results[0]
+                entry = {
+                    "iteration": iteration,
+                    "energy": r.energy + nuclear_repulsion_energy,
+                    "occupancies_a": r.orbital_occupancies[0].tolist(),
+                    "occupancies_b": r.orbital_occupancies[1].tolist(),
+                    "ci_strs_a": [int(x) for x in r.sci_state.ci_strs_a],
+                    "ci_strs_b": [int(x) for x in r.sci_state.ci_strs_b],
+                }
+                checkpoint_history.append(entry)
+                tmp = Path(args.checkpoint_path).with_suffix(".tmp")
+                tmp.write_text(json.dumps({"iterations": checkpoint_history}))
+                tmp.replace(args.checkpoint_path)
 
     if rank == 0:
+        # Say which layer each setting belongs to. The two layers have knobs with
+        # near-identical names and very different meanings, which is how the
+        # unreachable ones went unnoticed.
+        # Print the FLAG spellings, not the internal dest names: "eps" and
+        # "carryover_threshold" are exactly the ambiguous labels this grouping
+        # exists to remove, so the banner has to name the layer too.
+        print("SQD loop     : "
+              f"--samples_per_batch {args.samples_per_batch} "
+              f"--num_batches {args.num_batches} "
+              f"--max_iterations {args.max_iterations}")
+        print("               "
+              f"--energy_tol {args.energy_tol:g} "
+              f"--occupancies_tol {args.occupancies_tol:g} "
+              f"--sqd_carryover_threshold {args.sqd_carryover_threshold:g}")
+        print("SBD solver   : "
+              f"--sbd_method {args.method} --sbd_eps {args.eps:g} "
+              f"--sbd_max_it {args.max_it} --sbd_max_nb {args.max_nb} "
+              f"--sbd_bit_length {args.bit_length}")
+        print("MPI grid     : "
+              f"--task_comm_size {args.task_comm_size} "
+              f"--adet_comm_size {args.adet_comm_size} "
+              f"--bdet_comm_size {args.bdet_comm_size}")
         print("Starting SQD loop...")
         t0 = time.perf_counter()
 
@@ -278,6 +462,12 @@ def main():
             nelec=(num_elec_a, num_elec_b),
             num_batches=args.num_batches,
             max_iterations=args.max_iterations,
+            energy_tol=args.energy_tol,
+            occupancies_tol=args.occupancies_tol,
+            carryover_threshold=args.sqd_carryover_threshold,
+            max_dim=args.max_dim,
+            include_configurations=include_configurations,
+            initial_occupancies=initial_occupancies,
             sci_solver=sbd_solver,
             symmetrize_spin=True,
             callback=callback,
