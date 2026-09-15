@@ -61,20 +61,6 @@ def parse_args():
     p.add_argument("--fcidump", required=True, help="Path to FCIDUMP file")
     p.add_argument("--counts", default=None,
                    help="Path to count_dict.json (bitstring counts from hardware)")
-    p.add_argument("--max_pool_size", type=int, default=None,
-                   help="Randomly subsample --counts down to at most this many rows "
-                        "BEFORE the SQD loop sees them (fixed seed, reproducible). "
-                        "qiskit_addon_sqd's recover_configurations "
-                        "(configuration_recovery.py) loops in pure Python over every "
-                        "row of the pool, every iteration, with no distributed or "
-                        "vectorized implementation -- confirmed still true as of "
-                        "qiskit-addon-sqd 0.13.1 (current GitHub main, checked "
-                        "2026-09-15). Cost scales with pool size, not "
-                        "--samples_per_batch, so a large hardware counts file (e.g. "
-                        "1M rows) can dominate wall time regardless of GPU backend "
-                        "or SBD settings. If every row's count is equal (no real "
-                        "hardware-sampling weight to preserve), subsampling loses "
-                        "nothing and this is a large, free speedup.")
     p.add_argument("--samples", type=int, default=3000,
                    help="Number of random samples when --counts is absent, drawn at "
                         "the target alpha/beta Hamming weights.")
@@ -251,24 +237,12 @@ def parse_fcidump_header(path):
     return norb, nelec, ms2
 
 
-def load_counts_as_bitarray(counts_path, num_bits, max_pool_size=None):
-    """Convert count_dict.json {bitstring: count} to qiskit BitArray.
-
-    max_pool_size: if the pool has more rows than this, randomly subsample down
-    to it (fixed seed) BEFORE building the BitArray. recover_configurations
-    (qiskit_addon_sqd) loops in pure Python over every row every SQD iteration,
-    with no vectorized or distributed implementation, so its cost scales with
-    the pool size handed to it here, not with --samples_per_batch.
-    """
+def load_counts_as_bitarray(counts_path, num_bits):
+    """Convert count_dict.json {bitstring: count} to qiskit BitArray."""
     with open(counts_path) as f:
         counts = json.load(f)
     bitstrings = list(counts.keys())
     repeats = list(counts.values())
-    if max_pool_size is not None and len(bitstrings) > max_pool_size:
-        rng = np.random.default_rng(0)
-        keep = rng.choice(len(bitstrings), size=max_pool_size, replace=False)
-        bitstrings = [bitstrings[i] for i in keep]
-        repeats = [repeats[i] for i in keep]
     # Convert strings to 2D bool array via concatenated byte comparison
     joined = "".join(bitstrings)
     bool_flat = np.frombuffer(joined.encode(), dtype=np.uint8) == ord("1")
@@ -362,7 +336,7 @@ def main():
     include_configurations = (include_a, include_b) if (include_a or include_b) else None
 
     if args.counts:
-        bit_array = load_counts_as_bitarray(args.counts, norb * 2, args.max_pool_size)
+        bit_array = load_counts_as_bitarray(args.counts, norb * 2)
         if rank == 0:
             print(f"Loaded {bit_array.num_shots} bitstrings from {args.counts}")
     else:
