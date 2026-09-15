@@ -47,6 +47,21 @@ from pathlib import Path
 import numpy as np
 
 
+def _ensure_included(dets, extra_ints, norb, backend, bit_length,
+                      dets_to_strings, strings_to_dets):
+    """Return `dets` with every integer in `extra_ints` guaranteed present.
+
+    Round-trips through CI-string integers (dedup via np.unique) rather than
+    merging det_vector-like lists directly, reusing the existing
+    string<->det conversion helpers instead of hand-rolling a second merge
+    path. Cheap: extra_ints is one or two integers (the HF seed), not a
+    per-iteration cost that scales with the subspace.
+    """
+    current = dets_to_strings(dets, norb, backend, bit_length)
+    merged = np.unique(np.concatenate([current, np.asarray(extra_ints, dtype=np.int64)]))
+    return strings_to_dets(merged, norb, backend, bit_length)
+
+
 def _cap_to_max_dim(expanded, seed, norb, backend, bit_length, max_dim, rng,
                      ci_strings_fn):
     """Truncate `expanded` to at most max_dim entries.
@@ -85,32 +100,64 @@ def _cap_to_max_dim(expanded, seed, norb, backend, bit_length, max_dim, rng,
     return [expanded[k] for k in keep]
 
 
-def load_initial_dets_from_counts(counts_path, norb, num_elec_a, num_elec_b):
+def load_initial_dets_from_counts(counts_path, norb, num_elec_a, num_elec_b,
+                                   max_dim=None):
     """Derive an initial alpha/beta determinant set from a count_dict.json.
 
-    Same file, same [beta | alpha] layout run_sqd_sbd.py's load_counts_as_bitarray
-    reads. No sampling, no configuration recovery -- there is nothing to
-    recover against without an occupancy estimate, and this driver never
-    builds one. Just: split each key into its two halves, keep the ones with
-    the right particle count, take the unique survivors as the seed.
+    Reuses qiskit-addon-sqd's own utilities for this -- the same ones
+    fermion.py's iteration-1 path uses when it has no occupancy estimate yet
+    ("simply postselect bitstrings with the correct numbers of spin-up and
+    spin-down electrons") -- rather than re-deriving equivalent postselection
+    and counts-to-probability conversion by hand. This driver still does no
+    SAMPLING or configuration recovery of its own -- there is no loop here for
+    those to feed, and no occupancy estimate ever gets built -- it is purely
+    reuse of a tested preprocessing utility, not a step toward running the
+    qiskit-addon-sqd loop.
 
-    Shot counts are ignored entirely. A hardware pool's weighting matters for
-    deciding what to SAMPLE; it says nothing about which bitstrings are worth
-    having in a fixed seed set, and count_dict_1752.json's own counts (all 1,
-    checked earlier this session) carry no signal to weight by regardless.
+    counts_to_arrays converts the raw {bitstring: count} dict straight into a
+    bool matrix and a NORMALIZED probability array (verified: a key with
+    count=3 out of one total entry round-trips as probability 1.0).
+    postselect_by_hamming_right_and_left then keeps only the rows with the
+    right electron count on each half -- hamming_right/num_elec_a and
+    hamming_left/num_elec_b, matching the [beta | alpha] layout (alpha is the
+    right/last norb bits) and fermion.py's own argument order.
+
+    Each half's PROBABILITY (not raw count -- already normalized, and this
+    is the same quantity fermion.py's own carryover ranks by) is then summed
+    per unique value: the same marginal-weight idea carryover_type's
+    dominant-determinant selection uses internally (p(D) = sum over the
+    other spin of |c|^2), here built from the empirical pool instead of a
+    computed wavefunction, since there isn't one yet for iteration 1.
+
+    That marginal weight decides ordering, not membership: every unique,
+    correct-Hamming-weight half is still a candidate. It only matters when
+    max_dim forces a choice -- then the highest-weight halves are kept,
+    rather than an arbitrary subset. A bitstring seen once and one seen a
+    thousand times are no longer equivalent once truncation has to pick.
     """
+    from qiskit_addon_sqd.counts import counts_to_arrays, bitstring_matrix_to_integers
+    from qiskit_addon_sqd.subsampling import postselect_by_hamming_right_and_left
+
     with open(counts_path) as f:
         counts = json.load(f)
-    alpha_ints = set()
-    beta_ints = set()
-    for bitstring in counts:
-        beta_str, alpha_str = bitstring[:norb], bitstring[norb:]
-        if alpha_str.count("1") == num_elec_a:
-            alpha_ints.add(int(alpha_str, 2))
-        if beta_str.count("1") == num_elec_b:
-            beta_ints.add(int(beta_str, 2))
-    return (np.array(sorted(alpha_ints), dtype=np.int64),
-            np.array(sorted(beta_ints), dtype=np.int64))
+    bitstring_matrix, probabilities = counts_to_arrays(counts)
+    bitstring_matrix, probabilities = postselect_by_hamming_right_and_left(
+        bitstring_matrix, probabilities,
+        hamming_right=num_elec_a, hamming_left=num_elec_b,
+    )
+    beta_ints = bitstring_matrix_to_integers(bitstring_matrix[:, :norb])
+    alpha_ints = bitstring_matrix_to_integers(bitstring_matrix[:, norb:])
+
+    def ranked(ints):
+        unique_ints, inverse = np.unique(ints, return_inverse=True)
+        weight = np.zeros(len(unique_ints))
+        np.add.at(weight, inverse, probabilities)
+        order = np.argsort(-weight)
+        if max_dim is not None:
+            order = order[:max_dim]
+        return np.array(sorted(int(x) for x in unique_ints[order]), dtype=np.int64)
+
+    return ranked(alpha_ints), ranked(beta_ints)
 
 
 def parse_fcidump_header(path):
@@ -149,11 +196,25 @@ def parse_args():
                           "last NORB alpha; orbital 0 is the rightmost bit of "
                           "each half). Postselects each half by Hamming "
                           "weight (num_elec_a for alpha, num_elec_b for "
-                          "beta), takes the unique survivors as the initial "
-                          "seed. Counts themselves are ignored -- this driver "
-                          "does no sampling or configuration recovery, so a "
-                          "shot count carries no meaning here; only which "
-                          "bitstrings appear at all matters.")
+                          "beta); every unique survivor is a candidate, but "
+                          "if --max_dim forces a choice, the highest "
+                          "aggregate-probability halves are kept -- a "
+                          "bitstring seen once and one seen a thousand times "
+                          "are not treated as equivalent.")
+    io.add_argument("--include_hf", action="store_true",
+                     help="Force the single Slater determinant with the "
+                          "lowest num_elec_a/num_elec_b orbital indices "
+                          "occupied into the subspace, EVERY iteration -- "
+                          "re-added after each round's expansion/truncation, "
+                          "not just the initial seed, so carryover selection "
+                          "or --max_dim truncation can never drop it. Same "
+                          "rationale as run_sqd_sbd.py's flag of the same "
+                          "name: a hardware-sampled pool can simply be "
+                          "missing the dominant configuration (confirmed for "
+                          "count_dict_1752.json this session -- its own "
+                          "diagonal energy alone beat several iterations of "
+                          "an unforced SQD run), and there is no equivalent "
+                          "signal here to detect that automatically.")
 
     # ---- the loop -------------------------------------------------------------
     loop = parser.add_argument_group("Selected-CI loop")
@@ -321,7 +382,7 @@ def main():
                   "determinants")
     elif args.counts:
         alpha_ints, beta_ints = load_initial_dets_from_counts(
-            args.counts, norb, num_elec_a, num_elec_b)
+            args.counts, norb, num_elec_a, num_elec_b, max_dim=args.max_dim)
         if len(alpha_ints) == 0 or len(beta_ints) == 0:
             raise ValueError(
                 f"{args.counts} had no bitstring half with the right "
@@ -340,6 +401,24 @@ def main():
         adet = sbd.LoadAlphaDets(args.adetfile, args.sbd_bit_length, norb)
         bdetfile = args.bdetfile or args.adetfile
         bdet = sbd.LoadAlphaDets(bdetfile, args.sbd_bit_length, norb)
+
+    hf_ints = None
+    if args.include_hf:
+        hf_ints = np.array([(1 << num_elec_a) - 1, (1 << num_elec_b) - 1],
+                            dtype=np.int64)
+        n_a_before, n_b_before = len(adet), len(bdet)
+        adet = _ensure_included(adet, hf_ints[:1], norb, backend,
+                                 args.sbd_bit_length, _sbd_dets_to_ci_strings,
+                                 _ci_strings_to_sbd_dets)
+        bdet = _ensure_included(bdet, hf_ints[1:], norb, backend,
+                                 args.sbd_bit_length, _sbd_dets_to_ci_strings,
+                                 _ci_strings_to_sbd_dets)
+        if rank == 0:
+            added_a = len(adet) - n_a_before
+            added_b = len(bdet) - n_b_before
+            print(f"--include_hf: forced HF determinant into the seed "
+                  f"({'already present' if added_a == 0 else 'added'} alpha, "
+                  f"{'already present' if added_b == 0 else 'added'} beta)")
 
     checkpoint_history = []
 
@@ -404,6 +483,27 @@ def main():
             co_bdet = _cap_to_max_dim(co_bdet, bdet, norb, backend,
                                        args.sbd_bit_length, args.max_dim, rng,
                                        _sbd_dets_to_ci_strings)
+
+        if hf_ints is not None:
+            # After truncation, not before: carryover_type 1/2's own
+            # marginal-probability selection (SelectDominantHalfdets) runs
+            # BEFORE the singles expansion and can drop HF from co_adet
+            # outright if its computed weight is below --sbd_carryover_
+            # threshold, same as it would drop any other determinant. Forcing
+            # it back in here, every iteration, is what makes this a
+            # permanent floor rather than a one-time seed hint -- matching
+            # include_configurations's "present every iteration, never
+            # updated" semantics in run_sqd_sbd.py. Can push the actual size
+            # slightly past --max_dim (by the 1-2 forced entries); the
+            # guarantee takes priority over the cap by a negligible amount.
+            co_adet = _ensure_included(co_adet, hf_ints[:1], norb, backend,
+                                        args.sbd_bit_length,
+                                        _sbd_dets_to_ci_strings,
+                                        _ci_strings_to_sbd_dets)
+            co_bdet = _ensure_included(co_bdet, hf_ints[1:], norb, backend,
+                                        args.sbd_bit_length,
+                                        _sbd_dets_to_ci_strings,
+                                        _ci_strings_to_sbd_dets)
 
         prev_energy = energy
         adet, bdet = co_adet, co_bdet
