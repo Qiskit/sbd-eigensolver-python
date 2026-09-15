@@ -135,15 +135,31 @@ full list, which is grouped by layer.
 
 **Requirements:** see [Extra dependencies](#extra-dependencies-only-for-the-sqd-examples) above (`pyscf`, `qiskit`, `qiskit-addon-sqd`).
 
-#### SQD Parameter Guide
+See [SQD Parameters](#4-sqd-parameters) below for the full reference, grouped by SQD loop / SBD solver / MPI grid / checkpointing.
 
-SQD samples bitstrings from a quantum device, repairs the noisy ones against an
-orbital-occupancy estimate (**configuration recovery**), subsamples them into
-batches, and diagonalizes each batch. What makes it a *loop* is that two results
-feed back into the next iteration.
+### 3. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
 
-**How each iteration builds its subspace.** Three sources, concatenated in this
-priority order (qiskit-addon-sqd `fermion.py:551`):
+Interactive single-rank companion to `run_sqd_sbd.py`. Same SQD self-consistent
+loop on h2o, but inside a Jupyter kernel (`MPI.COMM_WORLD` size 1). Uses the
+bundled [`count_dict_h2o.json`](./count_dict_h2o.json) (275 bitstrings → 75,625
+determinants) and reaches ≈ −76.236 Ha in a few seconds on CPU.
+
+```bash
+pytest --nbmake run_sqd_sbd.ipynb      # what CI runs; needs the nbtest extra
+# or open it in JupyterLab and step through the cells
+```
+
+### 4. SQD Parameters
+
+Reference for every flag `run_sqd_sbd.py` accepts, grouped the way `--help`
+groups them: SQD loop, SBD solver, MPI grid, checkpointing.
+
+**How each iteration builds its subspace.** SQD samples bitstrings from a
+quantum device, repairs the noisy ones against an orbital-occupancy estimate
+(**configuration recovery**), subsamples them into batches, and diagonalizes
+each batch. What makes it a *loop* is that two results feed back into the next
+iteration. Three sources, concatenated in this priority order
+(qiskit-addon-sqd `fermion.py:551`):
 
 ```
 strs_a = include_a  ++  carryover_strings_a  ++  samples_a    then dedupe, truncate to max_dim, sort
@@ -171,7 +187,7 @@ So exactly two things flow from iteration N to N+1, and neither is a tolerance:
 the **average orbital occupancies** (into recovery, source 3) and the
 **wavefunction amplitudes** (into carryover, source 2).
 
-**Parameters, by what they actually do.**
+#### SQD loop parameters
 
 *Shapes the subspace — changes the numbers you compute:*
 
@@ -179,11 +195,12 @@ the **average orbital occupancies** (into recovery, source 3) and the
 |-----------|-----------------|----------------|
 | `--counts FILE` | Load hardware bitstrings from a JSON file (use this or `--samples`) | 10K–1M+ shots |
 | `--samples N` | Generate N random bitstrings at the target Hamming weights; plumbing check only, energy not meaningful | any |
+| `--max_pool_size` | Randomly subsample `--counts` down to at most this many rows *before* the loop sees them (fixed seed). `recover_configurations` (qiskit-addon-sqd) loops in pure Python over every pool row, every iteration, with no vectorized or distributed implementation — cost scales with pool size, not `--samples_per_batch`. Lossless when every row's count is equal (nothing lost by subsampling); otherwise it trades real hardware-sampling weight for speed | unset (no cap) |
 | `--samples_per_batch` | Dominant control on subspace dimension. With `symmetrize_spin` the alpha and beta string sets are merged, so the subspace is up to `(2N)^2`, not `N^2` | `3000` (default); see the cost note below |
 | `--num_batches` | Independent subsamples per iteration; occupancies are averaged across them | 3–10 (small), up to 100 (large) |
 | `--sqd_carryover_threshold` | `\|coefficient\|` cutoff for carrying a determinant into the next iteration. **Lower it to carry more** | `1e-4` (default) |
 | `--max_dim` | Cap on strings per spin sector, so the subspace cannot exceed `max_dim^2`. The main brake on runaway setup cost | unset (no cap) |
-| `include_configurations` | Static floor, present in every iteration. Not exposed by this script | — |
+| `--include_hf` | Force the single Slater determinant with the lowest `num_elec_a`/`num_elec_b` orbital indices occupied into `include_configurations`, every iteration. Cheap correctness check: that determinant's own diagonal energy is an exact lower bound on what a subspace containing it can do — if forcing it in moves the result, the sampled pool was missing it (and probably its low-excitation neighbors too) | off |
 
 *Decides when to stop — changes nothing about the subspace:*
 
@@ -192,21 +209,6 @@ the **average orbital occupancies** (into recovery, source 3) and the
 | `--max_iterations` | Hard cap on loop iterations (not the inner `--sbd_max_it`) | 3–12 |
 | `--energy_tol` | Iteration-to-iteration change in energy | `1e-8` default |
 | `--occupancies_tol` | Largest change in any single orbital occupancy — an infinity norm, not an average | `1e-5` default |
-
-*Inner solver (SBD) — per diagonalization, not per loop:*
-
-| Parameter | What it controls | Default |
-|-----------|-----------------|---------|
-| `--sbd_eps` | Davidson stop: **norm of the residual vector**, not an energy. Error in the energy goes roughly as `\|R\|^2/gap`, so this already implies far better energy accuracy than `--energy_tol` asks for. Tighten it for a near-degenerate system | `1e-5` |
-| `--sbd_max_it` | Cap on Davidson iterations. Reaching it before `--sbd_eps` returns a partially converged vector **with no warning** — watch the `tol=` values SBD prints, and cross-batch agreement | `10` |
-| `--sbd_max_nb` | Davidson basis vectors (block size) | `10` |
-| `--sbd_method` | 0=Davidson, 1=Davidson+Ham, 2=Lanczos, 3=Lanczos+Ham | `0` |
-| `--sbd_use_precalculated_dets` | Thrust only. `1` precomputes a determinant index for **every** (α,β) pair — the whole subspace, on the GPU. `0` uses per-thread storage: slower per matvec, far less memory | `1` |
-| `--sbd_max_memory_gb_for_determinants` | Thrust only, and **only consulted when `--sbd_use_precalculated_dets 0`** (`mult_thrust.h:257-273`). Caps the per-thread buffer in GB | `-1` (uncapped) |
-
-For reference, upstream's own `TPB_SBD` struct defaults are looser still (`max_it=1`,
-`eps=1e-4`), and `run_sbd_diag.py` uses `eps=1e-3`. On the h2o counts case,
-`eps=1e-5` and `eps=1e-8` give the same energy to ten decimal places.
 
 **Both stopping criteria must hold in the same iteration** — the test is an `and`
 (`fermion.py:584`). A run that reaches `--max_iterations` may be converged in
@@ -249,24 +251,56 @@ are SBD's separate iterative scheme, for re-running SBD's CLI against its own
 `--carryover_adetfile`. They are deliberately not flags on this driver, and setting
 them through `sbd_config` cannot change an SQD result.
 
-**MPI work distribution:** All ranks diagonalize each batch together, then move
-to the next batch sequentially. Within each diagonalization, ranks form a 4D grid:
-`task_comm_size × adet_comm_size × bdet_comm_size × helper`, where the helper
-dimension is not set directly — SBD derives it as
-`ranks / (task_comm_size × adet_comm_size × bdet_comm_size)`. More batches
-increases wall time linearly but does not require more ranks.
+#### SBD solver parameters
 
-### 3. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
+Per diagonalization, not per loop:
 
-Interactive single-rank companion to `run_sqd_sbd.py`. Same SQD self-consistent
-loop on h2o, but inside a Jupyter kernel (`MPI.COMM_WORLD` size 1). Uses the
-bundled [`count_dict_h2o.json`](./count_dict_h2o.json) (275 bitstrings → 75,625
-determinants) and reaches ≈ −76.236 Ha in a few seconds on CPU.
+| Parameter | What it controls | Default |
+|-----------|-----------------|---------|
+| `--sbd_eps` | Davidson stop: **norm of the residual vector**, not an energy. Error in the energy goes roughly as `\|R\|^2/gap`, so this already implies far better energy accuracy than `--energy_tol` asks for. Tighten it for a near-degenerate system | `1e-5` |
+| `--sbd_max_it` | Cap on Davidson iterations. Reaching it before `--sbd_eps` returns a partially converged vector **with no warning** — watch the `tol=` values SBD prints, and cross-batch agreement | `10` |
+| `--sbd_max_nb` | Davidson basis vectors (block size). Peak memory during Davidson grows with how many sub-iterations it actually needs, not just `--max_dim` — a run that succeeds for several iterations at a fixed `dim` can still later need more basis vectors and run out of memory even though the subspace itself did not grow. Lowering this trades some convergence robustness for a lower memory ceiling | `10` |
+| `--sbd_method` | 0=Davidson, 1=Davidson+Ham, 2=Lanczos, 3=Lanczos+Ham | `0` |
+| `--sbd_use_precalculated_dets` | Thrust only. `1` precomputes a determinant index for **every** (α,β) pair — the whole subspace, on the GPU. `0` uses per-thread storage: slower per matvec, far less memory | `1` |
+| `--sbd_max_memory_gb_for_determinants` | Thrust only, and **only consulted when `--sbd_use_precalculated_dets 0`** (`mult_thrust.h:257-273`). Caps the per-thread buffer in GB | `-1` (uncapped) |
 
-```bash
-pytest --nbmake run_sqd_sbd.ipynb      # what CI runs; needs the nbtest extra
-# or open it in JupyterLab and step through the cells
-```
+For reference, upstream's own `TPB_SBD` struct defaults are looser still (`max_it=1`,
+`eps=1e-4`), and `run_sbd_diag.py` uses `eps=1e-3`. On the h2o counts case,
+`eps=1e-5` and `eps=1e-8` give the same energy to ten decimal places.
+
+#### MPI grid parameters
+
+| Parameter | What it controls | Default |
+|-----------|-----------------|---------|
+| `--adet_comm_size` | Ranks spanning the alpha-determinant dimension | `1` |
+| `--bdet_comm_size` | Ranks spanning the beta-determinant dimension | `1` |
+| `--task_comm_size` | Ranks spanning task-level parallelism | `1` |
+
+All ranks diagonalize each batch together, then move to the next batch
+sequentially. See [MPI Decomposition](#mpi-decomposition) below for the full 4D
+grid (a fourth, *derived* dimension — `helper` — is not set directly).
+
+#### Checkpointing parameters
+
+| Parameter | What it controls | Default |
+|-----------|-----------------|---------|
+| `--checkpoint_path` | Write `ci_strs_a`/`ci_strs_b`/`orbital_occupancies`/energy to this path as JSON text (rank 0 only), every `--checkpoint_frequency` iterations. **Must be visible under the same path from every rank** — `--resume_from` has no rank-0-reads-then-broadcasts step, every rank opens this path itself | unset |
+| `--checkpoint_frequency` | Write every this many iterations, plus always on the last one regardless of alignment | `1` (every iteration) |
+| `--resume_from` | Seed a new run's `include_configurations`/`initial_occupancies` from a previous `--checkpoint_path`'s last recorded iteration | unset |
+
+What's preserved is which determinants (`ci_strs_a`/`ci_strs_b`, as plain
+integers — independent of MPI decomposition, since they carry no rank/grid
+information) and the derived per-orbital occupancy averages. **Not** the
+wavefunction amplitudes matrix itself (`dim_a × dim_b` floats — at large
+`--max_dim` this alone would dwarf everything else; neither consuming parameter
+needs it).
+
+Not a bit-identical continuation: RNG state is fresh in the new process, and
+every string from the resumed iteration becomes a **permanent** include for
+every iteration of the new run — unlike a true single-process continuation,
+where `--sqd_carryover_threshold` would keep pruning low-weight determinants
+each iteration. A resumed run is seeded richer than an actual continuation
+would have been at that point, not identical to one.
 
 ## MPI Decomposition
 
