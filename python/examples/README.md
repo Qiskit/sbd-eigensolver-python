@@ -158,8 +158,8 @@ groups them: SQD loop, SBD solver, MPI grid, checkpointing.
 SQD samples bitstrings from a quantum device, repairs the noisy ones against an orbital-occupancy estimate
 (**configuration recovery**), subsamples them into batches, and diagonalizes
 each batch. What makes it a *loop* is that two results feed back into the next
-iteration. Three sources, concatenated in this priority order
-(qiskit-addon-sqd `fermion.py:551`):
+iteration. Three sources, concatenated in this priority order inside
+qiskit-addon-sqd's `diagonalize_fermionic_hamiltonian` (`fermion.py`):
 
 ```
 strs_a = include_a  ++  carryover_strings_a  ++  samples_a    then dedupe, truncate to max_dim, sort
@@ -178,7 +178,8 @@ truncated away entirely.
 
 The samples are not re-used raw counts. Each iteration re-runs configuration
 recovery from the *original* bitstrings using the occupancies from the previous
-iteration's best batch (`fermion.py:502`), then subsamples. Recovery is **not
+iteration's best batch (`_prepare_ci_strings` in `fermion.py`), then
+subsamples. Recovery is **not
 cumulative** — it always re-derives from the raw samples, just with a better
 occupancy estimate each time. On iteration 1 there are no occupancies yet, so the
 raw samples are only filtered by electron count (Hamming-weight postselection).
@@ -209,11 +210,14 @@ the **average orbital occupancies** (into recovery, source 3) and the
 | `--energy_tol` | Iteration-to-iteration change in energy | `1e-8` default |
 | `--occupancies_tol` | Largest change in any single orbital occupancy — an infinity norm, not an average | `1e-5` default |
 
-**Both stopping criteria must hold in the same iteration** — the test is an `and`
-(`fermion.py:584`). A run that reaches `--max_iterations` may be converged in
-energy while one stubborn orbital's occupancy is still moving, and loosening only
-one tolerance will not stop it. Watch the per-batch energies: while they still
-disagree, the loop has not converged regardless of what the total says.
+**Both stopping criteria must hold in the same iteration.** `fermion.py`'s
+convergence check combines the energy-change test and the occupancy-change test
+with a logical `and`, so the loop only stops once both are satisfied at once —
+not whichever one happens first. A run that reaches
+`--max_iterations` may be converged in energy while one stubborn orbital's
+occupancy is still moving, and loosening only one tolerance will not stop it.
+Watch the per-batch energies: while they still disagree, the loop has not
+converged regardless of what the total says.
 
 ### SBD solver parameters
 
