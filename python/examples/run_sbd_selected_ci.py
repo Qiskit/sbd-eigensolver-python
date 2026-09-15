@@ -85,6 +85,34 @@ def _cap_to_max_dim(expanded, seed, norb, backend, bit_length, max_dim, rng,
     return [expanded[k] for k in keep]
 
 
+def load_initial_dets_from_counts(counts_path, norb, num_elec_a, num_elec_b):
+    """Derive an initial alpha/beta determinant set from a count_dict.json.
+
+    Same file, same [beta | alpha] layout run_sqd_sbd.py's load_counts_as_bitarray
+    reads. No sampling, no configuration recovery -- there is nothing to
+    recover against without an occupancy estimate, and this driver never
+    builds one. Just: split each key into its two halves, keep the ones with
+    the right particle count, take the unique survivors as the seed.
+
+    Shot counts are ignored entirely. A hardware pool's weighting matters for
+    deciding what to SAMPLE; it says nothing about which bitstrings are worth
+    having in a fixed seed set, and count_dict_1752.json's own counts (all 1,
+    checked earlier this session) carry no signal to weight by regardless.
+    """
+    with open(counts_path) as f:
+        counts = json.load(f)
+    alpha_ints = set()
+    beta_ints = set()
+    for bitstring in counts:
+        beta_str, alpha_str = bitstring[:norb], bitstring[norb:]
+        if alpha_str.count("1") == num_elec_a:
+            alpha_ints.add(int(alpha_str, 2))
+        if beta_str.count("1") == num_elec_b:
+            beta_ints.add(int(beta_str, 2))
+    return (np.array(sorted(alpha_ints), dtype=np.int64),
+            np.array(sorted(beta_ints), dtype=np.int64))
+
+
 def parse_fcidump_header(path):
     """Extract NORB, NELEC, MS2 from an FCIDUMP file's header."""
     with open(path) as f:
@@ -108,10 +136,24 @@ def parse_args():
     io = parser.add_argument_group("Input")
     io.add_argument("--fcidump", required=True, help="Path to FCIDUMP file")
     io.add_argument("--adetfile", default=None,
-                     help="Initial alpha determinants. Required unless "
-                          "--resume_from is given.")
+                     help="Initial alpha determinants, one bitstring per "
+                          "line. Exactly one of --adetfile, --counts, or "
+                          "--resume_from is required.")
     io.add_argument("--bdetfile", default="",
                      help="Initial beta determinants (defaults to --adetfile)")
+    io.add_argument("--counts", default=None,
+                     help="Seed from a count_dict.json {bitstring: count} "
+                          "file instead of --adetfile/--bdetfile -- same "
+                          "format run_sqd_sbd.py reads. Each key is "
+                          "[beta | alpha] concatenated (first NORB bits beta, "
+                          "last NORB alpha; orbital 0 is the rightmost bit of "
+                          "each half). Postselects each half by Hamming "
+                          "weight (num_elec_a for alpha, num_elec_b for "
+                          "beta), takes the unique survivors as the initial "
+                          "seed. Counts themselves are ignored -- this driver "
+                          "does no sampling or configuration recovery, so a "
+                          "shot count carries no meaning here; only which "
+                          "bitstrings appear at all matters.")
 
     # ---- the loop -------------------------------------------------------------
     loop = parser.add_argument_group("Selected-CI loop")
@@ -197,8 +239,10 @@ def parse_args():
                             "--adetfile/--bdetfile.")
 
     args = parser.parse_args()
-    if args.adetfile is None and args.resume_from is None:
-        parser.error("one of --adetfile or --resume_from is required")
+    given = [bool(args.adetfile), bool(args.counts), bool(args.resume_from)]
+    if sum(given) != 1:
+        parser.error("exactly one of --adetfile, --counts, or --resume_from "
+                      "is required")
     return args
 
 
@@ -275,6 +319,23 @@ def main():
             print(f"Resuming from {args.resume_from}: iteration "
                   f"{start_iteration}, {len(adet)} alpha / {len(bdet)} beta "
                   "determinants")
+    elif args.counts:
+        alpha_ints, beta_ints = load_initial_dets_from_counts(
+            args.counts, norb, num_elec_a, num_elec_b)
+        if len(alpha_ints) == 0 or len(beta_ints) == 0:
+            raise ValueError(
+                f"{args.counts} had no bitstring half with the right "
+                f"Hamming weight (alpha={num_elec_a}, beta={num_elec_b}): "
+                f"{len(alpha_ints)} alpha / {len(beta_ints)} beta survived "
+                "postselection. Either the pool doesn't match this FCIDUMP's "
+                "electron count, or the [beta | alpha] key layout is wrong "
+                "for this file.")
+        if rank == 0:
+            print(f"Loaded from {args.counts}: {len(alpha_ints)} unique "
+                  f"alpha / {len(beta_ints)} unique beta determinants "
+                  f"(Hamming-weight postselected)")
+        adet = _ci_strings_to_sbd_dets(alpha_ints, norb, backend, args.sbd_bit_length)
+        bdet = _ci_strings_to_sbd_dets(beta_ints, norb, backend, args.sbd_bit_length)
     else:
         adet = sbd.LoadAlphaDets(args.adetfile, args.sbd_bit_length, norb)
         bdetfile = args.bdetfile or args.adetfile
