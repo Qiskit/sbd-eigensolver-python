@@ -149,13 +149,13 @@ pytest --nbmake run_sqd_sbd.ipynb      # what CI runs; needs the nbtest extra
 # or open it in JupyterLab and step through the cells
 ```
 
-### 4. SQD Parameters
+## SQD Parameters
 
 Reference for every flag `run_sqd_sbd.py` accepts, grouped the way `--help`
 groups them: SQD loop, SBD solver, MPI grid, checkpointing.
 
-**How each iteration builds its subspace.** SQD samples bitstrings from a
-quantum device, repairs the noisy ones against an orbital-occupancy estimate
+### **How each iteration builds its subspace.** 
+SQD samples bitstrings from a quantum device, repairs the noisy ones against an orbital-occupancy estimate
 (**configuration recovery**), subsamples them into batches, and diagonalizes
 each batch. What makes it a *loop* is that two results feed back into the next
 iteration. Three sources, concatenated in this priority order
@@ -187,7 +187,7 @@ So exactly two things flow from iteration N to N+1, and neither is a tolerance:
 the **average orbital occupancies** (into recovery, source 3) and the
 **wavefunction amplitudes** (into carryover, source 2).
 
-#### SQD loop parameters
+### SQD loop parameters
 
 *Shapes the subspace — changes the numbers you compute:*
 
@@ -195,7 +195,6 @@ the **average orbital occupancies** (into recovery, source 3) and the
 |-----------|-----------------|----------------|
 | `--counts FILE` | Load hardware bitstrings from a JSON file (use this or `--samples`) | 10K–1M+ shots |
 | `--samples N` | Generate N random bitstrings at the target Hamming weights; plumbing check only, energy not meaningful | any |
-| `--max_pool_size` | Randomly subsample `--counts` down to at most this many rows *before* the loop sees them (fixed seed). `recover_configurations` (qiskit-addon-sqd) loops in pure Python over every pool row, every iteration, with no vectorized or distributed implementation — cost scales with pool size, not `--samples_per_batch`. Lossless when every row's count is equal (nothing lost by subsampling); otherwise it trades real hardware-sampling weight for speed | unset (no cap) |
 | `--samples_per_batch` | Dominant control on subspace dimension. With `symmetrize_spin` the alpha and beta string sets are merged, so the subspace is up to `(2N)^2`, not `N^2` | `3000` (default); see the cost note below |
 | `--num_batches` | Independent subsamples per iteration; occupancies are averaged across them | 3–10 (small), up to 100 (large) |
 | `--sqd_carryover_threshold` | `\|coefficient\|` cutoff for carrying a determinant into the next iteration. **Lower it to carry more** | `1e-4` (default) |
@@ -216,42 +215,7 @@ energy while one stubborn orbital's occupancy is still moving, and loosening onl
 one tolerance will not stop it. Watch the per-batch energies: while they still
 disagree, the loop has not converged regardless of what the total says.
 
-Neither tolerance is comparable to `--sbd_eps`, which is the residual norm inside a
-single diagonalization, not an energy difference between iterations.
-
-**A note on cost.** Small subspaces are dominated by Python-side work — parsing the
-counts file, configuration recovery over every raw bitstring, subsampling — not by
-the diagonalization. Measured on 8×H100 for a 45-orbital / 46-electron case with 1M
-sampled bitstrings, 3 batches, 3 iterations: `samples_per_batch=300` (subspace
-360,000) took 254 s, and `samples_per_batch=3000` (subspace 36,000,000 — 100× larger)
-took 326 s, only 1.28× longer, while lowering the energy by about 3 Ha. If a run
-looks cheap, the subspace is probably too small to be using the hardware.
-
-**When the subspace or memory runs away.** The subspace grows every iteration —
-carryover accumulates on top of fresh samples — so a run that starts comfortably can
-fail later. Two symptoms, one cause. Setup time exploding between iterations (the
-`Elapsed time for helper construction` line) is host-side work: `MakeHelpers` is
-superlinear in determinants per spin, and no GPU setting affects it. A
-`cudaErrorMemoryAllocation` on the Thrust backend is the determinant index, which by
-default is allocated over the entire subspace.
-
-**`--max_dim`** is the fix: it bounds the subspace directly and clears both symptoms
-at once. **Raising `--sqd_carryover_threshold`** carries fewer determinants forward,
-which is the right move when the *growth* between iterations is the problem rather
-than the starting size. The Thrust-only `--sbd_use_precalculated_dets 0` (optionally
-with `--sbd_max_memory_gb_for_determinants N`) trades matvec speed for GPU memory,
-but it bounds only that one buffer and not the subspace, so it is no substitute for
-`--max_dim` and is rarely what a capped run needs. Note the diagonalization itself
-is rarely the bottleneck: an 800M-determinant Davidson solve measured 1.0 s against
-9.3 s of helper construction in the same iteration, so tune the subspace, not the
-solver.
-
-**SBD's own carryover plays no part in any of this.** `carryover_type` and friends
-are SBD's separate iterative scheme, for re-running SBD's CLI against its own
-`--carryover_adetfile`. They are deliberately not flags on this driver, and setting
-them through `sbd_config` cannot change an SQD result.
-
-#### SBD solver parameters
+### SBD solver parameters
 
 Per diagonalization, not per loop:
 
@@ -268,7 +232,7 @@ For reference, upstream's own `TPB_SBD` struct defaults are looser still (`max_i
 `eps=1e-4`), and `run_sbd_diag.py` uses `eps=1e-3`. On the h2o counts case,
 `eps=1e-5` and `eps=1e-8` give the same energy to ten decimal places.
 
-#### MPI grid parameters
+### MPI grid parameters
 
 | Parameter | What it controls | Default |
 |-----------|-----------------|---------|
@@ -280,7 +244,7 @@ All ranks diagonalize each batch together, then move to the next batch
 sequentially. See [MPI Decomposition](#mpi-decomposition) below for the full 4D
 grid (a fourth, *derived* dimension — `helper` — is not set directly).
 
-#### Checkpointing parameters
+### Checkpointing parameters
 
 | Parameter | What it controls | Default |
 |-----------|-----------------|---------|
@@ -313,14 +277,6 @@ into a fourth, "helper" dimension, computed as
 So 8 ranks with `--adet_comm_size 2 --bdet_comm_size 2` is valid: the grid is
 `1 × 2 × 2` and the helper dimension absorbs the remaining factor of 2.
 
-A rank count that is **not** a multiple does not run with idle ranks — it **aborts**.
-SBD derives the helper dimension by integer division and then requires
-`task × adet × bdet × helper == ranks` exactly (`TaskCommunicator`,
-`chemistry/tpb/helper.h`), so e.g. 8 ranks with a grid of 3 gives
-`helper = 2`, `3 × 2 = 6 ≠ 8`, and the run stops with
-`ValueError: MPI Size of twister is not a square of a integer`. That message names
-neither the grid nor the rank count, so if you see it, check this arithmetic first.
-
 When using more than one rank, specify at least `--adet_comm_size`. Examples:
 
 | Ranks | Decomposition | Helper |
@@ -345,22 +301,13 @@ per-call via `--device`:
 ```bash
 --device cpu       # host OpenMP (default)
 --device gpu       # NVHPC Thrust (requires NVIDIA GPU + HPC SDK build)
---device gpu-omp   # NVHPC OpenMP target offload
+--device gpu-omp   # OpenMP target offload, NVIDIA and AMD GPUs
 --device auto      # GPU if available, else CPU
 ```
 
 `sbd.available_backends()` reports what this install actually has (a static scan
 — it does not import anything, so it is safe to call outside `mpirun`), and
 `sbd.loaded_backends()` reports what the current process has pulled in.
-
-Lazy loading is what makes the three backends safe to co-install: see
-[Backend Architecture](../../README.md#backend-architecture) in the Python
-Bindings README for why. One consequence is worth knowing when you write your
-own driver — **do not import the CPU and `gpu-omp` backends into the same
-process.** They share NVHPC's `libnvomp`, and loading `_core_cpu` first leaves
-it initialised host-only, after which offload regions run on the host while
-device queries still report a GPU. `sbd.has_backend_conflict()` returns True if
-that has happened. Loading `cpu` and `gpu` (Thrust) together is fine.
 
 Within Python, backends can be selected per call — no re-initialization needed:
 
