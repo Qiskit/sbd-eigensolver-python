@@ -128,19 +128,38 @@ def parse_args():
                           "result, the sampled pool is missing it (and probably its "
                           "low-excitation neighbors), which forcing it in fixes "
                           "directly rather than by enlarging max_dim/iterations.")
-    sqd.add_argument("--checkpoint_file", type=str, default=None,
+    sqd.add_argument("--checkpoint_path", type=str, default=None,
                      help="Write ci_strs_a/ci_strs_b/occupancies/energy to this "
-                          "JSON path after every iteration (rank 0 only). Safe to "
-                          "read mid-run for progress; each write replaces the file, "
-                          "so a killed run still leaves its last completed "
-                          "iteration on disk.")
+                          "path as JSON text (rank 0 only), every "
+                          "--checkpoint_frequency iterations. MUST be visible "
+                          "under the same path from every rank: --resume_from "
+                          "has no rank-0-reads-then-broadcasts step, every rank "
+                          "opens this path itself, so a per-node-local /tmp on a "
+                          "multi-node job would leave the other nodes' ranks "
+                          "unable to find it. Safe to read mid-run for progress; "
+                          "each write replaces the file (atomic rename), so a "
+                          "killed run still leaves its last completed checkpoint "
+                          "on disk.")
+    sqd.add_argument("--checkpoint_frequency", type=int, default=1,
+                     help="Write --checkpoint_path every this many iterations, "
+                          "plus always on the last one regardless of alignment. "
+                          "1 (default) checkpoints every iteration. Raise this "
+                          "to cut JSON-write overhead when ci_strs_a/b are large "
+                          "(one int per string, so --max_dim 100000 is up to "
+                          "200,000 ints per checkpoint) or iterations are fast "
+                          "enough that the write itself is a noticeable fraction "
+                          "of the per-iteration cost.")
     sqd.add_argument("--resume_from", type=str, default=None,
                      help="Seed this run's include_configurations and "
-                          "initial_occupancies from a previous --checkpoint_file's "
-                          "LAST iteration. Not a bit-identical continuation "
-                          "(RNG state is fresh), but starts the new run's subspace "
-                          "and configuration recovery from where the old one "
-                          "stopped rather than from raw samples again.")
+                          "initial_occupancies from a previous --checkpoint_path's "
+                          "LAST recorded iteration. Not a bit-identical "
+                          "continuation (RNG state is fresh, and every string "
+                          "from that iteration becomes a permanent include -- not "
+                          "subject to carryover_threshold decay the way a true "
+                          "single-process continuation's own carryover would be), "
+                          "but starts the new run's subspace and configuration "
+                          "recovery from where the old one stopped rather than "
+                          "from raw samples again.")
 
     # ---- SBD: the inner eigensolver -------------------------------------------
     # Names match the C++ CLI (vendor/sbd-upstream/include/sbd/chemistry/tpb/
@@ -408,11 +427,17 @@ def main():
                 total_e = r.energy + nuclear_repulsion_energy
                 dim = np.prod(r.sci_state.amplitudes.shape)
                 print(f"  Batch {i}: E={total_e:.10f}, dim={dim:_}")
-            if args.checkpoint_file:
+            due = (iteration % args.checkpoint_frequency == 0
+                   or iteration == args.max_iterations)
+            if args.checkpoint_path and due:
                 # Batch 0 only: multi-batch checkpoints would need to pick which
                 # batch's subspace to resume from, and the driver only ever uses
                 # num_batches=1 in practice. Whole file rewritten each call (not
-                # appended), so a killed run's last COMPLETE iteration survives.
+                # appended), so a killed run's last COMPLETE checkpoint survives.
+                # Always written on the last iteration regardless of frequency
+                # alignment, so a completed run's checkpoint reflects its true
+                # final state rather than whatever iteration happened to land on
+                # a multiple of --checkpoint_frequency.
                 r = results[0]
                 entry = {
                     "iteration": iteration,
@@ -423,9 +448,9 @@ def main():
                     "ci_strs_b": [int(x) for x in r.sci_state.ci_strs_b],
                 }
                 checkpoint_history.append(entry)
-                tmp = Path(args.checkpoint_file).with_suffix(".tmp")
+                tmp = Path(args.checkpoint_path).with_suffix(".tmp")
                 tmp.write_text(json.dumps({"iterations": checkpoint_history}))
-                tmp.replace(args.checkpoint_file)
+                tmp.replace(args.checkpoint_path)
 
     if rank == 0:
         # Say which layer each setting belongs to. The two layers have knobs with
