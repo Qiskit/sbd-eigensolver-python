@@ -105,6 +105,28 @@ def parse_args():
                           "least this, and carries it into the next iteration's "
                           "subspace. Lower it to carry more. Distinct from "
                           "--sbd_carryover_threshold, which SQD does not use.")
+    sqd.add_argument("--include_hf", action="store_true",
+                     help="Force the single Slater determinant with the lowest "
+                          "num_elec_a/num_elec_b orbital indices occupied into "
+                          "every iteration's subspace, regardless of whether the "
+                          "sampled bit_array contains it. Cheap correctness check: "
+                          "if this determinant's own diagonal energy beats the SQD "
+                          "result, the sampled pool is missing it (and probably its "
+                          "low-excitation neighbors), which forcing it in fixes "
+                          "directly rather than by enlarging max_dim/iterations.")
+    sqd.add_argument("--checkpoint_file", type=str, default=None,
+                     help="Write ci_strs_a/ci_strs_b/occupancies/energy to this "
+                          "JSON path after every iteration (rank 0 only). Safe to "
+                          "read mid-run for progress; each write replaces the file, "
+                          "so a killed run still leaves its last completed "
+                          "iteration on disk.")
+    sqd.add_argument("--resume_from", type=str, default=None,
+                     help="Seed this run's include_configurations and "
+                          "initial_occupancies from a previous --checkpoint_file's "
+                          "LAST iteration. Not a bit-identical continuation "
+                          "(RNG state is fresh), but starts the new run's subspace "
+                          "and configuration recovery from where the old one "
+                          "stopped rather than from raw samples again.")
 
     # ---- SBD: the inner eigensolver -------------------------------------------
     # Names match the C++ CLI (vendor/sbd-upstream/include/sbd/chemistry/tpb/
@@ -267,6 +289,33 @@ def main():
     # --- Load or generate bitstrings ---
     rand_seed = np.random.default_rng(42)
 
+    # --- include_configurations / initial_occupancies: forced references and resume ---
+    include_a: list[int] = []
+    include_b: list[int] = []
+    initial_occupancies = None
+    if args.include_hf:
+        # Lowest num_elec_a/num_elec_b orbital INDICES occupied -- not necessarily
+        # the true HF determinant if this basis isn't canonically ordered, but any
+        # single Slater determinant's own diagonal energy is a cheap, exact lower
+        # bound on how well a subspace containing it can do. If forcing it in moves
+        # the SQD result, the sampled pool was missing it.
+        include_a.append((1 << num_elec_a) - 1)
+        include_b.append((1 << num_elec_b) - 1)
+    if args.resume_from:
+        with open(args.resume_from) as f:
+            checkpoint = json.load(f)
+        last = checkpoint["iterations"][-1]
+        include_a.extend(last["ci_strs_a"])
+        include_b.extend(last["ci_strs_b"])
+        initial_occupancies = (
+            np.array(last["occupancies_a"]), np.array(last["occupancies_b"])
+        )
+        if rank == 0:
+            print(f"Resuming from {args.resume_from}: iteration {last['iteration']}, "
+                  f"{len(last['ci_strs_a'])} alpha / {len(last['ci_strs_b'])} beta "
+                  "strings carried in as include_configurations")
+    include_configurations = (include_a, include_b) if (include_a or include_b) else None
+
     if args.counts:
         bit_array = load_counts_as_bitarray(args.counts, norb * 2)
         if rank == 0:
@@ -322,6 +371,7 @@ def main():
 
     # --- Run SQD loop ---
     result_history = []
+    checkpoint_history: list[dict] = []
 
     def callback(results: list[SCIResult]):
         result_history.append(results)
@@ -332,6 +382,24 @@ def main():
                 total_e = r.energy + nuclear_repulsion_energy
                 dim = np.prod(r.sci_state.amplitudes.shape)
                 print(f"  Batch {i}: E={total_e:.10f}, dim={dim:_}")
+            if args.checkpoint_file:
+                # Batch 0 only: multi-batch checkpoints would need to pick which
+                # batch's subspace to resume from, and the driver only ever uses
+                # num_batches=1 in practice. Whole file rewritten each call (not
+                # appended), so a killed run's last COMPLETE iteration survives.
+                r = results[0]
+                entry = {
+                    "iteration": iteration,
+                    "energy": r.energy + nuclear_repulsion_energy,
+                    "occupancies_a": r.occupancies[0].tolist(),
+                    "occupancies_b": r.occupancies[1].tolist(),
+                    "ci_strs_a": [int(x) for x in r.sci_state.ci_strs_a],
+                    "ci_strs_b": [int(x) for x in r.sci_state.ci_strs_b],
+                }
+                checkpoint_history.append(entry)
+                tmp = Path(args.checkpoint_file).with_suffix(".tmp")
+                tmp.write_text(json.dumps({"iterations": checkpoint_history}))
+                tmp.replace(args.checkpoint_file)
 
     if rank == 0:
         # Say which layer each setting belongs to. The two layers have knobs with
@@ -373,6 +441,8 @@ def main():
             occupancies_tol=args.occupancies_tol,
             carryover_threshold=args.sqd_carryover_threshold,
             max_dim=args.max_dim,
+            include_configurations=include_configurations,
+            initial_occupancies=initial_occupancies,
             sci_solver=sbd_solver,
             symmetrize_spin=True,
             callback=callback,
