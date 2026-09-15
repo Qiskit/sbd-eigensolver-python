@@ -391,8 +391,8 @@ def main():
                 entry = {
                     "iteration": iteration,
                     "energy": r.energy + nuclear_repulsion_energy,
-                    "occupancies_a": r.occupancies[0].tolist(),
-                    "occupancies_b": r.occupancies[1].tolist(),
+                    "occupancies_a": r.orbital_occupancies[0].tolist(),
+                    "occupancies_b": r.orbital_occupancies[1].tolist(),
                     "ci_strs_a": [int(x) for x in r.sci_state.ci_strs_a],
                     "ci_strs_b": [int(x) for x in r.sci_state.ci_strs_b],
                 }
