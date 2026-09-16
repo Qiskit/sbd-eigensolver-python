@@ -13,6 +13,7 @@
 from setuptools import setup, Extension
 import sys
 import os
+import platform
 import subprocess
 import re
 import sysconfig
@@ -455,6 +456,23 @@ def _route_build_through_gpu_compiler(gpu_path, vendor='nvidia'):
         _cfg[_k] = re.sub(r' +', ' ', _v).strip()
 
 
+def _homebrew_prefix():
+    """Homebrew's install prefix, or None if brew is not on PATH.
+
+    Not a constant: it is /opt/homebrew on Apple silicon and /usr/local on
+    Intel, so either one hardcoded is wrong on the other architecture.
+    """
+    import shutil
+    brew = shutil.which('brew')
+    if not brew:
+        return None
+    try:
+        return subprocess.check_output([brew, '--prefix'],
+                                       universal_newlines=True).strip()
+    except Exception:
+        return None
+
+
 def find_nvidia_hpc_sdk():
     nvhpc_home = os.environ.get('NVHPC_HOME', None)
     if nvhpc_home:
@@ -596,13 +614,17 @@ print(f"Using BLAS libraries: {blas_libs}")
 
 libraries = mpi_libs + blas_libs
 
-# RPATH so libraries are found at runtime without LD_LIBRARY_PATH
+# RPATH so libraries are found at runtime without LD_LIBRARY_PATH.
+#
+# `--rpath` is a GNU ld spelling that Apple's linker does not accept; it wants
+# the single-dash `-rpath`. GNU ld understands `-rpath` too, so use that form
+# on both platforms.
 extra_link_args = ['-fopenmp']
 _rpath_dirs = []
 for lib_dir in library_dirs:
     if lib_dir not in _rpath_dirs:          # a dir may appear as both MPI and BLAS
         _rpath_dirs.append(lib_dir)
-        extra_link_args.append(f'-Wl,--rpath,{lib_dir}')
+        extra_link_args.append(f'-Wl,-rpath,{lib_dir}')
 print(f"RPATH will be set to: {library_dirs}")
 
 # Runtime search order matters: conda's Python injects -Wl,-rpath,$CONDA_PREFIX/lib
@@ -626,7 +648,7 @@ if _conda_prefix:
             _scfg[_key] = re.sub(r' +', ' ', _rpath_re.sub('', _val)).strip()
     if _conda_lib not in _rpath_dirs:   # skip if already requested explicitly
         _rpath_dirs.append(_conda_lib)
-        extra_link_args.append(f'-Wl,--rpath,{_conda_lib}')
+        extra_link_args.append(f'-Wl,-rpath,{_conda_lib}')
         print(f"RPATH fallback appended last: {_conda_lib}")
 
 # Detect the GPU toolchain. What it can build depends on the vendor:
@@ -727,7 +749,6 @@ ext_modules = []
 
 if build_cpu:
     print("\nConfiguring CPU backend (_core_cpu)")
-    import platform
     if platform.system() == 'Darwin':
         # macOS has no system OpenMP, so libomp comes from a package manager.
         # Prefer the conda env when it has one: those are the libraries actually
@@ -741,9 +762,15 @@ if build_cpu:
             omp_lib = openblas_lib = os.path.join(conda_prefix, 'lib')
             print(f"Darwin: libomp and BLAS from conda env {conda_prefix}")
         else:
-            omp_inc = '/opt/homebrew/opt/libomp/include'
-            omp_lib = '/opt/homebrew/opt/libomp/lib'
-            openblas_lib = '/opt/homebrew/opt/openblas/lib'
+            # Ask brew for its prefix rather than assuming: it is /opt/homebrew
+            # on Apple silicon and /usr/local on Intel, so either one hardcoded
+            # is wrong on the other architecture. Keep /opt/homebrew as the
+            # fallback for when brew is not on PATH, so the error below still
+            # names a concrete path to look in.
+            brew_prefix = _homebrew_prefix() or '/opt/homebrew'
+            omp_inc = os.path.join(brew_prefix, 'opt', 'libomp', 'include')
+            omp_lib = os.path.join(brew_prefix, 'opt', 'libomp', 'lib')
+            openblas_lib = os.path.join(brew_prefix, 'opt', 'openblas', 'lib')
             if not os.path.exists(os.path.join(omp_inc, 'omp.h')):
                 # Fail here with the fix, rather than 100 lines later with
                 # "'omp.h' file not found" from the middle of a compile.
@@ -753,7 +780,8 @@ if build_cpu:
                       "         conda install -c conda-forge llvm-openmp   (preferred)\n"
                       "         brew install libomp")
                 sys.exit(1)
-            print("Darwin: libomp and BLAS from Homebrew (no conda libomp found)")
+            print(f"Darwin: libomp and BLAS from Homebrew at {brew_prefix} "
+                  "(no conda libomp found)")
 
         # Say WHICH clang is compiling. distutils takes CC/CXX from the
         # environment, else from sysconfig -- where conda records a bare
@@ -774,14 +802,22 @@ if build_cpu:
               f"                     {_cxx_ver}   (pin it with CC/CXX)")
         cpu_compile_args = [
             '-DSBD_TRADMODE',
+            '-DOMPI_SKIP_MPICXX',
             '-std=c++17', '-Xpreprocessor', '-fopenmp', '-O3',
             '-Wno-sign-compare', '-Wno-unused-variable', '-fPIC',
             '-DSBD_MODULE_NAME=_core_cpu', f'-I{omp_inc}',
         ]
-        cpu_link_args = [f'-L{omp_lib}', f'-L{openblas_lib}', '-lomp']
         cpu_inc = include_dirs + [omp_inc]
         cpu_lib_dirs = library_dirs + [omp_lib, openblas_lib]
         cpu_libs = libraries + ['omp']
+        # Not extra_link_args: that carries a bare `-fopenmp`, which Apple
+        # clang rejects at link time the same way it does when compiling.
+        # Re-derive the rpath entries over the libomp/BLAS directories chosen
+        # above -- whether they came from conda or Homebrew -- so those dylibs
+        # resolve at import time. Apple's linker wants `-rpath`, not GNU ld's
+        # `--rpath`.
+        cpu_link_args = [f'-L{d}' for d in (omp_lib, openblas_lib)]
+        cpu_link_args += [f'-Wl,-rpath,{d}' for d in cpu_lib_dirs]
     else:
         cpu_compile_args = [
             '-DSBD_TRADMODE',

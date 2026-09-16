@@ -14,6 +14,8 @@ keywords = ["quantum chemistry", "diagonalization", "tensor product basis", "MPI
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Scientific/Engineering :: Physics",
     "Programming Language :: Python :: 3",
@@ -25,7 +27,6 @@ classifiers = [
     "Programming Language :: C++",
 ]
 dependencies = [
-    "pybind11>=2.6.0",
     "mpi4py>=3.0.0",
     "numpy>=1.19.0",
 ]
