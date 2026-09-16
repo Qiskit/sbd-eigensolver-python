@@ -473,6 +473,53 @@ def _homebrew_prefix():
         return None
 
 
+def _resolve_darwin_cxx():
+    """(path, version_line) of the C++ compiler this build will actually use.
+
+    distutils takes CC/CXX from the environment, else from sysconfig -- where
+    conda records a bare 'clang++' that is resolved through PATH, so a Homebrew
+    LLVM silently wins over both Apple clang and a conda toolchain. Knowing
+    which one it is decides where OpenMP comes from, so this is resolved before
+    the libomp search rather than merely reported afterwards.
+    """
+    import shutil
+    cxx = (os.environ.get('CXX') or sysconfig.get_config_var('CXX')
+           or 'clang++').split()[0]
+    path = shutil.which(cxx) or cxx
+    try:
+        version = subprocess.check_output(
+            [path, '--version'], universal_newlines=True,
+            stderr=subprocess.STDOUT).splitlines()[0]
+    except Exception:
+        version = '(version unknown)'
+    return path, version
+
+
+def _compiler_openmp_prefix(cxx_path):
+    """Prefix of an OpenMP runtime shipped alongside cxx_path, or None.
+
+    An LLVM that builds the openmp runtime -- Homebrew's llvm formula, and the
+    conda-forge clang packages -- installs libomp.dylib and omp.h into its own
+    tree, and `-fopenmp` links THAT copy. Adding a second libomp from elsewhere
+    then puts two same-named runtimes in one process, which aborts at the first
+    parallel region with "OMP: Error #15". So when the compiler brings its own,
+    that is the one to build against.
+
+    Looks one directory up from bin/, i.e. <prefix>/lib/libomp.dylib next to
+    <prefix>/include/omp.h. Returns the prefix only when BOTH are present,
+    since the header is needed to compile and the library to link.
+    """
+    if not cxx_path or not os.path.isabs(cxx_path):
+        return None
+    prefix = os.path.dirname(os.path.dirname(cxx_path))
+    if not prefix or prefix == os.sep:
+        return None
+    has_header = os.path.exists(os.path.join(prefix, 'include', 'omp.h'))
+    has_lib = any(os.path.exists(os.path.join(prefix, 'lib', name))
+                  for name in ('libomp.dylib', 'libomp.a'))
+    return prefix if (has_header and has_lib) else None
+
+
 def find_nvidia_hpc_sdk():
     nvhpc_home = os.environ.get('NVHPC_HOME', None)
     if nvhpc_home:
@@ -750,13 +797,43 @@ ext_modules = []
 if build_cpu:
     print("\nConfiguring CPU backend (_core_cpu)")
     if platform.system() == 'Darwin':
+        # Which compiler is used decides where OpenMP may come from, so resolve
+        # it first. Printing it is also the difference between a reproducible
+        # build and a mystery, since a bare 'clang++' from sysconfig is resolved
+        # through PATH.
+        _cxx_path, _cxx_ver = _resolve_darwin_cxx()
+        print(f"Darwin C++ compiler: {_cxx_path}\n"
+              f"                     {_cxx_ver}   (pin it with CC/CXX)")
+
         # macOS has no system OpenMP, so libomp comes from a package manager.
-        # Prefer the conda env when it has one: those are the libraries actually
-        # LOADED at import time (resolved via the python executable's
-        # @loader_path/../lib), so building against Homebrew's copies instead
-        # means compiling against different libraries than the process runs on.
+        #
+        # Order matters, and it is about which libomp ends up in the PROCESS,
+        # not merely which one satisfies the compile:
+        #
+        # 1. The compiler's own runtime, when it has one. `-fopenmp` links that
+        #    copy no matter what else is on the link line, so naming a second
+        #    libomp here is how you get two same-named runtimes in one process
+        #    and an "OMP: Error #15" abort at the first parallel region.
+        # 2. Otherwise the conda env, whose libraries are the ones actually
+        #    LOADED at import time (resolved via the python executable's
+        #    @loader_path/../lib).
+        # 3. Otherwise Homebrew's standalone libomp, which is what Apple clang
+        #    needs, having no OpenMP of its own.
         conda_prefix = os.environ.get('CONDA_PREFIX')
-        if conda_prefix and os.path.exists(
+        compiler_omp = _compiler_openmp_prefix(_cxx_path)
+        if compiler_omp:
+            omp_inc = os.path.join(compiler_omp, 'include')
+            omp_lib = os.path.join(compiler_omp, 'lib')
+            # BLAS is a separate question from OpenMP: the compiler tree has no
+            # OpenBLAS, so keep taking that from conda or Homebrew.
+            if conda_prefix and os.path.isdir(os.path.join(conda_prefix, 'lib')):
+                openblas_lib = os.path.join(conda_prefix, 'lib')
+            else:
+                openblas_lib = os.path.join(_homebrew_prefix() or '/opt/homebrew',
+                                            'opt', 'openblas', 'lib')
+            print(f"Darwin: libomp from the compiler's own tree {compiler_omp}\n"
+                  f"        BLAS from {openblas_lib}")
+        elif conda_prefix and os.path.exists(
                 os.path.join(conda_prefix, 'include', 'omp.h')):
             omp_inc = os.path.join(conda_prefix, 'include')
             omp_lib = openblas_lib = os.path.join(conda_prefix, 'lib')
@@ -775,7 +852,8 @@ if build_cpu:
                 # Fail here with the fix, rather than 100 lines later with
                 # "'omp.h' file not found" from the middle of a compile.
                 print("Error: no OpenMP runtime found on this macOS host.\n"
-                      f"       Looked in $CONDA_PREFIX/include and {omp_inc}.\n"
+                      f"       Looked beside {_cxx_path}, in $CONDA_PREFIX/include, "
+                      f"and in {omp_inc}.\n"
                       "       Apple clang ships without OpenMP, so install one:\n"
                       "         conda install -c conda-forge llvm-openmp   (preferred)\n"
                       "         brew install libomp")
@@ -783,23 +861,6 @@ if build_cpu:
             print(f"Darwin: libomp and BLAS from Homebrew at {brew_prefix} "
                   "(no conda libomp found)")
 
-        # Say WHICH clang is compiling. distutils takes CC/CXX from the
-        # environment, else from sysconfig -- where conda records a bare
-        # 'clang++' that is resolved through PATH, so a Homebrew LLVM silently
-        # wins over both Apple clang and a conda toolchain. Printing it is the
-        # difference between a reproducible build and a mystery.
-        import shutil
-        _cxx = (os.environ.get('CXX') or sysconfig.get_config_var('CXX')
-                or 'clang++').split()[0]
-        _cxx_path = shutil.which(_cxx) or _cxx
-        try:
-            _cxx_ver = subprocess.check_output(
-                [_cxx_path, '--version'], universal_newlines=True,
-                stderr=subprocess.STDOUT).splitlines()[0]
-        except Exception:
-            _cxx_ver = '(version unknown)'
-        print(f"Darwin C++ compiler: {_cxx_path}\n"
-              f"                     {_cxx_ver}   (pin it with CC/CXX)")
         cpu_compile_args = [
             '-DSBD_TRADMODE',
             '-DOMPI_SKIP_MPICXX',
@@ -813,9 +874,8 @@ if build_cpu:
         # Not extra_link_args: that carries a bare `-fopenmp`, which Apple
         # clang rejects at link time the same way it does when compiling.
         # Re-derive the rpath entries over the libomp/BLAS directories chosen
-        # above -- whether they came from conda or Homebrew -- so those dylibs
-        # resolve at import time. Apple's linker wants `-rpath`, not GNU ld's
-        # `--rpath`.
+        # above, so those dylibs resolve at import time. Apple's linker wants
+        # `-rpath`, not GNU ld's `--rpath`.
         cpu_link_args = [f'-L{d}' for d in (omp_lib, openblas_lib)]
         cpu_link_args += [f'-Wl,-rpath,{d}' for d in cpu_lib_dirs]
     else:
