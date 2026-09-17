@@ -393,11 +393,15 @@ def main():
     transitions = build_single_excitation_transitions(norb)
 
     checkpoint_history: list[dict] = []
+    result_history: list[list] = []
     current_include = (include_a, include_b) if (include_a or include_b) else None
     current_occ = initial_occupancies
     prev_energy = None
     prev_occ = None
     t0 = time.perf_counter()
+
+    def callback(results):
+        result_history.append(results)
 
     for outer_iter in range(1, args.max_iterations + 1):
         result = diagonalize_fermionic_hamiltonian(
@@ -411,6 +415,7 @@ def main():
             sci_solver=sbd_solver,
             symmetrize_spin=True,
             max_dim=args.max_dim,
+            callback=callback,
             seed=rand_seed,
         )
         energy = result.energy + nuclear_repulsion_energy
@@ -488,6 +493,15 @@ def main():
         print(f"Total energy: {energy:.10f}")
         print(f"Final subspace: {len(ci_strs_a)} alpha x {len(ci_strs_b)} beta "
               f"= {len(ci_strs_a) * len(ci_strs_b):_}")
+
+        if result_history:
+            print()
+            print("Convergence History:")
+            for i, results in enumerate(result_history):
+                energies = [r.energy + nuclear_repulsion_energy for r in results]
+                print(f"  Round {i+1}: min={min(energies):.10f}, "
+                      f"max={max(energies):.10f}, "
+                      f"avg={np.mean(energies):.10f}")
 
     try:
         import sbd
