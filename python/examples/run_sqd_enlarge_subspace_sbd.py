@@ -49,6 +49,7 @@ from pathlib import Path
 
 import numpy as np
 from mpi4py import MPI
+from pyscf import ao2mo, tools
 from qiskit.primitives import BitArray
 from qiskit_addon_sqd.fermion import diagonalize_fermionic_hamiltonian, enlarge_batch_from_transitions
 
@@ -322,12 +323,10 @@ def main():
     else:
         device_config = DeviceConfig.cpu()
 
-    # Reads the FCIDUMP directly (via SBD's own LoadFCIDump binding) rather
-    # than through pyscf, since pyscf isn't a dependency of this driver --
-    # verified bit-identical to pyscf.tools.fcidump.to_scf(...) + ao2mo.
-    from sbd.sbd_solver import load_integrals_from_fcidump
-    hcore, eri, nuclear_repulsion_energy = load_integrals_from_fcidump(
-        args.fcidump, norb)
+    mf_as = tools.fcidump.to_scf(str(args.fcidump))
+    hcore = mf_as.get_hcore()
+    eri = ao2mo.restore(1, mf_as._eri, norb)
+    nuclear_repulsion_energy = mf_as.mol.energy_nuc()
 
     rand_seed = np.random.default_rng(42)
 

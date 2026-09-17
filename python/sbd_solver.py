@@ -480,49 +480,6 @@ def _read_fcidump_ecore(fcidump_path):
     return 0.0
 
 
-def load_integrals_from_fcidump(fcidump_path, norb):
-    """Build (hcore, eri, nuclear_repulsion_energy) directly from an
-    FCIDUMP file, without requiring pyscf.
-
-    Uses SBD's own ``LoadFCIDump`` binding to parse the file (the exact
-    same parser SBD itself uses to diagonalize), then builds dense
-    chemist-notation arrays from its raw ``(value, i, j, k, l)`` integrals
-    list -- 1-indexed, with ``k == l == 0`` marking a one-electron entry and
-    all-zero indices marking ECORE (read separately via
-    ``_read_fcidump_ecore``, which already exists for this purpose
-    elsewhere in this module). Verified bit-identical (max diff 0.0) to
-    ``pyscf.tools.fcidump.to_scf(...).get_hcore()`` /
-    ``ao2mo.restore(1, mf._eri, norb)`` on H2O.
-
-    ``eri`` follows the same chemist convention ``ao2mo.restore(1, ...)``
-    would produce (``eri[p,q,r,s] = (pq|rs)``), with the standard 8-fold
-    permutational symmetry of real orbitals.
-    """
-    from . import get_backend
-
-    backend = get_backend()
-    fcidump = backend.LoadFCIDump(str(fcidump_path))
-
-    hcore = np.zeros((norb, norb))
-    eri = np.zeros((norb, norb, norb, norb))
-    for value, i, j, k, l in fcidump.integrals:
-        if i == 0:
-            continue  # ECORE line
-        p, q = i - 1, j - 1
-        if k == 0:
-            hcore[p, q] = value
-            hcore[q, p] = value
-        else:
-            r, s = k - 1, l - 1
-            for a, b, c, d in {
-                (p, q, r, s), (q, p, r, s), (p, q, s, r), (q, p, s, r),
-                (r, s, p, q), (s, r, p, q), (r, s, q, p), (s, r, q, p),
-            }:
-                eri[a, b, c, d] = value
-
-    return hcore, eri, _read_fcidump_ecore(fcidump_path)
-
-
 def _ci_strings_to_sbd_dets(
     ci_strings: np.ndarray, norb: int, backend,
     bit_length: int = SBD_DEFAULT_BIT_LENGTH,
