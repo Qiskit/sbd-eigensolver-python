@@ -1,4 +1,4 @@
-# SBD Python Examples
+# SQD/SBD Python Examples
 
 Examples demonstrating SBD's capabilities for quantum chemistry calculations.
 
@@ -55,17 +55,9 @@ mpirun -np 4 python -u run_sqd_sbd.py \
     --device cpu \
     --adet_comm_size 2 --bdet_comm_size 2
 
-# H2O with your own hardware bitstrings (FCIDUMP from ../../vendor/sbd-upstream/data/h2o/)
-mpirun -np 4 python -u run_sqd_sbd.py \
-    --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
-    --counts /path/to/count_dict.json \
-    --device cpu \
-    --adet_comm_size 2 --bdet_comm_size 2
-
-# Custom system with hardware bitstrings
+# Custom system with random bitstrings
 mpirun -np 8 python -u run_sqd_sbd.py \
     --fcidump /path/to/fci_dump.txt \
-    --counts /path/to/count_dict.json \
     --samples_per_batch 800 --num_batches 3 --max_iterations 10 \
     --device gpu \
     --adet_comm_size 2 --bdet_comm_size 2 --task_comm_size 2
