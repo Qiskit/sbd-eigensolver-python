@@ -410,6 +410,7 @@ def main():
             initial_occupancies=current_occ,
             sci_solver=sbd_solver,
             symmetrize_spin=True,
+            max_dim=args.max_dim,
             seed=rand_seed,
         )
         energy = result.energy + nuclear_repulsion_energy
@@ -425,6 +426,20 @@ def main():
                      and len(new_beta) == len(ci_strs_b)
                      and set(new_alpha.tolist()) == set(int(x) for x in ci_strs_a)
                      and set(new_beta.tolist()) == set(int(x) for x in ci_strs_b))
+
+        # No universal "safe" default exists for --max_dim (right for Boston-scale
+        # is wildly oversized for H2O/N2, and vice versa), so it stays unset by
+        # default -- but leaving it unset on a system this size is exactly how we
+        # hit a 28268x28268 (799M-pair) round ourselves before adding this check.
+        # Warn loudly before the next round's diagonalization, not after a GPU
+        # OOM traceback with no clue which flag caused it.
+        expanded_pairs = len(new_alpha) * len(new_beta)
+        if rank == 0 and args.max_dim is None and (dim > 50_000_000 or expanded_pairs > 50_000_000):
+            print(f"WARNING: subspace is large and growing with --max_dim unset "
+                  f"(this round: {dim:_} pairs, next round would be: "
+                  f"{expanded_pairs:_} pairs before any cap). Risk of GPU OOM. "
+                  f"Consider --max_dim (e.g. 15000 worked well for a 45-orbital "
+                  f"system) and/or a tighter --enlarge_threshold to slow growth.")
 
         new_alpha = cap_to_max_dim(new_alpha, ci_strs_a, args.max_dim, rng)
         new_beta = cap_to_max_dim(new_beta, ci_strs_b, args.max_dim, rng)

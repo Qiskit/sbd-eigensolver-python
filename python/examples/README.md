@@ -138,6 +138,25 @@ Same bundled 275-bitstring H2O pool as `run_sqd_sbd.py`'s own example above:
 plain SQD reaches **≈ -76.236 Ha** and stops there; this driver keeps going
 past that fixed pool on its own and converges to **-76.2421767512 Ha**.
 
+**Key options and their defaults**, grouped the way `--help` groups them:
+
+| Parameter | Default | What it controls |
+|-----------|---------|-------------------|
+| `--samples_per_batch` | `3000` | Raw samples drawn per round before postselection |
+| `--num_batches` | `1` | Batches per round; not the main subspace-size lever here (enlargement is) |
+| `--max_iterations` | `30` | Safety cap on outer rounds -- reaching it is a sign something needs tuning, not the expected stop |
+| `--energy_tol` | `1e-8` | Outer-loop convergence: energy change between rounds |
+| `--occupancies_tol` | `1e-5` | Outer-loop convergence: max orbital-occupancy change between rounds |
+| `--enlarge_threshold` | `1e-4` | `\|amplitude\|^2` cutoff for which determinant pairs get expanded via single excitations. Lower = expand from more pairs |
+| `--max_dim` | unset (no cap) | Cap on unique alpha/beta strings kept per round. **No universal safe default** -- 15000 worked well for a 45-orbital system, but that would be wildly oversized for H2O. Unset risks unbounded growth and GPU OOM on a large system; the driver warns if it detects this |
+| `--include_hf` | off | Force the lowest-orbital-indices Slater determinant into every round |
+| `--sbd_eps` | `1e-5` | SBD Davidson stopping tolerance (residual-vector norm) |
+| `--sbd_max_it` | `10` | Cap on SBD Davidson iterations per diagonalization |
+| `--sbd_max_nb` | `10` | SBD Davidson basis vectors (block size) |
+| `--adet_comm_size` / `--bdet_comm_size` / `--task_comm_size` | `1` / `1` / `1` | MPI rank grid |
+
+Run `python run_sqd_enlarge_subspace_sbd.py --help` for the complete list.
+
 ### 4. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
 
 Interactive single-rank companion to `run_sqd_sbd.py`. Same SQD self-consistent
