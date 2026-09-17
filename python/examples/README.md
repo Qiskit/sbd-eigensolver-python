@@ -30,15 +30,18 @@ mpirun -np 8 python -u run_sbd_diag.py \
     --adet_comm_size 2 --bdet_comm_size 2 --task_comm_size 2
 
 # Retrieve the 1-/2-particle RDMs and save them to a file
-mpirun -np 2 python -u run_sbd_diag.py --rdm 1 --rdm_output rdms.npz
+mpirun -np 2 python -u run_sbd_diag.py --rdm_output rdms.npz
 ```
 
-Passing `--rdm 1` prints `trace(rdm1)` (should equal the electron count) and
-the natural orbital occupations (eigenvalues of `rdm1`) — occupations near 2
-or 0 indicate a single-reference-like orbital, occupations near 1 (or
-several clustered together) flag multi-reference character / a candidate
-active space. `--rdm_output PATH` additionally saves `rdm1`/`rdm2` to a
-numpy `.npz` file.
+`--rdm_output PATH` computes the RDMs, prints `trace(rdm1)` (should equal
+the electron count) and the natural orbital occupations (eigenvalues of
+`rdm1`) — occupations near 2 or 0 indicate a single-reference-like orbital,
+occupations near 1 (or several clustered together) flag multi-reference
+character / a candidate active space — and saves `rdm1`/`rdm2` to that path
+as a numpy `.npz` file. There's no separate on/off flag: `rdm1` and `rdm2`
+are always computed and reported together, so (matching
+`--dump_matrix_form_wf`/`--loadname`/`--savename`) a path is what turns the
+feature on, and leaving it empty (the default) skips computing RDMs at all.
 
 By default beta determinants are derived from `--adetfile` alone (identical
 to it, or a shuffled copy if `--shuffle` is set). `--symmetrize_spin 0`
@@ -48,7 +51,7 @@ alpha/beta determinant sets instead; `--bdetfile` is otherwise ignored
 
 **Key options:** `--device`, `--fcidump`, `--adetfile`, `--bdetfile`,
 `--symmetrize_spin`, `--adet_comm_size`, `--bdet_comm_size`,
-`--task_comm_size`, `--method`, `--tolerance`, `--iteration`, `--rdm`,
+`--task_comm_size`, `--method`, `--tolerance`, `--iteration`,
 `--rdm_output`. (These keep their unprefixed names here: this driver *is*
 SBD. The SQD drivers prefix them `--sbd_*`.) Run `python run_sbd_diag.py
 --help` for the full list.

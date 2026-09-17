@@ -36,7 +36,7 @@ Usage:
         --adetfile ../../vendor/sbd-upstream/data/h2o/h2o-1em3-alpha.txt
 
     # Retrieve the 1-/2-particle RDMs and save them to a file
-    mpirun -np 8 python run_sbd_diag.py --rdm 1 --rdm_output rdms.npz
+    mpirun -np 8 python run_sbd_diag.py --rdm_output rdms.npz
     # Prints trace(rdm1) (should equal the electron count) and the natural
     # orbital occupations (eigenvalues of rdm1) -- occupations near 2 or 0
     # indicate a single-reference-like orbital, occupations near 1 (or
@@ -126,12 +126,17 @@ def parse_args():
                             '--bdetfile as independent, genuinely distinct '
                             'alpha/beta determinant sets (--shuffle has no '
                             'effect in this mode).')
-    parser.add_argument('--rdm', '--do_rdm', type=int, default=0, choices=[0, 1], dest='do_rdm',
-                       help='Calculate RDM (0=density only, 1=full RDM)')
     parser.add_argument('--rdm_output', default='',
-                       help='When set (and --rdm 1), save rdm1/rdm2 to this '
-                            'path as a numpy .npz file (keys: rdm1, rdm2).')
-    
+                       help='Path to save rdm1/rdm2 as a numpy .npz file '
+                            '(keys: rdm1, rdm2). Empty (default): density '
+                            'only, no RDMs computed -- matching '
+                            '--dump_matrix_form_wf/--loadname/--savename, a '
+                            'path here is what turns the feature on; there '
+                            'is no separate on/off flag since rdm1 and rdm2 '
+                            'are always computed and reported together. '
+                            'Also prints trace(rdm1) and the natural '
+                            'orbital occupations either way.')
+
     # Carryover determinant selection
     parser.add_argument('--carryover_type', type=int, default=0,
                        help='Carryover determinant selection type')
@@ -195,7 +200,7 @@ def main():
     config.max_time = args.max_time
     config.init = args.init
     config.do_shuffle = args.do_shuffle
-    config.do_rdm = args.do_rdm
+    config.do_rdm = 1 if args.rdm_output else 0
     config.bit_length = args.bit_length
     config.carryover_type = args.carryover_type
     config.ratio = args.ratio
@@ -306,9 +311,11 @@ def main():
                       "single-reference-like orbital; occupations near 1 "
                       "(or several clustered together) flag multi-reference "
                       "character / a candidate active space.")
-                if args.rdm_output:
-                    np.savez(args.rdm_output, rdm1=rdm1, rdm2=rdm2)
-                    print(f"Saved rdm1/rdm2 to {args.rdm_output}")
+                # rdm1 is only non-None when --rdm_output was given (that's
+                # what turns config.do_rdm on above), so this always fires
+                # here -- no separate on/off check needed.
+                np.savez(args.rdm_output, rdm1=rdm1, rdm2=rdm2)
+                print(f"Saved rdm1/rdm2 to {args.rdm_output}")
 
             print("="*70)
             print("\n✓ Calculation completed successfully!")
