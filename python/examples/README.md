@@ -1,4 +1,4 @@
-# SBD Python Examples
+# SQD/SBD Python Examples
 
 Examples demonstrating SBD's capabilities for quantum chemistry calculations.
 
@@ -16,14 +16,14 @@ file. No SQD loop, no Qiskit dependency.
 
 ```bash
 # H2O with 2 MPI ranks
-mpirun -np 2 python run_sbd_diag.py \
+mpirun -np 2 python -u run_sbd_diag.py \
     --device cpu \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
     --adetfile ../../vendor/sbd-upstream/data/h2o/h2o-1em3-alpha.txt \
     --adet_comm_size 2
 
 # N2 with GPU
-mpirun -np 8 python run_sbd_diag.py \
+mpirun -np 8 python -u run_sbd_diag.py \
     --device gpu \
     --fcidump ../../vendor/sbd-upstream/data/n2/fcidump.txt \
     --adetfile ../../vendor/sbd-upstream/data/n2/1em3-alpha.txt \
@@ -49,23 +49,15 @@ eigensolver backend. Supports two bitstring input modes:
 
 ```bash
 # H2O with the bundled counts file (275 bitstrings -> ~ -76.236 Ha)
-mpirun -np 4 python run_sqd_sbd.py \
+mpirun -np 4 python -u run_sqd_sbd.py \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
     --counts count_dict_h2o.json \
     --device cpu \
     --adet_comm_size 2 --bdet_comm_size 2
 
-# H2O with your own hardware bitstrings (FCIDUMP from ../../vendor/sbd-upstream/data/h2o/)
-mpirun -np 4 python run_sqd_sbd.py \
-    --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
-    --counts /path/to/count_dict.json \
-    --device cpu \
-    --adet_comm_size 2 --bdet_comm_size 2
-
-# Custom system with hardware bitstrings
-mpirun -np 8 python run_sqd_sbd.py \
+# Custom system with random bitstrings
+mpirun -np 8 python -u run_sqd_sbd.py \
     --fcidump /path/to/fci_dump.txt \
-    --counts /path/to/count_dict.json \
     --samples_per_batch 800 --num_batches 3 --max_iterations 10 \
     --device gpu \
     --adet_comm_size 2 --bdet_comm_size 2 --task_comm_size 2
@@ -110,7 +102,40 @@ full list, which is grouped by layer.
 
 See [SQD Parameters](#sqd-parameters) below for the full reference, grouped by SQD loop / SBD solver / MPI grid / checkpointing.
 
-### 3. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
+### 3. run_sqd_enlarge_subspace_sbd.py — SQD that grows its own subspace
+
+Same self-consistent SQD loop as `run_sqd_sbd.py` above (sampling,
+configuration recovery, SBD as the solver), but with one addition: between
+rounds, it expands the dominant determinant pairs from the just-solved
+wavefunction via qiskit-addon-sqd's own `enlarge_batch_from_transitions`
+(same-spin single-electron excitations, both alpha and beta), and feeds the
+result forward as the next round's `include_configurations`. Concretely,
+it calls `diagonalize_fermionic_hamiltonian` with `max_iterations=1` itself,
+in its own outer Python loop, rather than delegating the whole
+multi-iteration loop to one call the way `run_sqd_sbd.py` does -- that's
+what makes injecting a step between rounds possible. The loop stops when
+either the expanded set adds nothing new, or the energy and occupancies
+both stop moving (`--energy_tol`/`--occupancies_tol`) -- `--max_iterations`
+is a safety cap, not the expected stopping mechanism.
+
+```bash
+mpirun -np 4 python -u run_sqd_enlarge_subspace_sbd.py \
+    --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
+    --counts count_dict_h2o.json \
+    --device cpu \
+    --adet_comm_size 2 --enlarge_threshold 1e-4
+```
+
+Same bundled 275-bitstring H2O pool as `run_sqd_sbd.py`'s own example above:
+plain SQD reaches **≈ -76.236 Ha** and stops there; this driver keeps going
+past that fixed pool on its own and converges to **-76.2421767512 Ha**.
+
+See [SQD Parameters](#sqd-parameters) below for the flags it shares with
+`run_sqd_sbd.py` and the ones that differ (`--enlarge_threshold` in place
+of `--sqd_carryover_threshold`, and `--max_dim`'s risk profile is sharper
+here).
+
+### 4. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
 
 Interactive single-rank companion to `run_sqd_sbd.py`. Same SQD self-consistent
 loop on h2o, but inside a Jupyter kernel (`MPI.COMM_WORLD` size 1). Uses the
@@ -163,25 +188,33 @@ the **average orbital occupancies** (into recovery, source 3) and the
 
 ### SQD loop parameters
 
+Shared by both `run_sqd_sbd.py` and `run_sqd_enlarge_subspace_sbd.py` except
+where noted. **`--max_dim` is the one that most needs attention**: it has no
+universally safe default (see below), and in `run_sqd_enlarge_subspace_sbd.py`
+leaving it unset is riskier still, since each round's subspace can grow from
+the previous one rather than being resampled at a fixed size — the driver
+prints an OOM warning when it detects this.
+
 *Shapes the subspace — changes the numbers you compute:*
 
-| Parameter | What it controls | Typical values |
-|-----------|-----------------|----------------|
-| `--counts FILE` | Load hardware bitstrings from a JSON file (use this or `--samples`) | 10K–1M+ shots |
-| `--samples N` | Generate N random bitstrings at the target Hamming weights; plumbing check only, energy not meaningful | any |
-| `--samples_per_batch` | Dominant control on subspace dimension. With `symmetrize_spin` the alpha and beta string sets are merged, so the subspace is up to `(2N)^2`, not `N^2` | `3000` (default); see the cost note below |
-| `--num_batches` | Independent subsamples per iteration; occupancies are averaged across them | 3–10 (small), up to 100 (large) |
-| `--sqd_carryover_threshold` | `\|coefficient\|` cutoff for carrying a determinant into the next iteration. **Lower it to carry more** | `1e-4` (default) |
-| `--max_dim` | Cap on strings per spin sector, so the subspace cannot exceed `max_dim^2`. The main brake on runaway setup cost | unset (no cap) |
+| Parameter | What it controls | Default |
+|-----------|-----------------|---------|
+| `--counts FILE` | Load hardware bitstrings from a JSON file (use this or `--samples`) | none — falls back to `--samples` if omitted |
+| `--samples N` | Generate N random bitstrings at the target Hamming weights; plumbing check only, energy not meaningful | `3000` (only used when `--counts` is omitted) |
+| `--samples_per_batch` | Dominant control on subspace dimension. With `symmetrize_spin` the alpha and beta string sets are merged, so the subspace is up to `(2N)^2`, not `N^2` | `3000` |
+| `--num_batches` | Independent subsamples per iteration; occupancies are averaged across them | `1` (`run_sqd_enlarge_subspace_sbd.py`) / `3` (`run_sqd_sbd.py`) |
+| `--sqd_carryover_threshold` | `run_sqd_sbd.py` only. `\|coefficient\|` cutoff for carrying a determinant into the next iteration's sample pool. **Lower it to carry more** | `1e-4` |
+| `--enlarge_threshold` | `run_sqd_enlarge_subspace_sbd.py` only — the analogous "carry more" knob for that driver, but structurally different: it gates which *pairs* get expanded into single excitations via `enlarge_batch_from_transitions`, not which determinants survive into resampling. **Lower it to expand more pairs per round** | `1e-4` |
+| `--max_dim` | **Critical.** Cap on strings per spin sector, so the subspace cannot exceed `max_dim^2`. The main brake on runaway cost — no fixed value is safe for every system, since the right cap depends on available memory and orbital count. Start from a value known to work at a similar orbital count (e.g. `15000` was used for a 45-orbital system) and adjust down if you see an OOM | unset (no cap) |
 | `--include_hf` | Force the single Slater determinant with the lowest `num_elec_a`/`num_elec_b` orbital indices occupied into `include_configurations`, every iteration. Cheap correctness check: that determinant's own diagonal energy is an exact lower bound on what a subspace containing it can do — if forcing it in moves the result, the sampled pool was missing it (and probably its low-excitation neighbors too) | off |
 
 *Decides when to stop — changes nothing about the subspace:*
 
-| Parameter | What it controls | Typical values |
-|-----------|-----------------|----------------|
-| `--max_iterations` | Hard cap on loop iterations (not the inner `--sbd_max_it`) | 3–12 |
-| `--energy_tol` | Iteration-to-iteration change in energy | `1e-8` default |
-| `--occupancies_tol` | Largest change in any single orbital occupancy — an infinity norm, not an average | `1e-5` default |
+| Parameter | What it controls | Default |
+|-----------|-----------------|---------|
+| `--max_iterations` | Hard cap on loop iterations (not the inner `--sbd_max_it`). In `run_sqd_enlarge_subspace_sbd.py` this is a safety cap only — the loop normally stops earlier, once a round adds no new determinants or both tolerances below are met | `30` (`run_sqd_enlarge_subspace_sbd.py`) / `5` (`run_sqd_sbd.py`) |
+| `--energy_tol` | Iteration-to-iteration change in energy | `1e-8` |
+| `--occupancies_tol` | Largest change in any single orbital occupancy — an infinity norm, not an average | `1e-5` |
 
 **Both stopping criteria must hold in the same iteration.** `fermion.py`'s
 convergence check combines the energy-change test and the occupancy-change test
