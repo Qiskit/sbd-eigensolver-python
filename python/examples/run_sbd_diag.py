@@ -158,48 +158,21 @@ def parse_args():
     return parser.parse_args()
 
 
-def assemble_rdms(results, norb):
-    """Build spin-summed (rdm1, rdm2) from SBD's raw one_p_rdm/two_p_rdm.
-
-    Returns (None, None) when --rdm 0 (SBD leaves these keys as empty lists
-    in that case). The reshape below mirrors sbd_solver._assemble_rdms
-    (python/sbd_solver.py) -- duplicated here rather than imported, so this
-    file stays free of any qiskit-addon-sqd dependency. It was verified
-    there against PySCF's own make_rdm1/make_rdm2 on all three SBD
-    backends, both element-wise and via the energy identity
-    E = einsum("pr,pr->",rdm1,hcore) + 0.5*einsum("prqs,prqs->",rdm2,eri).
-
-    SBD's documented layout (sbd-ext docs/user-guide.md):
-        one_p_rdm[s][i + L*j]                    = <c+_{i,s} c_{j,s}>
-        two_p_rdm[s+2t][i+L*j+L^2*k+L^3*l] = <c+_{i,s} c+_{j,t} c_{l,t} c_{k,s}>
-    A Fortran-order reshape implements those flat-index formulas directly.
-    """
-    one_p_rdm = results.get('one_p_rdm')
-    two_p_rdm = results.get('two_p_rdm')
-    if not one_p_rdm or not two_p_rdm:
-        return None, None
-
-    one_p_rdm = np.asarray(one_p_rdm)
-    two_p_rdm = np.asarray(two_p_rdm)
-    L = norb
-
-    rdm1 = (np.reshape(one_p_rdm[0], (L, L), order='F')
-            + np.reshape(one_p_rdm[1], (L, L), order='F'))
-
-    spin_summed = sum(
-        np.reshape(two_p_rdm[s], (L, L, L, L), order='F') for s in range(4)
-    )
-    rdm2 = spin_summed.transpose(0, 2, 1, 3)
-
-    return rdm1, rdm2
-
-
 def main():
     args = parse_args()
     
     # Import sbd — auto-initializes on first use, but we call init()
     # explicitly here to set the default device from --device flag.
     import sbd
+    # Reuses the same rdm1/rdm2 assembly sbd_solver.solve_sci uses for the
+    # SQD drivers -- verified against PySCF's make_rdm1/make_rdm2 on all
+    # three SBD backends, both element-wise and via the energy identity
+    # E = einsum("pr,pr->",rdm1,hcore) + 0.5*einsum("prqs,prqs->",rdm2,eri).
+    # mpi4py is already a real dependency of `sbd` itself (used internally
+    # for sbd.init()'s communicator), so importing sbd_solver here adds no
+    # new hard dependency; its pyscf/qiskit-addon-sqd imports are both
+    # soft (try/except), unused by assemble_rdms itself.
+    from sbd.sbd_solver import assemble_rdms
 
     sbd.init(device=args.device)
 
