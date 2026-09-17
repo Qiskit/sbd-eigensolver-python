@@ -35,13 +35,10 @@ Usage:
         --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
         --adetfile ../../vendor/sbd-upstream/data/h2o/h2o-1em3-alpha.txt
 
-    # Retrieve the 1-/2-particle RDMs and save them to a file
+    # Retrieve the 1-/2-particle RDMs: saves ONE .npz file holding both
+    # rdm1 and rdm2 (np.load(path)["rdm1"] / ["rdm2"]) -- not two separate
+    # files the way upstream SBD's own CLI does (1pRDM.txt/2pRDM.txt).
     mpirun -np 8 python run_sbd_diag.py --rdm_output /tmp/h2o_rdms.npz
-    # Prints trace(rdm1) (should equal the electron count) and the natural
-    # orbital occupations (eigenvalues of rdm1) -- occupations near 2 or 0
-    # indicate a single-reference-like orbital, occupations near 1 (or
-    # several clustered together) flag multi-reference character / a
-    # candidate active space.
 
     # Distinct alpha and beta determinant files (default is beta = alpha)
     mpirun -np 8 python run_sbd_diag.py --symmetrize_spin 0 \
@@ -127,15 +124,13 @@ def parse_args():
                             'alpha/beta determinant sets (--shuffle has no '
                             'effect in this mode).')
     parser.add_argument('--rdm_output', default='', metavar='PATH',
-                       help='Path to save rdm1/rdm2 as a numpy .npz file '
-                            '(keys: rdm1, rdm2). Empty (default): density '
-                            'only, no RDMs computed -- matching '
-                            '--dump_matrix_form_wf/--loadname/--savename, a '
-                            'path here is what turns the feature on; there '
-                            'is no separate on/off flag since rdm1 and rdm2 '
-                            'are always computed and reported together. '
-                            'Also prints trace(rdm1) and the natural '
-                            'orbital occupations either way.')
+                       help='Save rdm1 and rdm2 together in ONE numpy .npz '
+                            'file at this path (np.load(PATH)["rdm1"] / '
+                            '["rdm2"]) -- unlike upstream SBD\'s own CLI, '
+                            'which writes two separate files (1pRDM.txt / '
+                            '2pRDM.txt). Also prints trace(rdm1) and the '
+                            'natural orbital occupations. Empty (default): '
+                            'no RDMs computed at all.')
 
     # Carryover determinant selection
     parser.add_argument('--carryover_type', type=int, default=0,
