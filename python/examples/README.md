@@ -110,7 +110,35 @@ full list, which is grouped by layer.
 
 See [SQD Parameters](#sqd-parameters) below for the full reference, grouped by SQD loop / SBD solver / MPI grid / checkpointing.
 
-### 3. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
+### 3. run_sqd_enlarge_subspace_sbd.py — SQD that grows its own subspace
+
+Same self-consistent SQD loop as `run_sqd_sbd.py` above (sampling,
+configuration recovery, SBD as the solver), but with one addition: between
+rounds, it expands the dominant determinant pairs from the just-solved
+wavefunction via qiskit-addon-sqd's own `enlarge_batch_from_transitions`
+(same-spin single-electron excitations, both alpha and beta), and feeds the
+result forward as the next round's `include_configurations`. Concretely,
+it calls `diagonalize_fermionic_hamiltonian` with `max_iterations=1` itself,
+in its own outer Python loop, rather than delegating the whole
+multi-iteration loop to one call the way `run_sqd_sbd.py` does -- that's
+what makes injecting a step between rounds possible. The loop stops when
+either the expanded set adds nothing new, or the energy and occupancies
+both stop moving (`--energy_tol`/`--occupancies_tol`) -- `--max_iterations`
+is a safety cap, not the expected stopping mechanism.
+
+```bash
+mpirun -np 4 python run_sqd_enlarge_subspace_sbd.py \
+    --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
+    --counts count_dict_h2o.json \
+    --device cpu \
+    --adet_comm_size 2 --enlarge_threshold 1e-4
+```
+
+Same bundled 275-bitstring H2O pool as `run_sqd_sbd.py`'s own example above:
+plain SQD reaches **≈ -76.236 Ha** and stops there; this driver keeps going
+past that fixed pool on its own and converges to **-76.2421767512 Ha**.
+
+### 4. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
 
 Interactive single-rank companion to `run_sqd_sbd.py`. Same SQD self-consistent
 loop on h2o, but inside a Jupyter kernel (`MPI.COMM_WORLD` size 1). Uses the
