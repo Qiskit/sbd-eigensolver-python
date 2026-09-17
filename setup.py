@@ -495,29 +495,38 @@ def _resolve_darwin_cxx():
     return path, version
 
 
-def _compiler_openmp_prefix(cxx_path):
-    """Prefix of an OpenMP runtime shipped alongside cxx_path, or None.
+def _compiler_openmp(cxx_path):
+    """(include_dir, lib_dir) of an OpenMP shipped with cxx_path, or None.
 
     An LLVM that builds the openmp runtime -- Homebrew's llvm formula, and the
-    conda-forge clang packages -- installs libomp.dylib and omp.h into its own
-    tree, and `-fopenmp` links THAT copy. Adding a second libomp from elsewhere
-    then puts two same-named runtimes in one process, which aborts at the first
-    parallel region with "OMP: Error #15". So when the compiler brings its own,
-    that is the one to build against.
+    conda-forge clang packages -- carries a libomp.dylib in its own tree, and
+    `-fopenmp` links THAT copy. Adding a second libomp from elsewhere then puts
+    two same-named runtimes in one process, which aborts at the first parallel
+    region with "OMP: Error #15". So when the compiler brings its own, that is
+    the one to build against.
 
-    Looks one directory up from bin/, i.e. <prefix>/lib/libomp.dylib next to
-    <prefix>/include/omp.h. Returns the prefix only when BOTH are present,
-    since the header is needed to compile and the library to link.
+    Do not guess the layout. omp.h is installed into the clang RESOURCE
+    directory (lib/clang/<ver>/include), not <prefix>/include -- Homebrew's own
+    formula test compiles `#include <omp.h>` with no -I at all -- while
+    libomp.dylib does land in <prefix>/lib. Ask the driver for the resource
+    directory rather than hardcoding a version number into the path.
     """
     if not cxx_path or not os.path.isabs(cxx_path):
         return None
-    prefix = os.path.dirname(os.path.dirname(cxx_path))
-    if not prefix or prefix == os.sep:
+    lib_dir = os.path.join(os.path.dirname(os.path.dirname(cxx_path)), 'lib')
+    if not any(os.path.exists(os.path.join(lib_dir, name))
+               for name in ('libomp.dylib', 'libomp.a')):
         return None
-    has_header = os.path.exists(os.path.join(prefix, 'include', 'omp.h'))
-    has_lib = any(os.path.exists(os.path.join(prefix, 'lib', name))
-                  for name in ('libomp.dylib', 'libomp.a'))
-    return prefix if (has_header and has_lib) else None
+    try:
+        resource_dir = subprocess.check_output(
+            [cxx_path, '-print-resource-dir'], universal_newlines=True,
+            stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return None
+    inc_dir = os.path.join(resource_dir, 'include')
+    if not os.path.exists(os.path.join(inc_dir, 'omp.h')):
+        return None
+    return inc_dir, lib_dir
 
 
 def find_nvidia_hpc_sdk():
@@ -820,10 +829,9 @@ if build_cpu:
         # 3. Otherwise Homebrew's standalone libomp, which is what Apple clang
         #    needs, having no OpenMP of its own.
         conda_prefix = os.environ.get('CONDA_PREFIX')
-        compiler_omp = _compiler_openmp_prefix(_cxx_path)
+        compiler_omp = _compiler_openmp(_cxx_path)
         if compiler_omp:
-            omp_inc = os.path.join(compiler_omp, 'include')
-            omp_lib = os.path.join(compiler_omp, 'lib')
+            omp_inc, omp_lib = compiler_omp
             # BLAS is a separate question from OpenMP: the compiler tree has no
             # OpenBLAS, so keep taking that from conda or Homebrew.
             if conda_prefix and os.path.isdir(os.path.join(conda_prefix, 'lib')):
@@ -831,8 +839,10 @@ if build_cpu:
             else:
                 openblas_lib = os.path.join(_homebrew_prefix() or '/opt/homebrew',
                                             'opt', 'openblas', 'lib')
-            print(f"Darwin: libomp from the compiler's own tree {compiler_omp}\n"
-                  f"        BLAS from {openblas_lib}")
+            print(f"Darwin: libomp from the compiler's own tree\n"
+                  f"        headers {omp_inc}\n"
+                  f"        library {omp_lib}\n"
+                  f"        BLAS    {openblas_lib}")
         elif conda_prefix and os.path.exists(
                 os.path.join(conda_prefix, 'include', 'omp.h')):
             omp_inc = os.path.join(conda_prefix, 'include')
