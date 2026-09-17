@@ -30,7 +30,7 @@ mpirun -np 8 python -u run_sbd_diag.py \
     --adet_comm_size 2 --bdet_comm_size 2 --task_comm_size 2
 
 # Retrieve the 1-/2-particle RDMs and save them to a file
-mpirun -np 2 python -u run_sbd_diag.py --rdm_output rdms.npz
+mpirun -np 2 python -u run_sbd_diag.py --rdm_output /tmp/h2o_rdms.npz
 ```
 
 `--rdm_output PATH` computes the RDMs, prints `trace(rdm1)` (should equal

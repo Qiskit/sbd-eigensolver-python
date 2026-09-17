@@ -36,7 +36,7 @@ Usage:
         --adetfile ../../vendor/sbd-upstream/data/h2o/h2o-1em3-alpha.txt
 
     # Retrieve the 1-/2-particle RDMs and save them to a file
-    mpirun -np 8 python run_sbd_diag.py --rdm_output rdms.npz
+    mpirun -np 8 python run_sbd_diag.py --rdm_output /tmp/h2o_rdms.npz
     # Prints trace(rdm1) (should equal the electron count) and the natural
     # orbital occupations (eigenvalues of rdm1) -- occupations near 2 or 0
     # indicate a single-reference-like orbital, occupations near 1 (or
@@ -126,7 +126,7 @@ def parse_args():
                             '--bdetfile as independent, genuinely distinct '
                             'alpha/beta determinant sets (--shuffle has no '
                             'effect in this mode).')
-    parser.add_argument('--rdm_output', default='',
+    parser.add_argument('--rdm_output', default='', metavar='PATH',
                        help='Path to save rdm1/rdm2 as a numpy .npz file '
                             '(keys: rdm1, rdm2). Empty (default): density '
                             'only, no RDMs computed -- matching '
