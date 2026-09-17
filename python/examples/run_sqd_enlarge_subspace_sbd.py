@@ -81,6 +81,13 @@ def parse_args():
         "excitations and feed the result forward as next round's "
         "include_configurations.")
     loop.add_argument("--samples_per_batch", type=int, default=3000)
+    loop.add_argument("--symmetrize_spin", type=int, default=1, choices=[0, 1],
+                       help="1 (default): merge the alpha and beta string pools "
+                            "every round, forcing ci_strs_a == ci_strs_b -- SBD "
+                            "itself supports distinct alpha/beta determinant "
+                            "sets, but qiskit-addon-sqd's own loop does not "
+                            "when this is on. 0: sample and carry over alpha "
+                            "and beta independently, allowing them to differ.")
     loop.add_argument("--num_batches", type=int, default=1,
                        help="Batches per outer round. Unlike run_sqd_sbd.py this "
                             "is not the main lever on subspace size -- excitation "
@@ -136,8 +143,6 @@ def parse_args():
     sbd.add_argument("--sbd_max_it", type=int, default=10, dest="max_it",
                       help="Max SBD Davidson iterations per diagonalization.")
     sbd.add_argument("--sbd_max_nb", type=int, default=10, dest="max_nb")
-    sbd.add_argument("--sbd_do_rdm", type=int, default=0, dest="do_rdm")
-    sbd.add_argument("--sbd_do_shuffle", type=int, default=0, dest="do_shuffle")
     sbd.add_argument("--sbd_use_precalculated_dets", type=int, default=1,
                       choices=[0, 1])
     sbd.add_argument("--sbd_max_memory_gb_for_determinants", type=int, default=-1)
@@ -369,7 +374,8 @@ def main():
         print("              "
               f"--energy_tol {args.energy_tol:g} "
               f"--occupancies_tol {args.occupancies_tol:g} "
-              f"--enlarge_threshold {args.enlarge_threshold:g}")
+              f"--enlarge_threshold {args.enlarge_threshold:g} "
+              f"--symmetrize_spin {args.symmetrize_spin}")
         print("SBD solver  : "
               f"--sbd_method {args.method} --sbd_eps {args.eps:g} "
               f"--sbd_max_it {args.max_it} --sbd_max_nb {args.max_nb}")
@@ -377,8 +383,7 @@ def main():
 
     sbd_config = {
         "method": args.method, "eps": args.eps, "max_it": args.max_it,
-        "max_nb": args.max_nb, "max_time": 3600.0, "do_rdm": args.do_rdm,
-        "do_shuffle": args.do_shuffle, "bit_length": args.bit_length,
+        "max_nb": args.max_nb, "max_time": 3600.0, "bit_length": args.bit_length,
         "use_precalculated_dets": bool(args.sbd_use_precalculated_dets),
         "max_memory_gb_for_determinants": args.sbd_max_memory_gb_for_determinants,
         "adet_comm_size": args.adet_comm_size, "bdet_comm_size": args.bdet_comm_size,
@@ -413,7 +418,7 @@ def main():
             include_configurations=current_include,
             initial_occupancies=current_occ,
             sci_solver=sbd_solver,
-            symmetrize_spin=True,
+            symmetrize_spin=bool(args.symmetrize_spin),
             max_dim=args.max_dim,
             callback=callback,
             seed=rand_seed,

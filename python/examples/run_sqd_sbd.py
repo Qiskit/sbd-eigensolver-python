@@ -81,6 +81,13 @@ def parse_args():
                      help="Dominant control on subspace size. With "
                           "symmetrize_spin the alpha and beta string sets "
                           "merge, so the subspace is up to (2N)^2.")
+    sqd.add_argument("--symmetrize_spin", type=int, default=1, choices=[0, 1],
+                     help="1 (default): merge the alpha and beta string pools "
+                          "every iteration, forcing ci_strs_a == ci_strs_b -- "
+                          "SBD itself supports distinct alpha/beta determinant "
+                          "sets, but qiskit-addon-sqd's own loop does not when "
+                          "this is on. 0: sample and carry over alpha and beta "
+                          "independently, allowing them to differ.")
     sqd.add_argument("--num_batches", type=int, default=3)
     sqd.add_argument("--max_iterations", type=int, default=5,
                      help="SQD self-consistent loop iterations. NOT the SBD "
@@ -174,11 +181,6 @@ def parse_args():
                           "and cross-batch agreement.")
     sbd.add_argument("--sbd_max_nb", "--block", "--max_nb", type=int, default=10,
                      dest="max_nb")
-    sbd.add_argument("--sbd_do_rdm", "--rdm", "--do_rdm", type=int, default=0,
-                     dest="do_rdm",
-                     help="0=density only (default, sufficient for SQD), 1=full RDM")
-    sbd.add_argument("--sbd_do_shuffle", "--shuffle", "--do_shuffle", type=int,
-                     default=0, dest="do_shuffle")
     sbd.add_argument("--sbd_use_precalculated_dets", type=int, default=1,
                      choices=[0, 1],
                      help="Thrust only. 1 precomputes a determinant index for every "
@@ -366,8 +368,6 @@ def main():
         "max_it": args.max_it,
         "max_nb": args.max_nb,
         "max_time": 3600.0,
-        "do_rdm": args.do_rdm,
-        "do_shuffle": args.do_shuffle,
         "bit_length": args.bit_length,
         "use_precalculated_dets": bool(args.sbd_use_precalculated_dets),
         "max_memory_gb_for_determinants": args.sbd_max_memory_gb_for_determinants,
@@ -440,7 +440,8 @@ def main():
         print("               "
               f"--energy_tol {args.energy_tol:g} "
               f"--occupancies_tol {args.occupancies_tol:g} "
-              f"--sqd_carryover_threshold {args.sqd_carryover_threshold:g}")
+              f"--sqd_carryover_threshold {args.sqd_carryover_threshold:g} "
+              f"--symmetrize_spin {args.symmetrize_spin}")
         print("SBD solver   : "
               f"--sbd_method {args.method} --sbd_eps {args.eps:g} "
               f"--sbd_max_it {args.max_it} --sbd_max_nb {args.max_nb} "
@@ -469,7 +470,7 @@ def main():
             include_configurations=include_configurations,
             initial_occupancies=initial_occupancies,
             sci_solver=sbd_solver,
-            symmetrize_spin=True,
+            symmetrize_spin=bool(args.symmetrize_spin),
             callback=callback,
             seed=rand_seed,
         )
