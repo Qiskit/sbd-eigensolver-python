@@ -263,12 +263,12 @@ def _solve_sci_core(
         nelec=nelec,
     )
 
-    rdm1, rdm2 = _assemble_rdms(results, norb)
+    rdm1, rdm2 = assemble_rdms(results, norb)
 
     return SCIResult(energy, sci_state, orbital_occupancies=occupancies, rdm1=rdm1, rdm2=rdm2)
 
 
-def _assemble_rdms(results: dict, norb: int) -> tuple[np.ndarray | None, np.ndarray | None]:
+def assemble_rdms(results: dict, norb: int) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Build spin-summed (rdm1, rdm2) from SBD's raw one_p_rdm/two_p_rdm.
 
     Returns (None, None) when ``do_rdm`` was 0 (SBD leaves these keys as

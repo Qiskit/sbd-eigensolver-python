@@ -28,12 +28,31 @@ mpirun -np 8 python -u run_sbd_diag.py \
     --fcidump ../../vendor/sbd-upstream/data/n2/fcidump.txt \
     --adetfile ../../vendor/sbd-upstream/data/n2/1em3-alpha.txt \
     --adet_comm_size 2 --bdet_comm_size 2 --task_comm_size 2
+
+# Retrieve the 1-/2-particle RDMs and save them to a file
+mpirun -np 2 python -u run_sbd_diag.py --rdm_output /tmp/h2o_rdms.npz
 ```
 
-**Key options:** `--device`, `--fcidump`, `--adetfile`, `--adet_comm_size`,
-`--bdet_comm_size`, `--task_comm_size`, `--method`, `--tolerance`, `--iteration`.
-(These keep their unprefixed names here: this driver *is* SBD. The SQD driver
-prefixes them `--sbd_*`.) Run `python run_sbd_diag.py --help` for the full list.
+`--rdm_output` takes the file to save to (`/tmp/h2o_rdms.npz` above) and
+writes **one** `.npz` file there holding both `rdm1` and `rdm2` together
+(`data = np.load("/tmp/h2o_rdms.npz"); data["rdm1"]`, `data["rdm2"]`) —
+unlike upstream SBD's own CLI, which writes two separate files
+(`1pRDM.txt`/`2pRDM.txt`). It also prints `trace(rdm1)` and the natural
+orbital occupations. Leaving it empty (the default) skips computing RDMs
+entirely.
+
+By default beta determinants are derived from `--adetfile` alone (identical
+to it, or a shuffled copy if `--shuffle` is set). `--symmetrize_spin 0`
+loads `--adetfile` and `--bdetfile` as independent, genuinely distinct
+alpha/beta determinant sets instead; `--bdetfile` is otherwise ignored
+(with a warning) since symmetric mode always derives beta from alpha.
+
+**Key options:** `--device`, `--fcidump`, `--adetfile`, `--bdetfile`,
+`--symmetrize_spin`, `--adet_comm_size`, `--bdet_comm_size`,
+`--task_comm_size`, `--method`, `--tolerance`, `--iteration`,
+`--rdm_output`. (These keep their unprefixed names here: this driver *is*
+SBD. The SQD drivers prefix them `--sbd_*`.) Run `python run_sbd_diag.py
+--help` for the full list.
 
 **Requirements:** `sbd`, `mpi4py`
 
@@ -201,7 +220,8 @@ prints an OOM warning when it detects this.
 |-----------|-----------------|---------|
 | `--counts FILE` | Load hardware bitstrings from a JSON file (use this or `--samples`) | none — falls back to `--samples` if omitted |
 | `--samples N` | Generate N random bitstrings at the target Hamming weights; plumbing check only, energy not meaningful | `3000` (only used when `--counts` is omitted) |
-| `--samples_per_batch` | Dominant control on subspace dimension. With `symmetrize_spin` the alpha and beta string sets are merged, so the subspace is up to `(2N)^2`, not `N^2` | `3000` |
+| `--samples_per_batch` | Dominant control on subspace dimension. With `--symmetrize_spin 1` the alpha and beta string sets are merged, so the subspace is up to `(2N)^2`, not `N^2` | `3000` |
+| `--symmetrize_spin` | `1` (default): merge the alpha and beta string pools every iteration, forcing `ci_strs_a == ci_strs_b`. SBD itself supports distinct alpha/beta determinant sets — this is purely a qiskit-addon-sqd loop-layer setting. `0`: sample and carry over alpha and beta independently, allowing them to differ | `1` |
 | `--num_batches` | Independent subsamples per iteration; occupancies are averaged across them | `1` (`run_sqd_enlarge_subspace_sbd.py`) / `3` (`run_sqd_sbd.py`) |
 | `--sqd_carryover_threshold` | `run_sqd_sbd.py` only. `\|coefficient\|` cutoff for carrying a determinant into the next iteration's sample pool. **Lower it to carry more** | `1e-4` |
 | `--enlarge_threshold` | `run_sqd_enlarge_subspace_sbd.py` only — the analogous "carry more" knob for that driver, but structurally different: it gates which *pairs* get expanded into single excitations via `enlarge_batch_from_transitions`, not which determinants survive into resampling. **Lower it to expand more pairs per round** | `1e-4` |

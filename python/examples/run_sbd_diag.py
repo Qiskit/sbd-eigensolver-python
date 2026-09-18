@@ -34,10 +34,21 @@ Usage:
     mpirun -np 8 python run_sbd_diag.py \
         --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
         --adetfile ../../vendor/sbd-upstream/data/h2o/h2o-1em3-alpha.txt
+
+    # Retrieve the 1-/2-particle RDMs: saves ONE .npz file holding both
+    # rdm1 and rdm2 (np.load(path)["rdm1"] / ["rdm2"]) -- not two separate
+    # files the way upstream SBD's own CLI does (1pRDM.txt/2pRDM.txt).
+    mpirun -np 8 python run_sbd_diag.py --rdm_output /tmp/h2o_rdms.npz
+
+    # Distinct alpha and beta determinant files (default is beta = alpha)
+    mpirun -np 8 python run_sbd_diag.py --symmetrize_spin 0 \
+        --adetfile alpha-dets.txt --bdetfile beta-dets.txt
 """
 
 import argparse
 import sys
+
+import numpy as np
 
 def parse_args():
     """Parse command line arguments for all TPB_SBD parameters"""
@@ -64,7 +75,11 @@ def parse_args():
     parser.add_argument('--adetfile', default='../../vendor/sbd-upstream/data/h2o/h2o-1em3-alpha.txt',
                        help='Path to alpha determinants file')
     parser.add_argument('--bdetfile', default='',
-                       help='Path to beta determinants file (optional, uses adetfile if not specified)')
+                       help='Path to beta determinants file, used only when '
+                            '--symmetrize_spin 0 (otherwise ignored with a '
+                            'warning: symmetric mode always derives beta from '
+                            '--adetfile). Defaults to --adetfile itself when '
+                            'left unset.')
     parser.add_argument('--loadname', default='',
                        help='Load initial wavefunction from file')
     parser.add_argument('--savename', default='',
@@ -94,10 +109,29 @@ def parse_args():
     parser.add_argument('--init', type=int, default=0,
                        help='Initialization method')
     parser.add_argument('--shuffle', '--do_shuffle', type=int, default=0, dest='do_shuffle',
-                       help='Shuffle determinants (0=no, 1=yes)')
-    parser.add_argument('--rdm', '--do_rdm', type=int, default=0, choices=[0, 1], dest='do_rdm',
-                       help='Calculate RDM (0=density only, 1=full RDM)')
-    
+                       help='Shuffle determinants loaded from --adetfile before '
+                            'mirroring/deriving beta from them (0=no, 1-4=yes, '
+                            'different shuffle seeds -- see sbdiag.h). Only '
+                            'takes effect when --symmetrize_spin 1 (default): '
+                            'that is the code path that derives beta from a '
+                            'single loaded list at all.')
+    parser.add_argument('--symmetrize_spin', type=int, default=1, choices=[0, 1],
+                       help='1 (default): beta determinants are derived from '
+                            '--adetfile alone (identical to it, or a shuffled '
+                            'copy if --shuffle is set) -- --bdetfile is ignored '
+                            'with a warning if given. 0: load --adetfile and '
+                            '--bdetfile as independent, genuinely distinct '
+                            'alpha/beta determinant sets (--shuffle has no '
+                            'effect in this mode).')
+    parser.add_argument('--rdm_output', default='', metavar='FILE',
+                       help='Save rdm1 and rdm2 together in ONE numpy .npz '
+                            'file at this path (np.load(FILE)["rdm1"] / '
+                            '["rdm2"]) -- unlike upstream SBD\'s own CLI, '
+                            'which writes two separate files (1pRDM.txt / '
+                            '2pRDM.txt). Also prints trace(rdm1) and the '
+                            'natural orbital occupations. Empty (default): '
+                            'no RDMs computed at all.')
+
     # Carryover determinant selection
     parser.add_argument('--carryover_type', type=int, default=0,
                        help='Carryover determinant selection type')
@@ -123,12 +157,14 @@ def parse_args():
     
     return parser.parse_args()
 
+
 def main():
     args = parse_args()
     
     # Import sbd — auto-initializes on first use, but we call init()
     # explicitly here to set the default device from --device flag.
     import sbd
+    from sbd.sbd_solver import assemble_rdms
 
     sbd.init(device=args.device)
 
@@ -148,7 +184,10 @@ def main():
     config.eps = args.eps
     config.method = args.method
     config.max_nb = args.max_nb
-    config.do_rdm = args.do_rdm
+    config.max_time = args.max_time
+    config.init = args.init
+    config.do_shuffle = args.do_shuffle
+    config.do_rdm = 1 if args.rdm_output else 0
     config.bit_length = args.bit_length
     config.carryover_type = args.carryover_type
     config.ratio = args.ratio
@@ -156,6 +195,13 @@ def main():
     config.adet_comm_size = args.adet_comm_size
     config.bdet_comm_size = args.bdet_comm_size
     config.task_comm_size = args.task_comm_size
+    # Thrust-only fields -- absent from the CPU/OMP-offload backends' TPB_SBD,
+    # so guard with hasattr rather than assume, matching sbd_solver.py's own
+    # _create_sbd_config pattern for exactly this reason.
+    if hasattr(config, 'use_precalculated_dets'):
+        config.use_precalculated_dets = bool(args.use_precalculated_dets)
+    if hasattr(config, 'max_memory_gb_for_determinants'):
+        config.max_memory_gb_for_determinants = args.max_memory_gb_for_determinants
     
     if rank == 0:
         print("Configuration:")
@@ -190,13 +236,37 @@ def main():
         if args.dump_matrix_form_wf:
             config.dump_matrix_form_wf = args.dump_matrix_form_wf
 
-        results = sbd.tpb_diag_from_files(
-            fcidumpfile=args.fcidump,
-            adetfile=args.adetfile,
-            sbd_data=config,
-            loadname=args.loadname,
-            savename=args.savename,
-        )
+        if args.symmetrize_spin:
+            if args.bdetfile and rank == 0:
+                print(f"WARNING: --bdetfile {args.bdetfile!r} is ignored because "
+                      "--symmetrize_spin is 1 (default) -- symmetric mode always "
+                      "derives beta from --adetfile alone. Pass --symmetrize_spin 0 "
+                      "to use a distinct beta-determinant file.\n")
+            results = sbd.tpb_diag_from_files(
+                fcidumpfile=args.fcidump,
+                adetfile=args.adetfile,
+                sbd_data=config,
+                loadname=args.loadname,
+                savename=args.savename,
+            )
+        else:
+            # No bound function accepts two separate determinant files
+            # directly (tpb_diag_from_files always derives beta from the one
+            # adetfile it's given) -- load both ourselves and call the
+            # data-structure entry point instead, mirroring what
+            # tpb_diag_from_files itself does internally after loading
+            # (sbdiag.h: LoadAlphaDets(...); sort_bitarray(adet);).
+            bdetfile = args.bdetfile or args.adetfile
+            fcidump = sbd.LoadFCIDump(args.fcidump)
+            norb = int(fcidump.header["NORB"])
+            adet = sbd.sort_bitarray(
+                sbd.LoadAlphaDets(args.adetfile, args.bit_length, norb))
+            bdet = sbd.sort_bitarray(
+                sbd.LoadAlphaDets(bdetfile, args.bit_length, norb))
+            results = sbd.tpb_diag(
+                fcidump, adet, bdet, config,
+                loadname=args.loadname, savename=args.savename,
+            )
 
         if rank == 0:
             print("="*70)
@@ -214,6 +284,26 @@ def main():
 
             print(f"Density: {combined_density}")
             print(f"Carryover determinants: {len(results['carryover_adet'])}")
+
+            norb = len(density) // 2
+            rdm1, rdm2 = assemble_rdms(results, norb)
+            if rdm1 is not None:
+                print()
+                print(f"1-RDM trace: {np.trace(rdm1):.6f} "
+                      "(should equal the total electron count)")
+                occupations = np.sort(np.linalg.eigvalsh(rdm1))[::-1]
+                print(f"Natural orbital occupations (sorted): "
+                      f"{np.round(occupations, 6).tolist()}")
+                print("  -- occupations near 2 or 0 indicate a "
+                      "single-reference-like orbital; occupations near 1 "
+                      "(or several clustered together) flag multi-reference "
+                      "character / a candidate active space.")
+                # rdm1 is only non-None when --rdm_output was given (that's
+                # what turns config.do_rdm on above), so this always fires
+                # here -- no separate on/off check needed.
+                np.savez(args.rdm_output, rdm1=rdm1, rdm2=rdm2)
+                print(f"Saved rdm1/rdm2 to {args.rdm_output}")
+
             print("="*70)
             print("\n✓ Calculation completed successfully!")
             print()
