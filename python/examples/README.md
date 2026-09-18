@@ -5,7 +5,9 @@ Examples demonstrating SBD's capabilities for quantum chemistry calculations.
 ## Overview
 
 - **Communication:** MPI for distributed computing
-- **Backends:** CPU (host OpenMP), GPU (NVHPC Thrust, NVIDIA only) and GPU (OpenMP target offload, NVIDIA and AMD), switchable at runtime via `device` parameter
+- **Backends:** CPU (host OpenMP, `--device cpu`), GPU (NVHPC Thrust, NVIDIA only, `--device gpu`) and GPU (OpenMP target offload, NVIDIA and AMD, `--device gpu-omp`), switchable at runtime via `device` parameter
+
+Replace `--device gpu` in all the examples below with `--device gpu-omp` if you use AMD GPUs.
 
 ## Examples
 
@@ -15,14 +17,14 @@ Runs a single TPB diagonalization from an FCIDUMP file and alpha determinant
 file. No SQD loop, no Qiskit dependency.
 
 ```bash
-# H2O with 2 MPI ranks (--device cpu)
+# H2O with 2 MPI ranks with CPU
 mpirun -np 2 python -u run_sbd_diag.py \
     --device cpu \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
     --adetfile ../../vendor/sbd-upstream/data/h2o/h2o-1em3-alpha.txt \
     --adet_comm_size 2
 
-# N2 with GPU (--device gpu)
+# N2 with GPU
 mpirun -np 8 python -u run_sbd_diag.py \
     --device gpu \
     --fcidump ../../vendor/sbd-upstream/data/n2/fcidump.txt \
