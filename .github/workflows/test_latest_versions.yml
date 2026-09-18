@@ -25,6 +25,22 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          # Every other macOS cell uses Apple clang, which has no OpenMP of its
+          # own and so exercises only the Homebrew-libomp path. This one pins
+          # Homebrew LLVM to cover the other branch -- a compiler that ships its
+          # own libomp -- which is the case setup.py has to detect and prefer.
+          # Without it that path has no coverage here at all.
+          #
+          # `cc` is part of the identity rather than an extra key on an existing
+          # cell: an include entry matching an existing os/python-version pair
+          # merges into it instead of adding a job, which would have replaced the
+          # Apple clang coverage for that version rather than adding to it. Every
+          # other cell therefore carries cc: system.
+          - os: macos-latest
+            python-version: "3.14"
+            cc: llvm
+        cc: [system]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,6 +64,21 @@ jobs:
         # default library path.
         run: |
           brew install open-mpi libomp openblas
+      - name: Pin Homebrew LLVM as the compiler (macOS)
+        if: matrix.cc == 'llvm'
+        shell: bash
+        # Homebrew's llvm builds the openmp runtime, so its clang carries a
+        # libomp of its own. setup.py must notice and use that one: adding a
+        # second from the standalone formula would put two same-named runtimes in
+        # one process, which aborts at the first parallel region with
+        # "OMP: Error #15".
+        run: |
+          brew install llvm
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          {
+            echo "CC=${LLVM_PREFIX}/bin/clang"
+            echo "CXX=${LLVM_PREFIX}/bin/clang++"
+          } >> "$GITHUB_ENV"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -62,3 +93,34 @@ jobs:
         # and the MPI tests want the runner's cores to themselves.
         run: |
           tox -e py,notebook,mpi
+      - name: Assert exactly one OpenMP runtime is loaded (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        # A passing suite is not enough to protect the compiler-owned-libomp
+        # path: an earlier version of that detection silently found nothing and
+        # fell back to the standalone formula, which still built and still passed
+        # here -- it only aborted once another OpenMP consumer shared the process.
+        # Count the runtimes actually mapped after the backend loads instead.
+        run: |
+          .tox/py/bin/python - <<'PY'
+          import ctypes, sys
+
+          libc = ctypes.CDLL(None)
+          libc._dyld_image_count.restype = ctypes.c_uint32
+          libc._dyld_get_image_name.restype = ctypes.c_char_p
+          libc._dyld_get_image_name.argtypes = [ctypes.c_uint32]
+
+          import sbd
+          sbd.get_backend()          # backends load lazily, on first use
+
+          omp = sorted({
+              n for i in range(libc._dyld_image_count())
+              if (n := libc._dyld_get_image_name(i).decode("utf-8", "replace"))
+              and any(k in n.lower() for k in ("libomp", "libiomp", "libgomp"))
+          })
+          for name in omp:
+              print(f"  {name}")
+          if len(omp) != 1:
+              sys.exit(f"expected exactly 1 OpenMP runtime, found {len(omp)}")
+          print("OK: one OpenMP runtime")
+          PY
