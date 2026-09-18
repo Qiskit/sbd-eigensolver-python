@@ -123,9 +123,9 @@ def parse_args():
                             '--bdetfile as independent, genuinely distinct '
                             'alpha/beta determinant sets (--shuffle has no '
                             'effect in this mode).')
-    parser.add_argument('--rdm_output', default='', metavar='PATH',
+    parser.add_argument('--rdm_output', default='', metavar='FILE',
                        help='Save rdm1 and rdm2 together in ONE numpy .npz '
-                            'file at this path (np.load(PATH)["rdm1"] / '
+                            'file at this path (np.load(FILE)["rdm1"] / '
                             '["rdm2"]) -- unlike upstream SBD\'s own CLI, '
                             'which writes two separate files (1pRDM.txt / '
                             '2pRDM.txt). Also prints trace(rdm1) and the '
