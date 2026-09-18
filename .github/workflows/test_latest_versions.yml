@@ -92,7 +92,12 @@ jobs:
         # Not --parallel: the environments would then race to install the same wheel,
         # and the MPI tests want the runner's cores to themselves.
         run: |
-          tox -e py,notebook,mpi
+          # -vv surfaces the build backend's output. At default verbosity, and
+          # at -v, tox prints a single "build_wheel>" line and swallows
+          # everything setup.py reports -- so a macOS build that silently picked
+          # the wrong OpenMP left no trace of which one it chose. Checked
+          # locally: -v yields nothing, -vv shows it.
+          tox -vv -e py,notebook,mpi
       - name: Assert exactly one OpenMP runtime is loaded (macOS)
         if: runner.os == 'macOS'
         shell: bash
