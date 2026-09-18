@@ -513,18 +513,30 @@ def _compiler_openmp(cxx_path):
     """
     if not cxx_path or not os.path.isabs(cxx_path):
         return None
-    lib_dir = os.path.join(os.path.dirname(os.path.dirname(cxx_path)), 'lib')
-    if not any(os.path.exists(os.path.join(lib_dir, name))
-               for name in ('libomp.dylib', 'libomp.a')):
-        return None
+    # Resolve symlinks first: CC/CXX is commonly Homebrew's opt/ alias
+    # (/opt/homebrew/opt/llvm/bin/clang++), while -print-resource-dir answers
+    # with the real Cellar path. Comparing or joining the two forms without
+    # normalising invites mismatches.
+    cxx_real = os.path.realpath(cxx_path)
+    lib_dir = os.path.join(os.path.dirname(os.path.dirname(cxx_real)), 'lib')
+    have_lib = any(os.path.exists(os.path.join(lib_dir, name))
+                   for name in ('libomp.dylib', 'libomp.a'))
     try:
         resource_dir = subprocess.check_output(
-            [cxx_path, '-print-resource-dir'], universal_newlines=True,
+            [cxx_real, '-print-resource-dir'], universal_newlines=True,
             stderr=subprocess.DEVNULL).strip()
-    except Exception:
-        return None
-    inc_dir = os.path.join(resource_dir, 'include')
-    if not os.path.exists(os.path.join(inc_dir, 'omp.h')):
+    except Exception as exc:
+        resource_dir = None
+        print(f"Notice: {cxx_real} -print-resource-dir failed: {exc!r}")
+    inc_dir = os.path.join(resource_dir, 'include') if resource_dir else None
+    have_header = bool(inc_dir) and os.path.exists(os.path.join(inc_dir, 'omp.h'))
+    # Say what was found either way: a silent None here sends the build to a
+    # different OpenMP, which still compiles and still passes its own tests, and
+    # only aborts once another OpenMP consumer shares the process.
+    print(f"Darwin OpenMP probe: compiler={cxx_real}\n"
+          f"                     lib_dir={lib_dir} libomp={have_lib}\n"
+          f"                     resource_dir={resource_dir} omp.h={have_header}")
+    if not (have_lib and have_header):
         return None
     return inc_dir, lib_dir
 
