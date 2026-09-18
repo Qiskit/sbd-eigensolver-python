@@ -527,15 +527,20 @@ def _compiler_openmp(cxx_path):
             stderr=subprocess.DEVNULL).strip()
     except Exception as exc:
         resource_dir = None
-        print(f"Notice: {cxx_real} -print-resource-dir failed: {exc!r}")
+        print(f"Notice: {cxx_real} -print-resource-dir failed: {exc!r}",
+              file=sys.stderr)
     inc_dir = os.path.join(resource_dir, 'include') if resource_dir else None
     have_header = bool(inc_dir) and os.path.exists(os.path.join(inc_dir, 'omp.h'))
     # Say what was found either way: a silent None here sends the build to a
     # different OpenMP, which still compiles and still passes its own tests, and
     # only aborts once another OpenMP consumer shares the process.
+    # stderr, not stdout: tox hides the build backend's stdout at default
+    # verbosity, which is why an earlier version of this probe printed nothing
+    # in CI and left the fallback looking like a mystery again.
     print(f"Darwin OpenMP probe: compiler={cxx_real}\n"
           f"                     lib_dir={lib_dir} libomp={have_lib}\n"
-          f"                     resource_dir={resource_dir} omp.h={have_header}")
+          f"                     resource_dir={resource_dir} omp.h={have_header}",
+          file=sys.stderr)
     if not (have_lib and have_header):
         return None
     return inc_dir, lib_dir
@@ -824,7 +829,8 @@ if build_cpu:
         # through PATH.
         _cxx_path, _cxx_ver = _resolve_darwin_cxx()
         print(f"Darwin C++ compiler: {_cxx_path}\n"
-              f"                     {_cxx_ver}   (pin it with CC/CXX)")
+              f"                     {_cxx_ver}   (pin it with CC/CXX)",
+              file=sys.stderr)
 
         # macOS has no system OpenMP, so libomp comes from a package manager.
         #
@@ -854,12 +860,13 @@ if build_cpu:
             print(f"Darwin: libomp from the compiler's own tree\n"
                   f"        headers {omp_inc}\n"
                   f"        library {omp_lib}\n"
-                  f"        BLAS    {openblas_lib}")
+                  f"        BLAS    {openblas_lib}", file=sys.stderr)
         elif conda_prefix and os.path.exists(
                 os.path.join(conda_prefix, 'include', 'omp.h')):
             omp_inc = os.path.join(conda_prefix, 'include')
             omp_lib = openblas_lib = os.path.join(conda_prefix, 'lib')
-            print(f"Darwin: libomp and BLAS from conda env {conda_prefix}")
+            print(f"Darwin: libomp and BLAS from conda env {conda_prefix}",
+                  file=sys.stderr)
         else:
             # Ask brew for its prefix rather than assuming: it is /opt/homebrew
             # on Apple silicon and /usr/local on Intel, so either one hardcoded
@@ -881,7 +888,7 @@ if build_cpu:
                       "         brew install libomp")
                 sys.exit(1)
             print(f"Darwin: libomp and BLAS from Homebrew at {brew_prefix} "
-                  "(no conda libomp found)")
+                  "(no conda libomp found)", file=sys.stderr)
 
         cpu_compile_args = [
             '-DSBD_TRADMODE',
