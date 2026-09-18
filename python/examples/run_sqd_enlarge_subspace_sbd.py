@@ -20,13 +20,13 @@ determinant pairs, expands them via qiskit_addon_sqd.fermion's own
 enlarge_batch_from_transitions (single excitations, both spin channels), and
 feeds the result forward as next round's include_configurations. That is the
 same general idea as SBD's own --sbd_carryover_type 2/3 (see
-run_sbd_selected_ci.py in python/experimental/), implemented instead with
+run_sqd_sbd_carryover.py, which uses exactly that), implemented instead with
 qiskit-addon-sqd's own excitation-generation utility, so it works with any
 sci_solver, not just SBD, and needs only plain upstream SBD when SBD is used
 as the solver here.
 
-Two independent stopping conditions, either one is enough (matching
-run_sbd_selected_ci.py's own two): the enlarged set adds nothing new beyond
+Two independent stopping conditions, either one is enough: the enlarged
+set adds nothing new beyond
 what's already included (closed under single-excitation connectivity), or
 --energy_tol and --occupancies_tol both hold between outer rounds.
 --max_iterations is a safety cap, not the primary stopping mechanism -- a
@@ -273,8 +273,8 @@ def enlarge_via_singles(ci_strs_a, ci_strs_b, amplitudes, norb, threshold,
 def cap_to_max_dim(new_ints, existing_ints, max_dim, rng):
     """Truncate new_ints to max_dim, always keeping everything in existing_ints first.
 
-    Same seed-priority logic as run_sbd_selected_ci.py's _cap_to_max_dim, ported
-    to plain ci_str integer arrays: naive random truncation over the WHOLE
+    Seed-priority truncation over plain ci_str integer arrays: naive random
+    truncation over the WHOLE
     candidate set can discard already-proven-important strings just as easily
     as brand-new ones, which is what that driver's own bug fix addressed.
     """
@@ -445,10 +445,11 @@ def main():
                      and set(new_alpha.tolist()) == set(int(x) for x in ci_strs_a)
                      and set(new_beta.tolist()) == set(int(x) for x in ci_strs_b))
 
-        # No universal "safe" default exists for --max_dim (right for Boston-scale
-        # is wildly oversized for H2O/N2, and vice versa), so it stays unset by
-        # default -- but leaving it unset on a system this size is exactly how we
-        # hit a 28268x28268 (799M-pair) round ourselves before adding this check.
+        # No universal "safe" default exists for --max_dim (a cap that suits a
+        # large system is wildly oversized for H2O/N2, and vice versa), so it
+        # stays unset by default -- but leaving it unset on a large system is
+        # exactly how we hit a several-hundred-million-pair round ourselves
+        # before adding this check.
         # Warn loudly before the next round's diagonalization, not after a GPU
         # OOM traceback with no clue which flag caused it.
         expanded_pairs = len(new_alpha) * len(new_beta)
