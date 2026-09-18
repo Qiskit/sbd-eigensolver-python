@@ -15,14 +15,14 @@ Runs a single TPB diagonalization from an FCIDUMP file and alpha determinant
 file. No SQD loop, no Qiskit dependency.
 
 ```bash
-# H2O with 2 MPI ranks
+# H2O with 2 MPI ranks (--device cpu)
 mpirun -np 2 python -u run_sbd_diag.py \
     --device cpu \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
     --adetfile ../../vendor/sbd-upstream/data/h2o/h2o-1em3-alpha.txt \
     --adet_comm_size 2
 
-# N2 with GPU
+# N2 with GPU (--device gpu)
 mpirun -np 8 python -u run_sbd_diag.py \
     --device gpu \
     --fcidump ../../vendor/sbd-upstream/data/n2/fcidump.txt \
@@ -68,11 +68,11 @@ eigensolver backend. Supports two bitstring input modes:
 
 ```bash
 # H2O with the bundled counts file (275 bitstrings -> ~ -76.236 Ha)
-mpirun -np 4 python -u run_sqd_sbd.py \
+mpirun -np 8 python -u run_sqd_sbd.py \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
     --counts count_dict_h2o.json \
-    --device cpu \
-    --adet_comm_size 2 --bdet_comm_size 2
+    --device gpu \
+    --adet_comm_size 4 --bdet_comm_size 2
 
 # Custom system with random bitstrings
 mpirun -np 8 python -u run_sqd_sbd.py \
@@ -138,12 +138,14 @@ both stop moving (`--energy_tol`/`--occupancies_tol`) -- `--max_iterations`
 is a safety cap, not the expected stopping mechanism.
 
 ```bash
-mpirun -np 4 python -u run_sqd_enlarge_subspace_sbd.py \
+JAX_PLATFORMS=cpu` mpirun -np 8 python -u run_sqd_enlarge_subspace_sbd.py \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
     --counts count_dict_h2o.json \
-    --device cpu \
-    --adet_comm_size 2 --enlarge_threshold 1e-4
+    --device gpu \
+    --adet_comm_size 4 --bdet_comm_size 2 --enlarge_threshold 1e-4
 ```
+Note that qiskit-addon-sqd's own JAX-based `enlarge_batch_from_transitions` has no MPI awareness. Set `JAX_PLATFORMS=cpu`
+when running a MPI job using more than 1 rank.
 
 Same bundled 275-bitstring H2O pool as `run_sqd_sbd.py`'s own example above:
 plain SQD reaches **≈ -76.236 Ha** and stops there; this driver keeps going
@@ -154,13 +156,7 @@ See [SQD Parameters](#sqd-parameters) below for the flags it shares with
 of `--sqd_carryover_threshold`, and `--max_dim`'s risk profile is sharper
 here).
 
-The excitation-expansion step between rounds runs through qiskit-addon-sqd's
-own JAX-based `enlarge_batch_from_transitions`, which has no MPI awareness —
-every rank redundantly runs it on CPU, or (if JAX is set up for GPU in your
-environment) every rank tries to grab a GPU for it at once, which doesn't
-work. Run this driver with a single MPI rank, or set `JAX_PLATFORMS=cpu` to
-keep this step off the GPU regardless of rank count (SBD's own `--device
-gpu` diagonalization is unaffected either way).
+
 
 ### 4. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
 
