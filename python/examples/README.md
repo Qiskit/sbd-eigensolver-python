@@ -5,7 +5,9 @@ Examples demonstrating SBD's capabilities for quantum chemistry calculations.
 ## Overview
 
 - **Communication:** MPI for distributed computing
-- **Backends:** CPU (host OpenMP), GPU (NVHPC Thrust, NVIDIA only) and GPU (OpenMP target offload, NVIDIA and AMD), switchable at runtime via `device` parameter
+- **Backends:** CPU (host OpenMP, `--device cpu`), GPU (NVHPC Thrust, NVIDIA only, `--device gpu`) and GPU (OpenMP target offload, NVIDIA and AMD, `--device gpu-omp`), switchable at runtime via `device` parameter
+
+Replace `--device gpu` in all the examples below with `--device gpu-omp` if you use AMD GPUs.
 
 ## Examples
 
@@ -15,7 +17,7 @@ Runs a single TPB diagonalization from an FCIDUMP file and alpha determinant
 file. No SQD loop, no Qiskit dependency.
 
 ```bash
-# H2O with 2 MPI ranks
+# H2O with 2 MPI ranks with CPU
 mpirun -np 2 python -u run_sbd_diag.py \
     --device cpu \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
@@ -27,7 +29,7 @@ mpirun -np 8 python -u run_sbd_diag.py \
     --device gpu \
     --fcidump ../../vendor/sbd-upstream/data/n2/fcidump.txt \
     --adetfile ../../vendor/sbd-upstream/data/n2/1em3-alpha.txt \
-    --adet_comm_size 2 --bdet_comm_size 2 --task_comm_size 2
+    --adet_comm_size 4 --bdet_comm_size 2
 
 # Retrieve the 1-/2-particle RDMs and save them to a file
 mpirun -np 2 python -u run_sbd_diag.py --rdm_output /tmp/h2o_rdms.npz
@@ -68,18 +70,18 @@ eigensolver backend. Supports two bitstring input modes:
 
 ```bash
 # H2O with the bundled counts file (275 bitstrings -> ~ -76.236 Ha)
-mpirun -np 4 python -u run_sqd_sbd.py \
+mpirun -np 8 python -u run_sqd_sbd.py \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
     --counts count_dict_h2o.json \
-    --device cpu \
-    --adet_comm_size 2 --bdet_comm_size 2
+    --device gpu \
+    --adet_comm_size 4 --bdet_comm_size 2
 
 # Custom system with random bitstrings
 mpirun -np 8 python -u run_sqd_sbd.py \
     --fcidump /path/to/fci_dump.txt \
     --samples_per_batch 800 --num_batches 3 --max_iterations 10 \
     --device gpu \
-    --adet_comm_size 2 --bdet_comm_size 2 --task_comm_size 2
+    --adet_comm_size 4 --bdet_comm_size 2
 ```
 
 **count_dict.json format:** A JSON object mapping bitstrings to shot counts, as
@@ -138,12 +140,15 @@ both stop moving (`--energy_tol`/`--occupancies_tol`) -- `--max_iterations`
 is a safety cap, not the expected stopping mechanism.
 
 ```bash
-mpirun -np 4 python -u run_sqd_enlarge_subspace_sbd.py \
+JAX_PLATFORMS=cpu mpirun -np 8 python -u run_sqd_enlarge_subspace_sbd.py \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
     --counts count_dict_h2o.json \
-    --device cpu \
-    --adet_comm_size 2 --enlarge_threshold 1e-4
+    --device gpu \
+    --adet_comm_size 4 --bdet_comm_size 2 --enlarge_threshold 1e-4
 ```
+
+Note that qiskit-addon-sqd's own JAX-based `enlarge_batch_from_transitions` has no MPI awareness. Set `JAX_PLATFORMS=cpu`
+when running an MPI job using more than 1 rank.
 
 Same bundled 275-bitstring H2O pool as `run_sqd_sbd.py`'s own example above:
 plain SQD reaches **≈ -76.236 Ha** and stops there; this driver keeps going
