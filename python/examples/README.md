@@ -27,7 +27,7 @@ mpirun -np 8 python -u run_sbd_diag.py \
     --device gpu \
     --fcidump ../../vendor/sbd-upstream/data/n2/fcidump.txt \
     --adetfile ../../vendor/sbd-upstream/data/n2/1em3-alpha.txt \
-    --adet_comm_size 2 --bdet_comm_size 2 --task_comm_size 2
+    --adet_comm_size 4 --bdet_comm_size 2
 
 # Retrieve the 1-/2-particle RDMs and save them to a file
 mpirun -np 2 python -u run_sbd_diag.py --rdm_output /tmp/h2o_rdms.npz
@@ -79,7 +79,7 @@ mpirun -np 8 python -u run_sqd_sbd.py \
     --fcidump /path/to/fci_dump.txt \
     --samples_per_batch 800 --num_batches 3 --max_iterations 10 \
     --device gpu \
-    --adet_comm_size 2 --bdet_comm_size 2 --task_comm_size 2
+    --adet_comm_size 4 --bdet_comm_size 2
 ```
 
 **count_dict.json format:** A JSON object mapping bitstrings to shot counts, as
@@ -153,6 +153,14 @@ See [SQD Parameters](#sqd-parameters) below for the flags it shares with
 `run_sqd_sbd.py` and the ones that differ (`--enlarge_threshold` in place
 of `--sqd_carryover_threshold`, and `--max_dim`'s risk profile is sharper
 here).
+
+The excitation-expansion step between rounds runs through qiskit-addon-sqd's
+own JAX-based `enlarge_batch_from_transitions`, which has no MPI awareness —
+every rank redundantly runs it on CPU, or (if JAX is set up for GPU in your
+environment) every rank tries to grab a GPU for it at once, which doesn't
+work. Run this driver with a single MPI rank, or set `JAX_PLATFORMS=cpu` to
+keep this step off the GPU regardless of rank count (SBD's own `--device
+gpu` diagonalization is unaffected either way).
 
 ### 4. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
 
