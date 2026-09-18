@@ -33,10 +33,18 @@ what's already included (closed under single-excitation connectivity), or
 run reaching it before either real criterion is a sign something needs
 tuning, not the expected happy path.
 
+enlarge_batch_from_transitions is JAX-based and has no MPI awareness. Set
+JAX_PLATFORMS=cpu when running on more than 1 rank: otherwise, if JAX is
+set up for GPU, every rank tries to grab a GPU for that step at once and
+the run dies with CUDA_ERROR_OUT_OF_MEMORY. SBD's own --device gpu
+diagonalization is unaffected either way.
+
 Usage (MPI required):
-    mpirun -np 4 python run_sqd_enlarge_subspace_sbd.py \
+    JAX_PLATFORMS=cpu mpirun -np 8 python run_sqd_enlarge_subspace_sbd.py \
         --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
         --counts count_dict_h2o.json \
+        --device gpu \
+        --adet_comm_size 4 --bdet_comm_size 2 \
         --enlarge_threshold 1e-4 --max_iterations 10
 """
 
