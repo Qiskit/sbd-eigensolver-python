@@ -218,7 +218,11 @@ Located in `python/examples/`:
 - [`run_sbd_diag.py`](python/examples/run_sbd_diag.py) — Standalone TPB diagonalization (no Qiskit dependency)
 - [`run_sqd_sbd.ipynb`](python/examples/run_sqd_sbd.ipynb) — Jupyter Notebook SQD loop with SBD solver (random or hardware bitstrings)
 - [`run_sqd_sbd.py`](python/examples/run_sqd_sbd.py) — SQD loop with SBD solver (random or hardware bitstrings)
-- [`run_sqd_enlarge_subspace_sbd.py`](python/examples/run_sqd_enlarge_subspace_sbd.py) — SQD that also grows its own subspace between rounds via single excitations
+
+Two of them additionally grow the subspace between rounds, instead of resampling a fixed pool. Same loop, same result at a given threshold — they differ only in which engine generates the new determinants:
+
+- [`run_sqd_enlarge_subspace_sbd.py`](python/examples/run_sqd_enlarge_subspace_sbd.py) — expansion by qiskit-addon-sqd's own `enlarge_batch_from_transitions` (JAX, single-process)
+- [`run_sqd_sbd_carryover.py`](python/examples/run_sqd_sbd_carryover.py) — expansion by SBD's own carryover (MPI-distributed C++)
 
 See [python/examples/README.md](python/examples/README.md) for usage details.
 
@@ -267,20 +271,34 @@ say in how the subspace grows between iterations.
 
 ### SQD with subspace enlargement
 
-[`run_sqd_enlarge_subspace_sbd.py`](python/examples/run_sqd_enlarge_subspace_sbd.py)
-builds on the same recipe, but grows its own subspace between rounds: after
-each solve, it expands the dominant determinant pairs via qiskit-addon-sqd's
-own `enlarge_batch_from_transitions` (same-spin single excitations, both
-alpha and beta) and feeds the result forward as the next round's
-`include_configurations`. Concretely, it calls
-`diagonalize_fermionic_hamiltonian` with `max_iterations=1` itself, in its
-own outer Python loop, rather than delegating the whole multi-iteration loop
-to one call — that is what makes injecting a step between rounds possible.
+Two drivers break out of that fixed pool by growing the subspace between
+rounds. Both use the same structure: call
+`diagonalize_fermionic_hamiltonian` with `max_iterations=1` in their own
+outer Python loop — rather than delegating the whole multi-iteration loop to
+one call — then expand the determinants the solve just produced and feed the
+result forward as the next round's `include_configurations`. Owning the loop
+is what makes injecting a step between rounds possible at all.
 
-On the bundled H2O pool ([`count_dict_h2o.json`](python/examples/count_dict_h2o.json),
-275 bitstrings), plain SQD reaches ≈ -76.236 Ha and stops there; this driver
-keeps going past that fixed pool on its own and converges to
-**-76.2421767512 Ha**.
+They differ only in which engine generates the new determinants:
+
+| Driver | Expansion engine | Notes |
+|---|---|---|
+| [`run_sqd_enlarge_subspace_sbd.py`](python/examples/run_sqd_enlarge_subspace_sbd.py) | qiskit-addon-sqd's `enlarge_batch_from_transitions` — same-spin single excitations, in JAX | No MPI awareness: every rank recomputes the whole expansion, and on a GPU-enabled JAX install several ranks each try to claim a device. Needs `JAX_PLATFORMS=cpu` beyond one rank |
+| [`run_sqd_sbd_carryover.py`](python/examples/run_sqd_sbd_carryover.py) | SBD's own carryover, selected inside the same C++ diagonalization | MPI-distributed, so neither problem applies. Also detects closure a round earlier |
+
+At SBD carryover type 3 the two expansions gate the same quantity — a
+full-determinant `|c|^2` cutoff followed by all same-spin singles — so at a
+given threshold they agree: on the bundled H2O pool
+([`count_dict_h2o.json`](python/examples/count_dict_h2o.json), 275
+bitstrings) plain SQD reaches ≈ -76.236 Ha and stops there, while both of
+these converge to **-76.2421767512 Ha** over an identical 1742×1742
+subspace. Prefer the carryover driver unless you want the expansion to stay
+solver-agnostic, since `enlarge_batch_from_transitions` works with any
+`sci_solver` and SBD's carryover does not.
+
+Lowering the threshold pushes considerably further — see
+[Tuning the expansion threshold](python/examples/README.md#tuning-the-expansion-threshold)
+for the measured tradeoff and the `--max_dim` interaction to watch for.
 
 ## Backend Architecture
 

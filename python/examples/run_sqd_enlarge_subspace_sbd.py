@@ -20,15 +20,15 @@ determinant pairs, expands them via qiskit_addon_sqd.fermion's own
 enlarge_batch_from_transitions (single excitations, both spin channels), and
 feeds the result forward as next round's include_configurations. That is the
 same general idea as SBD's own --sbd_carryover_type 2/3 (see
-run_sbd_selected_ci.py in python/experimental/), implemented instead with
+run_sqd_sbd_carryover.py, which uses exactly that), implemented instead with
 qiskit-addon-sqd's own excitation-generation utility, so it works with any
 sci_solver, not just SBD, and needs only plain upstream SBD when SBD is used
 as the solver here.
 
-Two independent stopping conditions, either one is enough (matching
-run_sbd_selected_ci.py's own two): the enlarged set adds nothing new beyond
-what's already included (closed under single-excitation connectivity), or
---energy_tol and --occupancies_tol both hold between outer rounds.
+Two independent stopping conditions, either one is enough: the enlarged set
+adds nothing new beyond what's already included (closed under
+single-excitation connectivity), or --energy_tol and --occupancies_tol both
+hold between outer rounds.
 --max_iterations is a safety cap, not the primary stopping mechanism -- a
 run reaching it before either real criterion is a sign something needs
 tuning, not the expected happy path.
@@ -278,10 +278,9 @@ def enlarge_via_singles(ci_strs_a, ci_strs_b, amplitudes, norb, threshold,
 def cap_to_max_dim(new_ints, existing_ints, max_dim, rng):
     """Truncate new_ints to max_dim, always keeping everything in existing_ints first.
 
-    Same seed-priority logic as run_sbd_selected_ci.py's _cap_to_max_dim, ported
-    to plain ci_str integer arrays: naive random truncation over the WHOLE
-    candidate set can discard already-proven-important strings just as easily
-    as brand-new ones, which is what that driver's own bug fix addressed.
+    Seed-priority truncation over plain ci_str integer arrays: naive random
+    truncation over the WHOLE candidate set can discard
+    already-proven-important strings just as easily as brand-new ones.
     """
     if max_dim is None or len(new_ints) <= max_dim:
         return new_ints
