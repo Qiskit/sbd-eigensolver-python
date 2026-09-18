@@ -284,7 +284,7 @@ They differ only in which engine generates the new determinants:
 | Driver | Expansion engine | Notes |
 |---|---|---|
 | [`run_sqd_enlarge_subspace_sbd.py`](python/examples/run_sqd_enlarge_subspace_sbd.py) | qiskit-addon-sqd's `enlarge_batch_from_transitions` — same-spin single excitations, in JAX | No MPI awareness: every rank recomputes the whole expansion, and on a GPU-enabled JAX install several ranks each try to claim a device. Needs `JAX_PLATFORMS=cpu` beyond one rank |
-| [`run_sqd_sbd_carryover.py`](python/examples/run_sqd_sbd_carryover.py) | SBD's own carryover, selected inside the same C++ diagonalization | MPI-distributed, so neither problem applies. Also detects closure a round earlier |
+| [`run_sqd_sbd_carryover.py`](python/examples/run_sqd_sbd_carryover.py) | SBD's own carryover, selected inside the same C++ diagonalization | No JAX involved, so neither problem applies and no env workaround is needed. Not faster, though: measured identical wall time on a 45-orbital system |
 
 At SBD carryover type 3 the two expansions gate the same quantity — a
 full-determinant `|c|^2` cutoff followed by all same-spin singles — so at a

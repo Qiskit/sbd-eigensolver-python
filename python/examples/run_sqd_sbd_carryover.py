@@ -32,13 +32,24 @@ come back on the result as carryover_a/carryover_b (see
 sbd_solver.SBDCarryoverResult).
 
 Why bother, when run_sqd_enlarge_subspace_sbd.py already grows its
-subspace: enlarge_batch_from_transitions is JAX and has no MPI awareness,
-so every rank redundantly recomputes the whole expansion -- measured 2-4x
-slower than SBD-native carryover at matching thresholds, and it exhausts
-GPU memory outright once several ranks each try to claim a device. SBD's
-carryover is MPI-distributed C++ (SinglesExtendHalfdets splits the work
-with MPI_Comm_split/Bcast), so it does not have either problem, and this
-driver needs no JAX_PLATFORMS=cpu workaround.
+subspace. The honest answer is operational, not performance:
+enlarge_batch_from_transitions is JAX and has no MPI awareness, so every
+rank redundantly recomputes the whole expansion, and on a GPU-enabled JAX
+install several ranks each try to claim a device and the run dies with
+CUDA_ERROR_OUT_OF_MEMORY -- which is why that driver needs
+JAX_PLATFORMS=cpu beyond one rank. Nothing here touches JAX, so neither
+applies.
+
+It is NOT faster. Measured head to head on a 45-orbital system, 8 ranks,
+--max_dim 15000, threshold 1e-4: 2248 s here versus 2250 s for the JAX
+path, reaching bit-identical energies and subspace sizes at every one of
+the 8 rounds. The expansion is simply not where the time goes -- each
+round is dominated by configuration recovery over the sample pool and by
+diagonalizing a 225M-determinant subspace, so making the expansion
+MPI-distributed buys nothing measurable. (An earlier "2-4x faster" note
+was a misattribution: that gap was against a driver with no configuration
+recovery at all, so it measured recovery overhead, not the expansion
+engine.)
 
 Two independent stopping conditions, either one is enough: the carryover
 set adds nothing new beyond what is already included (the subspace is
@@ -434,20 +445,35 @@ def main():
                 "requested. Nothing to expand with."
             )
 
-        # SBD's carryover is a SELECTION plus (for types >= 2) newly generated
-        # excitations -- it is not guaranteed to contain everything already in
-        # the subspace, unlike the identity-row trick the JAX path uses. Union
-        # with the solved subspace so a round can only ever add, never drop
-        # determinants that are currently carrying weight.
-        new_alpha = np.union1d(np.asarray(new_alpha, dtype=np.int64),
-                               np.asarray(ci_strs_a, dtype=np.int64))
-        new_beta = np.union1d(np.asarray(new_beta, dtype=np.int64),
-                              np.asarray(ci_strs_b, dtype=np.int64))
+        new_alpha = np.asarray(new_alpha, dtype=np.int64)
+        new_beta = np.asarray(new_beta, dtype=np.int64)
 
-        no_growth = (len(new_alpha) == len(ci_strs_a)
-                     and len(new_beta) == len(ci_strs_b)
-                     and set(new_alpha.tolist()) == set(int(x) for x in ci_strs_a)
-                     and set(new_beta.tolist()) == set(int(x) for x in ci_strs_b))
+        # Stop when the carryover proposes nothing the solved subspace does not
+        # already hold. Deliberately a SUBSET test against the solved strings,
+        # not a union folded into what gets forwarded below:
+        #
+        # unioning the carryover with the solved subspace looks safer -- "a
+        # round can only add, never drop a determinant carrying weight" -- but
+        # it deadlocks the loop the moment --max_dim binds. cap_to_max_dim
+        # keeps everything already in the subspace first, so once the solved
+        # subspace is itself max_dim strings the union makes existing == the
+        # whole budget, every new candidate is discarded, the subspace freezes,
+        # and --energy_tol reads the frozen energy as convergence. Measured: on
+        # a 45-orbital system at --max_dim 15000 that bottomed out 3.4 Ha above
+        # where the same expansion reaches without the union, "converging" after
+        # four rounds. It cannot show up when --max_dim is unset, which is why
+        # small-system testing missed it.
+        #
+        # Not unioning means a low-amplitude determinant can leave the subspace.
+        # That is fine and intended -- pruning is what carryover is for, it is
+        # exactly what run_sqd_enlarge_subspace_sbd.py's expansion does too
+        # (its identity row preserves the thresholded pairs, not the whole
+        # subspace), and qiskit-addon-sqd's own carryover plus fresh sampling
+        # re-supply anything that still matters.
+        solved_a = set(int(x) for x in ci_strs_a)
+        solved_b = set(int(x) for x in ci_strs_b)
+        no_growth = (set(new_alpha.tolist()) <= solved_a
+                     and set(new_beta.tolist()) <= solved_b)
 
         # No universal "safe" default exists for --max_dim (a cap that suits a
         # large system is wildly oversized for H2O/N2, and vice versa), so it

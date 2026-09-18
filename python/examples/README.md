@@ -168,14 +168,17 @@ select the next round's determinants, inside the same C++ diagonalization that
 just ran. They come back on the result and are fed forward as the next round's
 `include_configurations`.
 
-Two practical consequences, both of which follow from the expansion happening
-in SBD's MPI-distributed C++ rather than in JAX on every rank:
+What that buys, and what it does not:
 
 - **No `JAX_PLATFORMS=cpu` needed.** The JAX expansion has no MPI awareness, so
   on a GPU-enabled JAX install several ranks each try to claim a device and the
   run dies with `CUDA_ERROR_OUT_OF_MEMORY`. Nothing here touches JAX.
-- **It detects closure a round earlier**, because it compares the expanded set
-  against the solved subspace directly.
+- **It is not faster.** Measured head to head on a 45-orbital system (8 ranks,
+  `--max_dim 15000`, threshold `1e-4`): 2248 s against 2250 s for the JAX path,
+  reaching bit-identical energies and subspace sizes at every round. Each round
+  is dominated by configuration recovery and by diagonalizing the subspace, so
+  where the expansion runs makes no measurable difference. Pick this driver for
+  the operational reason above, not for speed.
 
 ```bash
 mpirun -np 8 python -u run_sqd_sbd_carryover.py \
