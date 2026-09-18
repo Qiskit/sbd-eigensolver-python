@@ -138,14 +138,15 @@ both stop moving (`--energy_tol`/`--occupancies_tol`) -- `--max_iterations`
 is a safety cap, not the expected stopping mechanism.
 
 ```bash
-JAX_PLATFORMS=cpu` mpirun -np 8 python -u run_sqd_enlarge_subspace_sbd.py \
+JAX_PLATFORMS=cpu mpirun -np 8 python -u run_sqd_enlarge_subspace_sbd.py \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
     --counts count_dict_h2o.json \
     --device gpu \
     --adet_comm_size 4 --bdet_comm_size 2 --enlarge_threshold 1e-4
 ```
+
 Note that qiskit-addon-sqd's own JAX-based `enlarge_batch_from_transitions` has no MPI awareness. Set `JAX_PLATFORMS=cpu`
-when running a MPI job using more than 1 rank.
+when running an MPI job using more than 1 rank.
 
 Same bundled 275-bitstring H2O pool as `run_sqd_sbd.py`'s own example above:
 plain SQD reaches **≈ -76.236 Ha** and stops there; this driver keeps going
@@ -155,8 +156,6 @@ See [SQD Parameters](#sqd-parameters) below for the flags it shares with
 `run_sqd_sbd.py` and the ones that differ (`--enlarge_threshold` in place
 of `--sqd_carryover_threshold`, and `--max_dim`'s risk profile is sharper
 here).
-
-
 
 ### 4. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
 
