@@ -33,12 +33,13 @@ mpirun -np 8 python -u run_sbd_diag.py \
 mpirun -np 2 python -u run_sbd_diag.py --rdm_output /tmp/h2o_rdms.npz
 ```
 
-`--rdm_output PATH` computes the RDMs and saves **one** `.npz` file at
-`PATH` holding both `rdm1` and `rdm2` (`data = np.load(PATH); data["rdm1"]`,
-`data["rdm2"]`) — unlike upstream SBD's own CLI, which writes two separate
-files (`1pRDM.txt`/`2pRDM.txt`). It also prints `trace(rdm1)` and the
-natural orbital occupations. Leaving it empty (the default) skips computing
-RDMs entirely.
+`--rdm_output` takes the file to save to (`/tmp/h2o_rdms.npz` above) and
+writes **one** `.npz` file there holding both `rdm1` and `rdm2` together
+(`data = np.load("/tmp/h2o_rdms.npz"); data["rdm1"]`, `data["rdm2"]`) —
+unlike upstream SBD's own CLI, which writes two separate files
+(`1pRDM.txt`/`2pRDM.txt`). It also prints `trace(rdm1)` and the natural
+orbital occupations. Leaving it empty (the default) skips computing RDMs
+entirely.
 
 By default beta determinants are derived from `--adetfile` alone (identical
 to it, or a shuffled copy if `--shuffle` is set). `--symmetrize_spin 0`

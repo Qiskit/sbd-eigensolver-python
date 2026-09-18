@@ -164,14 +164,6 @@ def main():
     # Import sbd — auto-initializes on first use, but we call init()
     # explicitly here to set the default device from --device flag.
     import sbd
-    # Reuses the same rdm1/rdm2 assembly sbd_solver.solve_sci uses for the
-    # SQD drivers -- verified against PySCF's make_rdm1/make_rdm2 on all
-    # three SBD backends, both element-wise and via the energy identity
-    # E = einsum("pr,pr->",rdm1,hcore) + 0.5*einsum("prqs,prqs->",rdm2,eri).
-    # mpi4py is already a real dependency of `sbd` itself (used internally
-    # for sbd.init()'s communicator), so importing sbd_solver here adds no
-    # new hard dependency; its pyscf/qiskit-addon-sqd imports are both
-    # soft (try/except), unused by assemble_rdms itself.
     from sbd.sbd_solver import assemble_rdms
 
     sbd.init(device=args.device)
