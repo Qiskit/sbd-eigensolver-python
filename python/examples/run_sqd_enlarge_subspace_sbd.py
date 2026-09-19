@@ -246,9 +246,21 @@ def enlarge_via_singles(ci_strs_a, ci_strs_b, amplitudes, norb, threshold,
 
     Returns:
         (new_alpha_ints, new_beta_ints): sorted, deduplicated int64 arrays.
-        Always a superset of the input ci_strs_a/ci_strs_b (row 0 of
-        `transitions` is the identity), so callers never need to separately
-        re-union the pre-expansion set back in.
+
+        These are a superset of the *dominant* input strings only -- the ones
+        appearing in some pair with |amplitude|^2 > threshold. Row 0 of
+        `transitions` is the identity, so every string fed in comes back out,
+        but strings whose every pair fell below the threshold are never fed in
+        and so do NOT appear in the result. The expansion therefore prunes as
+        well as grows, and is not a superset of ci_strs_a/ci_strs_b.
+
+        That is deliberate -- it is what makes this a selected-CI style
+        re-selection each round, matching SBD's own carryover -- but it means
+        callers must not assume the previous subspace survives. In particular,
+        a "did the expansion add anything new?" test must be a subset test
+        against the solved set, not an equality test: equality additionally
+        requires every solved string to be dominant, which is false on any
+        subspace large enough to have a tail.
     """
     weights = np.abs(amplitudes) ** 2
     ia_idx, ib_idx = np.nonzero(weights > threshold)
@@ -440,10 +452,16 @@ def main():
             ci_strs_a, ci_strs_b, result.sci_state.amplitudes, norb,
             args.enlarge_threshold, transitions,
         )
-        no_growth = (len(new_alpha) == len(ci_strs_a)
-                     and len(new_beta) == len(ci_strs_b)
-                     and set(new_alpha.tolist()) == set(int(x) for x in ci_strs_a)
-                     and set(new_beta.tolist()) == set(int(x) for x in ci_strs_b))
+        # Closure test: has the expansion stopped producing anything we have
+        # not already diagonalized? That is a SUBSET test, not equality.
+        # Equality was unreachable: enlarge_via_singles returns a superset of
+        # the *dominant* strings only, so it legitimately omits solved strings
+        # whose every pair fell below --enlarge_threshold. Any subspace with a
+        # low-weight tail therefore failed the equality test forever, this
+        # branch never fired, and every run instead paid an extra round to
+        # establish energy/occupancy convergence.
+        no_growth = (set(new_alpha.tolist()) <= set(int(x) for x in ci_strs_a)
+                     and set(new_beta.tolist()) <= set(int(x) for x in ci_strs_b))
 
         # No universal "safe" default exists for --max_dim (right for Boston-scale
         # is wildly oversized for H2O/N2, and vice versa), so it stays unset by
