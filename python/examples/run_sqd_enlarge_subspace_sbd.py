@@ -246,9 +246,14 @@ def enlarge_via_singles(ci_strs_a, ci_strs_b, amplitudes, norb, threshold,
 
     Returns:
         (new_alpha_ints, new_beta_ints): sorted, deduplicated int64 arrays.
-        Always a superset of the input ci_strs_a/ci_strs_b (row 0 of
-        `transitions` is the identity), so callers never need to separately
-        re-union the pre-expansion set back in.
+
+        Superset of the *dominant* input strings only. Row 0 of `transitions`
+        is the identity, so everything fed in comes back -- but strings whose
+        every pair fell below the threshold are never fed in. The expansion
+        thus prunes as well as grows and is NOT a superset of
+        ci_strs_a/ci_strs_b, so callers must not assume the previous subspace
+        survives, and a "added anything new?" test must be a subset test
+        rather than equality.
     """
     weights = np.abs(amplitudes) ** 2
     ia_idx, ib_idx = np.nonzero(weights > threshold)
@@ -440,17 +445,17 @@ def main():
             ci_strs_a, ci_strs_b, result.sci_state.amplitudes, norb,
             args.enlarge_threshold, transitions,
         )
-        no_growth = (len(new_alpha) == len(ci_strs_a)
-                     and len(new_beta) == len(ci_strs_b)
-                     and set(new_alpha.tolist()) == set(int(x) for x in ci_strs_a)
-                     and set(new_beta.tolist()) == set(int(x) for x in ci_strs_b))
+        # Subset, not equality: the expansion omits solved strings whose every
+        # pair fell below --enlarge_threshold, so equality never held on a
+        # subspace with a low-weight tail and this branch never fired.
+        no_growth = (set(new_alpha.tolist()) <= set(int(x) for x in ci_strs_a)
+                     and set(new_beta.tolist()) <= set(int(x) for x in ci_strs_b))
 
-        # No universal "safe" default exists for --max_dim (right for Boston-scale
-        # is wildly oversized for H2O/N2, and vice versa), so it stays unset by
-        # default -- but leaving it unset on a system this size is exactly how we
-        # hit a 28268x28268 (799M-pair) round ourselves before adding this check.
-        # Warn loudly before the next round's diagonalization, not after a GPU
-        # OOM traceback with no clue which flag caused it.
+        # No universal "safe" default exists for --max_dim (a cap suiting a
+        # large system is wildly oversized for H2O/N2), so it stays unset --
+        # but leaving it unset on a large system is how we hit a
+        # several-hundred-million-pair round before adding this check. Warn
+        # before the next diagonalization, not after a GPU OOM traceback.
         expanded_pairs = len(new_alpha) * len(new_beta)
         if rank == 0 and args.max_dim is None and (dim > 50_000_000 or expanded_pairs > 50_000_000):
             print(f"WARNING: subspace is large and growing with --max_dim unset "
