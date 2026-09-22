@@ -33,14 +33,12 @@ what's already included (closed under single-excitation connectivity), or
 run reaching it before either real criterion is a sign something needs
 tuning, not the expected happy path.
 
-enlarge_batch_from_transitions is JAX-based and has no MPI awareness. Set
-JAX_PLATFORMS=cpu when running on more than 1 rank: otherwise, if JAX is
-set up for GPU, every rank tries to grab a GPU for that step at once and
-the run dies with CUDA_ERROR_OUT_OF_MEMORY. SBD's own --device gpu
-diagonalization is unaffected either way.
+enlarge_batch_from_transitions is JAX-based. By default, JAX may select the first GPU 
+visible to each process, which can result in multiple ranks sharing the same GPU. 
+Proper rank-to-GPU assignment helps avoid GPU memory contention and out-of-memory errors. 
 
 Usage (MPI required):
-    JAX_PLATFORMS=cpu mpirun -np 8 python run_sqd_enlarge_subspace_sbd.py \
+    mpirun -np 8 python run_sqd_enlarge_subspace_sbd.py \
         --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
         --counts count_dict_h2o.json \
         --device gpu \
@@ -55,6 +53,7 @@ import time
 from functools import partial
 from pathlib import Path
 
+import jax
 import numpy as np
 from mpi4py import MPI
 from pyscf import ao2mo, tools
@@ -236,13 +235,19 @@ def ints_to_bool_columns(ci_ints, norb):
 
 
 def enlarge_via_singles(ci_strs_a, ci_strs_b, amplitudes, norb, threshold,
-                         transitions):
+                         transitions, jax_device=None):
     """Expand dominant (alpha, beta) pairs via single excitations.
 
     Selects pairs with |amplitude|^2 > threshold (same convention as SBD's
     own full-determinant carryover_type 3), builds their [beta|alpha]
     bitstring rows, applies `transitions` via enlarge_batch_from_transitions,
     and converts the augmented rows back to unique alpha/beta ci_str ints.
+
+    Args:
+        jax_device: Device to run the JAX expansion on, or None to leave
+            placement to JAX. Committing the input is what steers the jitted
+            computation, so every rank must pass its own device or they all
+            land on the same one -- see the module docstring.
 
     Returns:
         (new_alpha_ints, new_beta_ints): sorted, deduplicated int64 arrays.
@@ -266,6 +271,13 @@ def enlarge_via_singles(ci_strs_a, ci_strs_b, amplitudes, norb, threshold,
     alpha_bits = ints_to_bool_columns(np.asarray(ci_strs_a)[ia_idx], norb)
     beta_bits = ints_to_bool_columns(np.asarray(ci_strs_b)[ib_idx], norb)
     bitstring_matrix = np.concatenate([beta_bits, alpha_bits], axis=1)
+
+    # Committing the input pins the jitted expansion to this rank's device.
+    # The transition arrays stay uncommitted and follow it. Without this,
+    # every rank's JAX places the work on its own first visible device --
+    # the same one for all of them.
+    if jax_device is not None:
+        bitstring_matrix = jax.device_put(bitstring_matrix, jax_device)
 
     augmented = np.asarray(enlarge_batch_from_transitions(bitstring_matrix, transitions))
 
@@ -335,6 +347,17 @@ def main():
         device_config = DeviceConfig.gpu_omp()
     else:
         device_config = DeviceConfig.cpu()
+
+    jax_device = None
+    if device_str in ("gpu", "gpu-omp", "gpu-nvidia-omp"):
+        jax_devices = jax.devices()
+        # A CPU-only jaxlib, or JAX_PLATFORMS=cpu, reports CpuDevice here.
+        # Leave those alone rather than pinning a rank to a CPU "device".
+        if jax_devices and jax_devices[0].platform != "cpu":
+            jax_device = jax_devices[rank % len(jax_devices)]
+    print(f"[rank {rank}] JAX subspace expansion device: "
+          f"{jax_device if jax_device is not None else 'unassigned (JAX default)'}",
+          flush=True)
 
     mf_as = tools.fcidump.to_scf(str(args.fcidump))
     hcore = mf_as.get_hcore()
@@ -443,7 +466,7 @@ def main():
 
         new_alpha, new_beta = enlarge_via_singles(
             ci_strs_a, ci_strs_b, result.sci_state.amplitudes, norb,
-            args.enlarge_threshold, transitions,
+            args.enlarge_threshold, transitions, jax_device=jax_device,
         )
         # Subset, not equality: the expansion omits solved strings whose every
         # pair fell below --enlarge_threshold, so equality never held on a
