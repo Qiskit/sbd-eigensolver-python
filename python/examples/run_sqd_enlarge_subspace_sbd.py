@@ -319,15 +319,11 @@ def main():
         print()
 
     from sbd.sbd_solver import solve_sci_batch
-    from sbd.device_config import DeviceConfig, get_device_info, print_device_info
+    from sbd.device_config import DeviceConfig
 
     device_str = args.device
     if device_str == "auto":
         device_str = "gpu" if DeviceConfig._check_cuda() else "cpu"
-
-    if rank == 0:
-        print_device_info()
-        print()
 
     if device_str == "gpu":
         device_config = DeviceConfig.gpu()
@@ -341,23 +337,26 @@ def main():
         if not os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE"):
             os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
+        # Give each rank its own JAX device. JAX has no MPI awareness, so
+        # every rank would otherwise pick the first device it can see -- the
+        # same one for all of them -- and contend for it.
+        #
+        # cluster_detection_method="mpi4py" derives everything from COMM_WORLD:
+        # the coordinator address (rank 0's hostname plus a derived port,
+        # broadcast to all), the process count and id, and local_device_ids
+        # from the node-local rank via Split_type(MPI.COMM_TYPE_SHARED).
+        #
+        # Called unconditionally, with no capability probe in front of it.
+        # initialize() runs COMM_WORLD collectives internally, so ANY per-rank
+        # branch here deadlocks the moment the ranks disagree -- which is what
+        # a probe does when it is timing-sensitive. --device gpu is taken as
+        # the user's word that GPUs are present.
+        #
         # Must be the first JAX call in the process -- it fails if the backend
         # is already initialised, so nothing above may touch jax.devices().
-        n_gpus = get_device_info().get("gpu_count") or 0
-        if n_gpus > 0:
-            local_rank = comm.Split_type(MPI.COMM_TYPE_SHARED).Get_rank()
-            jax.distributed.initialize(
-                cluster_detection_method="mpi4py",
-                local_device_ids=[local_rank % n_gpus],
-            )
-            # Per rank, not just rank 0: the point is that they differ, and a
-            # rank that silently kept every device is the bug being avoided.
-            print(f"[rank {rank}] JAX local devices: {jax.local_devices()}",
-                  flush=True)
-        elif rank == 0:
-            print("WARNING: no GPUs reported, so JAX was left unpinned. On a "
-                  "GPU node every rank would then target the same device; use "
-                  "JAX_PLATFORMS=cpu if that happens.", flush=True)
+        jax.distributed.initialize(cluster_detection_method="mpi4py")
+        print(f"[rank {rank}] JAX local devices: {jax.local_devices()}",
+              flush=True)
 
     mf_as = tools.fcidump.to_scf(str(args.fcidump))
     hcore = mf_as.get_hcore()
