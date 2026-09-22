@@ -48,6 +48,7 @@ Usage (MPI required):
 
 import argparse
 import json
+import os
 import re
 import time
 from functools import partial
@@ -235,19 +236,13 @@ def ints_to_bool_columns(ci_ints, norb):
 
 
 def enlarge_via_singles(ci_strs_a, ci_strs_b, amplitudes, norb, threshold,
-                         transitions, jax_device=None):
+                         transitions):
     """Expand dominant (alpha, beta) pairs via single excitations.
 
     Selects pairs with |amplitude|^2 > threshold (same convention as SBD's
     own full-determinant carryover_type 3), builds their [beta|alpha]
     bitstring rows, applies `transitions` via enlarge_batch_from_transitions,
     and converts the augmented rows back to unique alpha/beta ci_str ints.
-
-    Args:
-        jax_device: Device to run the JAX expansion on, or None to leave
-            placement to JAX. Committing the input is what steers the jitted
-            computation, so every rank must pass its own device or they all
-            land on the same one -- see the module docstring.
 
     Returns:
         (new_alpha_ints, new_beta_ints): sorted, deduplicated int64 arrays.
@@ -271,13 +266,6 @@ def enlarge_via_singles(ci_strs_a, ci_strs_b, amplitudes, norb, threshold,
     alpha_bits = ints_to_bool_columns(np.asarray(ci_strs_a)[ia_idx], norb)
     beta_bits = ints_to_bool_columns(np.asarray(ci_strs_b)[ib_idx], norb)
     bitstring_matrix = np.concatenate([beta_bits, alpha_bits], axis=1)
-
-    # Committing the input pins the jitted expansion to this rank's device.
-    # The transition arrays stay uncommitted and follow it. Without this,
-    # every rank's JAX places the work on its own first visible device --
-    # the same one for all of them.
-    if jax_device is not None:
-        bitstring_matrix = jax.device_put(bitstring_matrix, jax_device)
 
     augmented = np.asarray(enlarge_batch_from_transitions(bitstring_matrix, transitions))
 
@@ -331,7 +319,7 @@ def main():
         print()
 
     from sbd.sbd_solver import solve_sci_batch
-    from sbd.device_config import DeviceConfig, print_device_info
+    from sbd.device_config import DeviceConfig, get_device_info, print_device_info
 
     device_str = args.device
     if device_str == "auto":
@@ -348,16 +336,28 @@ def main():
     else:
         device_config = DeviceConfig.cpu()
 
-    jax_device = None
     if device_str in ("gpu", "gpu-omp", "gpu-nvidia-omp"):
-        jax_devices = jax.devices()
-        # A CPU-only jaxlib, or JAX_PLATFORMS=cpu, reports CpuDevice here.
-        # Leave those alone rather than pinning a rank to a CPU "device".
-        if jax_devices and jax_devices[0].platform != "cpu":
-            jax_device = jax_devices[rank % len(jax_devices)]
-    print(f"[rank {rank}] JAX subspace expansion device: "
-          f"{jax_device if jax_device is not None else 'unassigned (JAX default)'}",
-          flush=True)
+        # XLA reserves 75% of a device the first time it is used. force it to false
+        if not os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE"):
+            os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
+        # Must be the first JAX call in the process -- it fails if the backend
+        # is already initialised, so nothing above may touch jax.devices().
+        n_gpus = get_device_info().get("gpu_count") or 0
+        if n_gpus > 0:
+            local_rank = comm.Split_type(MPI.COMM_TYPE_SHARED).Get_rank()
+            jax.distributed.initialize(
+                cluster_detection_method="mpi4py",
+                local_device_ids=[local_rank % n_gpus],
+            )
+            # Per rank, not just rank 0: the point is that they differ, and a
+            # rank that silently kept every device is the bug being avoided.
+            print(f"[rank {rank}] JAX local devices: {jax.local_devices()}",
+                  flush=True)
+        elif rank == 0:
+            print("WARNING: no GPUs reported, so JAX was left unpinned. On a "
+                  "GPU node every rank would then target the same device; use "
+                  "JAX_PLATFORMS=cpu if that happens.", flush=True)
 
     mf_as = tools.fcidump.to_scf(str(args.fcidump))
     hcore = mf_as.get_hcore()
@@ -466,7 +466,7 @@ def main():
 
         new_alpha, new_beta = enlarge_via_singles(
             ci_strs_a, ci_strs_b, result.sci_state.amplitudes, norb,
-            args.enlarge_threshold, transitions, jax_device=jax_device,
+            args.enlarge_threshold, transitions,
         )
         # Subset, not equality: the expansion omits solved strings whose every
         # pair fell below --enlarge_threshold, so equality never held on a
