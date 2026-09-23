@@ -49,6 +49,25 @@
 namespace py = pybind11;
 
 /**
+ * How many offload devices this process can see, or 0 on a CPU build.
+ *
+ * Pure query: no device is selected and no context created, so this is safe
+ * to call before anything else has touched the GPU.
+ */
+static int sbd_device_count() {
+#if defined(SBD_THRUST) && defined(__CUDACC__)
+    int n = 0; cudaGetDeviceCount(&n); return n;
+#elif defined(SBD_THRUST)
+    int n = 0; hipGetDeviceCount(&n); return n;
+#elif defined(USE_OMP_OFFLOAD)
+    return omp_get_num_devices();
+#else
+    return 0;
+#endif
+}
+
+
+/**
  * Helper function to convert mpi4py communicator to MPI_Comm
  */
 MPI_Comm get_mpi_comm(py::object py_comm) {
@@ -606,6 +625,22 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
     // Cleanup/Finalization functions
     // ========================================================================
     
+    m.def("planned_device_id",
+        [](py::object py_comm) {
+            MPI_Comm comm = get_mpi_comm(py_comm);
+            int mpi_rank;
+            MPI_Comm_rank(comm, &mpi_rank);
+            // Same rank % count rule the diag entry points apply. Deliberately
+            // a second copy of that one-liner rather than a refactor of the
+            // three of them, so exposing the value cannot change how any
+            // existing path selects its device -- but the two must be kept in
+            // step, or this query starts lying.
+            const int n = sbd_device_count();
+            return n > 0 ? mpi_rank % n : -1;
+        },
+        "Device index this rank will use for diagonalization, or -1 if there "
+        "is none (CPU build, or no devices visible).");
+
     m.def("cleanup_device",
         []() {
 #ifdef SBD_THRUST

@@ -33,9 +33,9 @@ what's already included (closed under single-excitation connectivity), or
 run reaching it before either real criterion is a sign something needs
 tuning, not the expected happy path.
 
-enlarge_batch_from_transitions is JAX-based. By default, JAX may select the first GPU 
-visible to each process, which can result in multiple ranks sharing the same GPU. 
-Proper rank-to-GPU assignment helps avoid GPU memory contention and out-of-memory errors. 
+enlarge_batch_from_transitions is JAX-based. By default, JAX may select the first GPU
+visible to each process, which can result in multiple ranks sharing the same GPU.
+Proper rank-to-GPU assignment helps avoid GPU memory contention and out-of-memory errors.
 
 Usage (MPI required):
     mpirun -np 8 python run_sqd_enlarge_subspace_sbd.py \
@@ -332,31 +332,28 @@ def main():
     else:
         device_config = DeviceConfig.cpu()
 
-    if device_str in ("gpu", "gpu-omp", "gpu-nvidia-omp"):
-        # XLA reserves 75% of a device the first time it is used. force it to false
+    from sbd import get_device_id
+    jax_gpu_id = get_device_id(device_str)
+    if jax_gpu_id < 0:
+        # No device for this rank to use -- fall back to CPU. 
+        os.environ["JAX_PLATFORMS"] = "cpu"
+        print(f"[rank {rank}] WARNING: no GPU for this rank; forcing the SQD "
+              "subspace expansion onto CPU.", flush=True)
+    elif os.environ.get("JAX_PLATFORMS") == "cpu":
+        if rank == 0:
+            print("INFO: JAX_PLATFORMS=cpu was set, so the SQD subspace "
+                  "expansion runs on CPU.", flush=True)
+    else:
         if not os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE"):
             os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
-        # Give each rank its own JAX device. JAX has no MPI awareness, so
-        # every rank would otherwise pick the first device it can see -- the
-        # same one for all of them -- and contend for it.
-        #
-        # cluster_detection_method="mpi4py" derives everything from COMM_WORLD:
-        # the coordinator address (rank 0's hostname plus a derived port,
-        # broadcast to all), the process count and id, and local_device_ids
-        # from the node-local rank via Split_type(MPI.COMM_TYPE_SHARED).
-        #
-        # Called unconditionally, with no capability probe in front of it.
-        # initialize() runs COMM_WORLD collectives internally, so ANY per-rank
-        # branch here deadlocks the moment the ranks disagree -- which is what
-        # a probe does when it is timing-sensitive. --device gpu is taken as
-        # the user's word that GPUs are present.
-        #
         # Must be the first JAX call in the process -- it fails if the backend
         # is already initialised, so nothing above may touch jax.devices().
-        jax.distributed.initialize(cluster_detection_method="mpi4py")
-        print(f"[rank {rank}] JAX local devices: {jax.local_devices()}",
-              flush=True)
+        jax.distributed.initialize(cluster_detection_method="mpi4py",
+                                   local_device_ids=[jax_gpu_id])
+        if rank == 0:
+            print("INFO: the SQD subspace expansion runs on GPU, one device "
+                  "per rank.", flush=True)
 
     mf_as = tools.fcidump.to_scf(str(args.fcidump))
     hcore = mf_as.get_hcore()
