@@ -335,8 +335,16 @@ def main():
     from sbd import get_device_id
     jax_gpu_id = get_device_id(device_str)
     if jax_gpu_id < 0:
-        # No device for this rank to use -- fall back to CPU. 
-        os.environ["JAX_PLATFORMS"] = "cpu"
+        # No device for this rank to use -- fall back to CPU.
+        #
+        # Via jax.config, NOT os.environ: unlike XLA_PYTHON_CLIENT_*, which the
+        # C++ client reads when it creates the backend, JAX_PLATFORMS is a
+        # jax.config option parsed at `import jax` -- already done by the time
+        # this runs, so setting the variable here is silently ignored. That
+        # left every rank on JAX's default device with no reservation cap, and
+        # --device cpu on a GPU node aborted with CUDA_ERROR_OUT_OF_MEMORY
+        # while printing that it was using the CPU.
+        jax.config.update("jax_platforms", "cpu")
         print(f"[rank {rank}] WARNING: no GPU for this rank; forcing the SQD "
               "subspace expansion onto CPU.", flush=True)
     elif os.environ.get("JAX_PLATFORMS") == "cpu":
