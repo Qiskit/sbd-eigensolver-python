@@ -463,8 +463,9 @@ def get_device_id(device=None):
     cannot drift out of step with SBD. Selects nothing and creates no
     context, so it is safe to call before any GPU work.
 
-    Not the node-local rank: see the backend's planned_device_id docstring
-    for when that distinction matters.
+    Uses the communicator rank, i.e. the same ``gpu_id = rank % num_gpus``
+    convention SBD's own diagonalization applies, documented in
+    ``python/examples/README.md``.
     """
     _ensure_initialized()
     return get_backend(device).planned_device_id(get_comm())
