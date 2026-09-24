@@ -323,7 +323,17 @@ def main():
 
     device_str = args.device
     if device_str == "auto":
-        device_str = "gpu" if DeviceConfig._check_cuda() else "cpu"
+        # Resolve on one rank and broadcast, so every rank agrees by
+        # construction. _check_cuda() shells out to nvidia-smi with a 2 s
+        # timeout, and at 8 concurrent ranks it has been measured at ~6 s, so
+        # it can time out on some ranks and not others. A diverged device_str
+        # would send the ranks that resolved to a GPU into
+        # jax.distributed.initialize() below -- a COMM_WORLD rendezvous --
+        # while the rest skip it, hanging the job until that times out.
+        # Resolving once is also cheaper: one probe, and no 8-way contention.
+        device_str = comm.bcast(
+            ("gpu" if DeviceConfig._check_cuda() else "cpu") if rank == 0 else None,
+            root=0)
 
     if device_str == "gpu":
         device_config = DeviceConfig.gpu()
