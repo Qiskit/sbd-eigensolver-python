@@ -288,7 +288,17 @@ def main():
 
     device_str = args.device
     if device_str == "auto":
-        device_str = "gpu" if DeviceConfig._check_cuda() else "cpu"
+        # Resolve on one rank and broadcast, so every rank agrees by
+        # construction. _check_cuda() shells out to nvidia-smi with a 2 s
+        # timeout, and at 8 concurrent ranks it has been measured at ~6 s, so
+        # it can time out on some ranks and not others. A diverged device_str
+        # would leave ranks on different backends (the cpu and gpu extension
+        # modules are separate builds) and then call solve_sci_batch, which is
+        # collective over the comm. Resolving once is also cheaper: one probe,
+        # and no 8-way contention.
+        device_str = comm.bcast(
+            ("gpu" if DeviceConfig._check_cuda() else "cpu") if rank == 0 else None,
+            root=0)
 
     if rank == 0:
         print_device_info()
