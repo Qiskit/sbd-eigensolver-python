@@ -212,6 +212,21 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                       "Carryover ratio")
         .def_readwrite("threshold", &sbd::tpb::SBD::threshold,
                       "Carryover threshold")
+#ifdef SBD_EXT_HAS_CARRYOVER_4_8
+        // eri_threshold/max_carryover_dets do not exist on plain upstream
+        // sbd::tpb::SBD -- only on builds that add the extended carryover
+        // types, which announce themselves via this macro from their own
+        // sbdiag.h. Binding these unconditionally would fail to COMPILE (not
+        // just fail at runtime) against plain upstream, hence the guard.
+        .def_readwrite("eri_threshold", &sbd::tpb::SBD::eri_threshold,
+                      "Screening threshold on the Hamiltonian matrix element "
+                      "magnitude for carryover_type 7/8 (ERI-screened "
+                      "singles+doubles); default 1e-6")
+        .def_readwrite("max_carryover_dets", &sbd::tpb::SBD::max_carryover_dets,
+                      "Deterministic first-N cap on expanded carryover_adet/"
+                      "carryover_bdet size, 0=unlimited; safety valve for "
+                      "carryover_type 6/8")
+#endif
         .def_readwrite("bit_length", &sbd::tpb::SBD::bit_length,
                       "Bit length for determinant representation")
         .def_readwrite("dump_matrix_form_wf", &sbd::tpb::SBD::dump_matrix_form_wf,

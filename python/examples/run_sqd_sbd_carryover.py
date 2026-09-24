@@ -10,63 +10,81 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""SQD loop that grows its own subspace via single excitations, using SBD as solver.
+"""SQD loop that grows its own subspace via SBD's own carryover, in C++.
 
-Same self-consistent SQD machinery as run_sqd_sbd.py (sampling, configuration
-recovery, SBD as sci_solver) but with one structural difference: this driver
-calls diagonalize_fermionic_hamiltonian with max_iterations=1 itself, in an
-outer Python loop, and between calls takes the solved wavefunction's dominant
-determinant pairs, expands them via qiskit_addon_sqd.fermion's own
-enlarge_batch_from_transitions (single excitations, both spin channels), and
-feeds the result forward as next round's include_configurations. That is the
-same general idea as SBD's own --sbd_carryover_type 2/3 (see
-run_sqd_sbd_carryover.py, which uses exactly that), implemented instead with
-qiskit-addon-sqd's own excitation-generation utility, so it works with any
-sci_solver, not just SBD, and needs only plain upstream SBD when SBD is used
-as the solver here.
+Where this sits relative to the other SQD drivers:
 
-Two independent stopping conditions, either one is enough: the enlarged set
-adds nothing new beyond what's already included (closed under
-single-excitation connectivity), or --energy_tol and --occupancies_tol both
-hold between outer rounds.
---max_iterations is a safety cap, not the primary stopping mechanism -- a
-run reaching it before either real criterion is a sign something needs
-tuning, not the expected happy path.
+  run_sqd_sbd.py                    sampling + configuration recovery, fixed
+                                    pool -- SBD is only the per-batch solver
+  run_sqd_enlarge_subspace_sbd.py   same, plus subspace growth via
+                                    qiskit-addon-sqd's JAX single excitations
+  this driver                       same, but SBD's own carryover does the
+                                    growing, in MPI-distributed C++
 
-enlarge_batch_from_transitions is JAX-based. By default, JAX may select the first GPU
-visible to each process, which can result in multiple ranks sharing the same GPU.
-Proper rank-to-GPU assignment helps avoid GPU memory contention and out-of-memory errors.
+Structurally this is run_sqd_enlarge_subspace_sbd.py's template --
+diagonalize_fermionic_hamiltonian called with max_iterations=1 in our own
+outer loop, feeding the expanded determinants forward as next round's
+include_configurations -- with the expansion step swapped out. Instead of
+qiskit_addon_sqd.fermion's enlarge_batch_from_transitions, the expanded
+determinants come from SBD itself: sbd_config's carryover_type tells the
+C++ layer to select them from the wavefunction it just computed, and they
+come back on the result as carryover_a/carryover_b (see
+sbd_solver.SBDCarryoverResult).
+
+Why bother, when run_sqd_enlarge_subspace_sbd.py already grows its
+subspace. The honest answer is operational, not performance:
+enlarge_batch_from_transitions is JAX and has no MPI awareness, so every
+rank redundantly recomputes the whole expansion, and on a GPU-enabled JAX
+install several ranks each try to claim a device and the run dies with
+CUDA_ERROR_OUT_OF_MEMORY -- which is why that driver needs
+JAX_PLATFORMS=cpu beyond one rank. Nothing here touches JAX, so neither
+applies.
+
+It is NOT faster. Measured head to head on a 45-orbital system, 8 ranks,
+--max_dim 15000, threshold 1e-4: 2248 s here versus 2250 s for the JAX
+path, reaching bit-identical energies and subspace sizes at every one of
+the 8 rounds. The expansion is simply not where the time goes -- each
+round is dominated by configuration recovery over the sample pool and by
+diagonalizing a 225M-determinant subspace, so making the expansion
+MPI-distributed buys nothing measurable. (An earlier "2-4x faster" note
+was a misattribution: that gap was against a driver with no configuration
+recovery at all, so it measured recovery overhead, not the expansion
+engine.)
+
+Two independent stopping conditions, either one is enough: the carryover
+set adds nothing new beyond what is already included (the subspace is
+closed under whatever connectivity the carryover type generates), or
+--energy_tol and --occupancies_tol both hold between outer rounds.
+--max_iterations is a safety cap, not the primary stopping mechanism.
 
 Usage (MPI required):
-    mpirun -np 8 python run_sqd_enlarge_subspace_sbd.py \
+    mpirun -np 8 python run_sqd_sbd_carryover.py \
         --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
         --counts count_dict_h2o.json \
         --device gpu \
         --adet_comm_size 4 --bdet_comm_size 2 \
-        --enlarge_threshold 1e-4 --max_iterations 10
+        --sbd_carryover_type 3 --sbd_carryover_threshold 1e-4
 """
 
 import argparse
 import json
-import os
 import re
 import time
 from functools import partial
 from pathlib import Path
 
-import jax
 import numpy as np
 from mpi4py import MPI
 from pyscf import ao2mo, tools
 from qiskit.primitives import BitArray
-from qiskit_addon_sqd.fermion import diagonalize_fermionic_hamiltonian, enlarge_batch_from_transitions
+from qiskit_addon_sqd.fermion import diagonalize_fermionic_hamiltonian
 
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="SQD with SBD solver, growing its own subspace via single "
-                     "excitations (qiskit-addon-sqd's enlarge_batch_from_transitions) "
-                     "between outer iterations, instead of relying only on sampling.",
+        description="SQD with SBD solver, growing its own subspace between "
+                     "outer iterations via SBD's own MPI-distributed carryover "
+                     "(C++) rather than qiskit-addon-sqd's JAX excitations.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--fcidump", required=True, help="Path to FCIDUMP file")
@@ -112,14 +130,27 @@ def parse_args():
                             "between rounds. Both this and --energy_tol must hold "
                             "in the same round to stop on tolerance (the no-growth "
                             "check is independent and can stop the loop on its own).")
-    loop.add_argument("--enlarge_threshold", type=float, default=1e-4,
-                       help="Keep determinant PAIRS (ci_strs_a[i], ci_strs_b[j]) "
-                            "with |amplitude|^2 above this before expanding them "
-                            "via single excitations. Lower it to expand from more "
-                            "pairs each round -- the same role as SBD's own "
-                            "--sbd_carryover_threshold, just applied to full-"
-                            "determinant amplitude here (matching SBD carryover "
-                            "type 3), not marginal half-determinant probability.")
+    loop.add_argument("--sbd_carryover_type", type=int, default=3,
+                       help="Which carryover mechanism SBD uses to pick the next "
+                            "round's determinants from the wavefunction it just "
+                            "computed. 1=selection only (no new determinants), "
+                            "2=singles off marginal probability, 3=singles off "
+                            "full-determinant amplitude (the default, and the "
+                            "closest analogue to run_sqd_enlarge_subspace_sbd.py's "
+                            "expansion). Values beyond 3 are accepted and passed "
+                            "through as-is; whether they do anything depends on "
+                            "what carryover_type values the vendored SBD build "
+                            "implements. 0 disables carryover, which would leave "
+                            "this driver nothing to expand with -- rejected below.")
+    loop.add_argument("--sbd_carryover_threshold", type=float, default=1e-4,
+                       help="Amplitude cutoff SBD applies when selecting carryover "
+                            "determinants. Lower keeps more, so the subspace grows "
+                            "faster per round. Note this is SBD's own threshold, "
+                            "passed straight through to the C++ layer -- not "
+                            "qiskit-addon-sqd's --sqd_carryover_threshold, which "
+                            "this driver does not use.")
+    loop.add_argument("--sbd_eri_threshold", type=float, default=None,
+                       help=argparse.SUPPRESS)
     loop.add_argument("--max_dim", type=int, default=None,
                        help="Cap on unique alpha/beta strings kept per round, "
                             "applied AFTER expansion. Strings already present "
@@ -192,95 +223,13 @@ def load_counts_as_bitarray(counts_path, num_bits):
     return BitArray.from_bool_array(bool_matrix)
 
 
-def build_single_excitation_transitions(norb):
-    """All same-spin single-excitation transition operators, [beta|alpha] layout.
-
-    Column layout matches diagonalize_fermionic_hamiltonian's own convention
-    (beta in columns [0, norb), alpha in columns [norb, 2*norb) -- confirmed
-    against bitstring_matrix_to_ci_strs, which slices the same way). Row 0 is
-    the identity (keeps every input row unchanged, so nothing already present
-    is lost); every other row creates on one orbital and annihilates on
-    another, within one spin half, in both directions.
-
-    Returns:
-        (1 + 4 * C(norb, 2), 2*norb) array of "I"/"+"/"-" strings.
-    """
-    n_pairs = norb * (norb - 1) // 2
-    transitions = np.full((1 + 4 * n_pairs, 2 * norb), "I", dtype="<U1")
-    row = 1
-    for spin_offset in (0, norb):  # beta half, then alpha half
-        for i in range(norb):
-            for j in range(i + 1, norb):
-                transitions[row, spin_offset + i] = "+"
-                transitions[row, spin_offset + j] = "-"
-                row += 1
-                transitions[row, spin_offset + i] = "-"
-                transitions[row, spin_offset + j] = "+"
-                row += 1
-    return transitions
-
-
-def ints_to_bool_columns(ci_ints, norb):
-    """Inverse of bitstring_matrix_to_integers: ci_str ints -> (len(ci_ints), norb) bool array.
-
-    Matches bitstring_matrix_to_integers's own convention (leftmost column is
-    the MSB: result = sum_i matrix[:,i] * 2^(norb-1-i)), verified against it
-    directly rather than assumed.
-    """
-    ci_ints = np.asarray(ci_ints, dtype=np.uint64)
-    bits = np.zeros((len(ci_ints), norb), dtype=bool)
-    for i in range(norb):
-        shift = norb - 1 - i
-        bits[:, i] = ((ci_ints >> np.uint64(shift)) & np.uint64(1)).astype(bool)
-    return bits
-
-
-def enlarge_via_singles(ci_strs_a, ci_strs_b, amplitudes, norb, threshold,
-                         transitions):
-    """Expand dominant (alpha, beta) pairs via single excitations.
-
-    Selects pairs with |amplitude|^2 > threshold (same convention as SBD's
-    own full-determinant carryover_type 3), builds their [beta|alpha]
-    bitstring rows, applies `transitions` via enlarge_batch_from_transitions,
-    and converts the augmented rows back to unique alpha/beta ci_str ints.
-
-    Returns:
-        (new_alpha_ints, new_beta_ints): sorted, deduplicated int64 arrays.
-
-        Superset of the *dominant* input strings only. Row 0 of `transitions`
-        is the identity, so everything fed in comes back -- but strings whose
-        every pair fell below the threshold are never fed in. The expansion
-        thus prunes as well as grows and is NOT a superset of
-        ci_strs_a/ci_strs_b, so callers must not assume the previous subspace
-        survives, and a "added anything new?" test must be a subset test
-        rather than equality.
-    """
-    weights = np.abs(amplitudes) ** 2
-    ia_idx, ib_idx = np.nonzero(weights > threshold)
-    if len(ia_idx) == 0:
-        # Threshold too aggressive for this round -- fall back to the single
-        # heaviest pair rather than expanding from nothing.
-        ia_idx, ib_idx = np.unravel_index(np.argmax(weights), weights.shape)
-        ia_idx, ib_idx = np.array([ia_idx]), np.array([ib_idx])
-
-    alpha_bits = ints_to_bool_columns(np.asarray(ci_strs_a)[ia_idx], norb)
-    beta_bits = ints_to_bool_columns(np.asarray(ci_strs_b)[ib_idx], norb)
-    bitstring_matrix = np.concatenate([beta_bits, alpha_bits], axis=1)
-
-    augmented = np.asarray(enlarge_batch_from_transitions(bitstring_matrix, transitions))
-
-    from qiskit_addon_sqd.counts import bitstring_matrix_to_integers
-    new_beta = bitstring_matrix_to_integers(augmented[:, :norb])
-    new_alpha = bitstring_matrix_to_integers(augmented[:, norb:])
-    return np.unique(new_alpha), np.unique(new_beta)
-
-
 def cap_to_max_dim(new_ints, existing_ints, max_dim, rng):
     """Truncate new_ints to max_dim, always keeping everything in existing_ints first.
 
     Seed-priority truncation over plain ci_str integer arrays: naive random
-    truncation over the WHOLE candidate set can discard
-    already-proven-important strings just as easily as brand-new ones.
+    truncation over the WHOLE
+    candidate set can discard already-proven-important strings just as easily
+    as brand-new ones, which is what that driver's own bug fix addressed.
     """
     if max_dim is None or len(new_ints) <= max_dim:
         return new_ints
@@ -302,13 +251,24 @@ def main():
     size = comm.Get_size()
     rng = np.random.default_rng(42)
 
+    if args.sbd_carryover_type == 0:
+        # Without carryover SBD returns no determinants to expand with, so the
+        # loop would resample the same pool forever and report convergence --
+        # fail up front rather than look like a working run that never grows.
+        if rank == 0:
+            print("Error: --sbd_carryover_type 0 disables the expansion this "
+                  "driver is built around. Use 3 (default) for singles off "
+                  "full-determinant amplitude, or see --help for the others. "
+                  "For a fixed-pool run, use run_sqd_sbd.py instead.")
+        return 1
+
     norb, nelec_total, ms2 = parse_fcidump_header(args.fcidump)
     num_elec_a = (nelec_total + ms2) // 2
     num_elec_b = (nelec_total - ms2) // 2
 
     if rank == 0:
         print("=" * 60)
-        print("SQD with SBD solver, native subspace enlargement via excitations")
+        print("SQD with SBD solver, subspace growth via SBD's own carryover")
         print("=" * 60)
         print(f"MPI ranks: {size}")
         print(f"FCIDUMP: {args.fcidump}")
@@ -317,22 +277,24 @@ def main():
         print(f"Device: {args.device}")
         print()
 
-    from sbd.sbd_solver import solve_sci_batch
-    from sbd.device_config import DeviceConfig
+    from sbd.sbd_solver import solve_sci_batch, _assert_carryover_survived
+    from sbd.device_config import DeviceConfig, print_device_info
+    import sbd as _sbd
+
+    # Probe what carryover fields the built extension actually exposes, so an
+    # option the vendored SBD does not implement can say it is being ignored
+    # instead of silently doing nothing (_create_sbd_config skips unknown keys
+    # via hasattr).
+    backend_probe_cfg = _sbd.get_backend(
+        None if args.device == "auto" else args.device).TPB_SBD()
 
     device_str = args.device
     if device_str == "auto":
-        # Resolve on one rank and broadcast, so every rank agrees by
-        # construction. _check_cuda() shells out to nvidia-smi with a 2 s
-        # timeout, and at 8 concurrent ranks it has been measured at ~6 s, so
-        # it can time out on some ranks and not others. A diverged device_str
-        # would send the ranks that resolved to a GPU into
-        # jax.distributed.initialize() below -- a COMM_WORLD rendezvous --
-        # while the rest skip it, hanging the job until that times out.
-        # Resolving once is also cheaper: one probe, and no 8-way contention.
-        device_str = comm.bcast(
-            ("gpu" if DeviceConfig._check_cuda() else "cpu") if rank == 0 else None,
-            root=0)
+        device_str = "gpu" if DeviceConfig._check_cuda() else "cpu"
+
+    if rank == 0:
+        print_device_info()
+        print()
 
     if device_str == "gpu":
         device_config = DeviceConfig.gpu()
@@ -340,37 +302,6 @@ def main():
         device_config = DeviceConfig.gpu_omp()
     else:
         device_config = DeviceConfig.cpu()
-
-    from sbd import get_device_id
-    jax_gpu_id = get_device_id(device_str)
-    if jax_gpu_id < 0:
-        # No device for this rank to use -- fall back to CPU.
-        #
-        # Via jax.config, NOT os.environ: unlike XLA_PYTHON_CLIENT_*, which the
-        # C++ client reads when it creates the backend, JAX_PLATFORMS is a
-        # jax.config option parsed at `import jax` -- already done by the time
-        # this runs, so setting the variable here is silently ignored. That
-        # left every rank on JAX's default device with no reservation cap, and
-        # --device cpu on a GPU node aborted with CUDA_ERROR_OUT_OF_MEMORY
-        # while printing that it was using the CPU.
-        jax.config.update("jax_platforms", "cpu")
-        print(f"[rank {rank}] WARNING: no GPU for this rank; forcing the SQD "
-              "subspace expansion onto CPU.", flush=True)
-    elif os.environ.get("JAX_PLATFORMS") == "cpu":
-        if rank == 0:
-            print("INFO: JAX_PLATFORMS=cpu was set, so the SQD subspace "
-                  "expansion runs on CPU.", flush=True)
-    else:
-        if not os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE"):
-            os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-
-        # Must be the first JAX call in the process -- it fails if the backend
-        # is already initialised, so nothing above may touch jax.devices().
-        jax.distributed.initialize(cluster_detection_method="mpi4py",
-                                   local_device_ids=[jax_gpu_id])
-        if rank == 0:
-            print("INFO: the SQD subspace expansion runs on GPU, one device "
-                  "per rank.", flush=True)
 
     mf_as = tools.fcidump.to_scf(str(args.fcidump))
     hcore = mf_as.get_hcore()
@@ -423,11 +354,15 @@ def main():
         print("              "
               f"--energy_tol {args.energy_tol:g} "
               f"--occupancies_tol {args.occupancies_tol:g} "
-              f"--enlarge_threshold {args.enlarge_threshold:g} "
               f"--symmetrize_spin {args.symmetrize_spin}")
         print("SBD solver  : "
               f"--sbd_method {args.method} --sbd_eps {args.eps:g} "
               f"--sbd_max_it {args.max_it} --sbd_max_nb {args.max_nb}")
+        print("SBD carryover: "
+              f"--sbd_carryover_type {args.sbd_carryover_type} "
+              f"--sbd_carryover_threshold {args.sbd_carryover_threshold:g}"
+              + (f" --sbd_eri_threshold {args.sbd_eri_threshold:g}"
+                 if args.sbd_eri_threshold is not None else ""))
         print("Starting outer loop...")
 
     sbd_config = {
@@ -437,14 +372,27 @@ def main():
         "max_memory_gb_for_determinants": args.sbd_max_memory_gb_for_determinants,
         "adet_comm_size": args.adet_comm_size, "bdet_comm_size": args.bdet_comm_size,
         "task_comm_size": args.task_comm_size,
+        # The whole point of this driver: ask SBD to select the next round's
+        # determinants itself. _create_sbd_config defaults carryover_type to 0
+        # (because the plain SQD path discards the result), so it has to be set
+        # explicitly here -- and "threshold" is SBD's own field name for it.
+        "carryover_type": args.sbd_carryover_type,
+        "threshold": args.sbd_carryover_threshold,
     }
+    if args.sbd_eri_threshold is not None:
+        # Not present on every SBD build; _create_sbd_config skips unknown keys
+        # via hasattr, so passing it to a build without the field is silently
+        # ignored rather than fatal -- warn instead of letting it look applied.
+        sbd_config["eri_threshold"] = args.sbd_eri_threshold
+        if rank == 0 and not hasattr(backend_probe_cfg, "eri_threshold"):
+            print("WARNING: --sbd_eri_threshold was given but the vendored SBD "
+                  "build has no eri_threshold field, so it is being ignored.")
+
     sbd_solver = partial(
         solve_sci_batch, sbd_config=sbd_config, device_config=device_config,
         temp_dir=args.temp_dir, clean_temp_dir=not args.keep_temp_dir,
         fcidump_path=args.fcidump,
     )
-
-    transitions = build_single_excitation_transitions(norb)
 
     checkpoint_history: list[dict] = []
     result_history: list[list] = []
@@ -477,28 +425,71 @@ def main():
         ci_strs_a, ci_strs_b = result.sci_state.ci_strs_a, result.sci_state.ci_strs_b
         dim = len(ci_strs_a) * len(ci_strs_b)
 
-        new_alpha, new_beta = enlarge_via_singles(
-            ci_strs_a, ci_strs_b, result.sci_state.amplitudes, norb,
-            args.enlarge_threshold, transitions,
-        )
-        # Subset, not equality: the expansion omits solved strings whose every
-        # pair fell below --enlarge_threshold, so equality never held on a
-        # subspace with a low-weight tail and this branch never fired.
-        no_growth = (set(new_alpha.tolist()) <= set(int(x) for x in ci_strs_a)
-                     and set(new_beta.tolist()) <= set(int(x) for x in ci_strs_b))
+        # The expansion: SBD already selected the next round's determinants
+        # inside the C++ diagonalization we just ran, so there is nothing to
+        # compute here -- only to read off. This is the whole difference from
+        # run_sqd_enlarge_subspace_sbd.py, which spends a JAX pass (redundantly,
+        # on every rank) to derive the same kind of set on the Python side.
+        #
+        # The guard is not ceremony: these fields ride on a subclass that
+        # survives only because qiskit-addon-sqd's loop passes the solver's
+        # object through instead of rebuilding it. If that ever changes, the
+        # carryover would arrive as None and the loop would silently stop
+        # growing while still reporting convergence.
+        _assert_carryover_survived(result)
+        new_alpha, new_beta = result.carryover_a, result.carryover_b
+        if new_alpha is None or new_beta is None:
+            raise RuntimeError(
+                f"round {outer_iter}: SBD returned no carryover determinants "
+                f"even though carryover_type={args.sbd_carryover_type} was "
+                "requested. Nothing to expand with."
+            )
 
-        # No universal "safe" default exists for --max_dim (a cap suiting a
-        # large system is wildly oversized for H2O/N2), so it stays unset --
-        # but leaving it unset on a large system is how we hit a
-        # several-hundred-million-pair round before adding this check. Warn
-        # before the next diagonalization, not after a GPU OOM traceback.
+        new_alpha = np.asarray(new_alpha, dtype=np.int64)
+        new_beta = np.asarray(new_beta, dtype=np.int64)
+
+        # Stop when the carryover proposes nothing the solved subspace does not
+        # already hold. Deliberately a SUBSET test against the solved strings,
+        # not a union folded into what gets forwarded below:
+        #
+        # unioning the carryover with the solved subspace looks safer -- "a
+        # round can only add, never drop a determinant carrying weight" -- but
+        # it deadlocks the loop the moment --max_dim binds. cap_to_max_dim
+        # keeps everything already in the subspace first, so once the solved
+        # subspace is itself max_dim strings the union makes existing == the
+        # whole budget, every new candidate is discarded, the subspace freezes,
+        # and --energy_tol reads the frozen energy as convergence. Measured: on
+        # a 45-orbital system at --max_dim 15000 that bottomed out 3.4 Ha above
+        # where the same expansion reaches without the union, "converging" after
+        # four rounds. It cannot show up when --max_dim is unset, which is why
+        # small-system testing missed it.
+        #
+        # Not unioning means a low-amplitude determinant can leave the subspace.
+        # That is fine and intended -- pruning is what carryover is for, it is
+        # exactly what run_sqd_enlarge_subspace_sbd.py's expansion does too
+        # (its identity row preserves the thresholded pairs, not the whole
+        # subspace), and qiskit-addon-sqd's own carryover plus fresh sampling
+        # re-supply anything that still matters.
+        solved_a = set(int(x) for x in ci_strs_a)
+        solved_b = set(int(x) for x in ci_strs_b)
+        no_growth = (set(new_alpha.tolist()) <= solved_a
+                     and set(new_beta.tolist()) <= solved_b)
+
+        # No universal "safe" default exists for --max_dim (a cap that suits a
+        # large system is wildly oversized for H2O/N2, and vice versa), so it
+        # stays unset by default -- but leaving it unset on a large system is
+        # exactly how we hit a several-hundred-million-pair round ourselves
+        # before adding this check.
+        # Warn loudly before the next round's diagonalization, not after a GPU
+        # OOM traceback with no clue which flag caused it.
         expanded_pairs = len(new_alpha) * len(new_beta)
         if rank == 0 and args.max_dim is None and (dim > 50_000_000 or expanded_pairs > 50_000_000):
             print(f"WARNING: subspace is large and growing with --max_dim unset "
                   f"(this round: {dim:_} pairs, next round would be: "
                   f"{expanded_pairs:_} pairs before any cap). Risk of GPU OOM. "
                   f"Consider --max_dim (e.g. 15000 worked well for a 45-orbital "
-                  f"system) and/or a tighter --enlarge_threshold to slow growth.")
+                  f"system) and/or a tighter --sbd_carryover_threshold to slow "
+                  f"growth.")
 
         new_alpha = cap_to_max_dim(new_alpha, ci_strs_a, args.max_dim, rng)
         new_beta = cap_to_max_dim(new_beta, ci_strs_b, args.max_dim, rng)

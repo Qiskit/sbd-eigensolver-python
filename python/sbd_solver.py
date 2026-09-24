@@ -52,6 +52,58 @@ except ImportError:
     SCIState = None
 
 
+if SCIResult is not None:
+    import dataclasses
+
+    @dataclasses.dataclass(frozen=True)
+    class SBDCarryoverResult(SCIResult):  # type: ignore[misc,valid-type]
+        """SCIResult plus the carryover determinants SBD selected itself.
+
+        ``SCIResult`` is upstream's frozen dataclass, so a new field cannot be
+        added to it -- hence this subclass. It is safe to hand back to
+        ``diagonalize_fermionic_hamiltonian``: that loop only reads
+        ``.energy``/``.sci_state``/``.orbital_occupancies``, picks a winner
+        with ``min(results, key=...)``, and passes that same object through.
+        It never rebuilds the solver's result (``SCIResult(`` appears exactly
+        once in ``fermion.py``, inside upstream's own PySCF solver), so these
+        extra fields survive to the caller. ``_assert_carryover_survived``
+        below turns that assumption into a loud failure instead of a silent
+        one if upstream ever starts reconstructing results.
+
+        Both lists are CI strings (plain ints, same convention as
+        ``SCIState.ci_strs_a``/``_b``), already converted out of SBD's packed
+        half-determinant format -- so they can go straight into the next
+        round's ``include_configurations``. Populated on rank 0 only, like
+        every other field here; ``None`` when SBD computed no carryover
+        (``carryover_type = 0``, the default).
+        """
+
+        carryover_a: np.ndarray | None = None
+        carryover_b: np.ndarray | None = None
+
+
+def _assert_carryover_survived(result) -> None:
+    """Fail loudly if a carryover-bearing result lost its extra fields.
+
+    Guards the one assumption ``SBDCarryoverResult`` rests on: that
+    qiskit-addon-sqd's loop passes the solver's object through rather than
+    rebuilding it. A future upstream that uses ``dataclasses.replace`` (or
+    reconstructs ``SCIResult`` for any other reason) would strip the
+    carryover silently, and a driver would then quietly stop expanding its
+    subspace while still looking like it converged -- exactly the class of
+    silent-wrong-answer bug the wavefunction-dump and RDM gaps already were.
+    """
+    if not isinstance(result, SBDCarryoverResult):
+        raise RuntimeError(
+            "carryover was requested (sbd_config['carryover_type'] != 0) but "
+            f"the result came back as {type(result).__name__}, not "
+            "SBDCarryoverResult -- qiskit-addon-sqd rebuilt the object and "
+            "dropped the carryover fields. Consuming SBD's carryover through "
+            "diagonalize_fermionic_hamiltonian is no longer safe; call "
+            "solve_sci/solve_sci_batch directly instead."
+        )
+
+
 def _resolve_backend(device_config=None):
     """Resolve a backend module from a DeviceConfig or the default.
 
@@ -264,8 +316,46 @@ def _solve_sci_core(
     )
 
     rdm1, rdm2 = assemble_rdms(results, norb)
+    carryover_a, carryover_b = extract_carryover(
+        results, norb, backend, sbd_data.bit_length)
 
-    return SCIResult(energy, sci_state, orbital_occupancies=occupancies, rdm1=rdm1, rdm2=rdm2)
+    if carryover_a is None and carryover_b is None:
+        return SCIResult(
+            energy, sci_state, orbital_occupancies=occupancies,
+            rdm1=rdm1, rdm2=rdm2,
+        )
+    return SBDCarryoverResult(
+        energy, sci_state, orbital_occupancies=occupancies,
+        rdm1=rdm1, rdm2=rdm2,
+        carryover_a=carryover_a, carryover_b=carryover_b,
+    )
+
+
+def extract_carryover(results: dict, norb: int, backend, bit_length: int):
+    """Convert SBD's carryover determinant lists to CI strings.
+
+    ``tpb_diag`` always returns ``carryover_adet``/``carryover_bdet`` in its
+    results dict (``bindings.cpp`` unpacks SBD's ``co_adet``/``co_bdet``
+    det_vectors into lists of lists), but they are empty unless the caller
+    asked for a carryover type -- ``_create_sbd_config`` defaults
+    ``carryover_type`` to 0, so the common SQD path pays nothing here.
+    Returns ``(None, None)`` in that case.
+
+    SBD hands these back as packed half-determinants, the same representation
+    ``_ci_strings_to_sbd_dets`` produces going in, so converting back with
+    ``_sbd_dets_to_ci_strings`` yields plain CI-string ints that can be fed
+    straight to ``include_configurations``.
+    """
+    co_a = results.get("carryover_adet")
+    co_b = results.get("carryover_bdet")
+    if not co_a and not co_b:
+        return None, None
+
+    carryover_a = (_sbd_dets_to_ci_strings(co_a, norb, backend, bit_length)
+                   if co_a else np.array([], dtype=np.int64))
+    carryover_b = (_sbd_dets_to_ci_strings(co_b, norb, backend, bit_length)
+                   if co_b else np.array([], dtype=np.int64))
+    return carryover_a, carryover_b
 
 
 def assemble_rdms(results: dict, norb: int) -> tuple[np.ndarray | None, np.ndarray | None]:
@@ -284,8 +374,8 @@ def assemble_rdms(results: dict, norb: int) -> tuple[np.ndarray | None, np.ndarr
     that ``SCIResult.rdm1``/``rdm2`` are contracted with everywhere else in
     qiskit-addon-sqd (e.g. ``fermion.py``'s own ``solve_fermion``).
 
-    SBD's documented layout (sbd-ext docs/user-guide.md, matching the C++
-    reference in apps/chemistry_tpb_selected_basis_diagonalization/main.cc):
+    SBD's documented layout (matching the C++ reference in upstream's
+    apps/chemistry_tpb_selected_basis_diagonalization/main.cc):
         one_p_rdm[s][i + L*j]                 = <c+_{i,s} c_{j,s}>
         two_p_rdm[s+2t][i + L*j + L^2*k + L^3*l] = <c+_{i,s} c+_{j,t} c_{l,t} c_{k,s}>
     A Fortran-order reshape implements those flat-index formulas directly

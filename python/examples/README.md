@@ -174,7 +174,45 @@ See [SQD Parameters](#sqd-parameters) below for the flags it shares with
 of `--sqd_carryover_threshold`, and `--max_dim`'s risk profile is sharper
 here).
 
-### 4. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
+### 4. run_sqd_sbd_carryover.py — SQD that grows via SBD's own carryover
+
+Same loop and same goal as `run_sqd_enlarge_subspace_sbd.py` above, with the
+expansion step swapped: instead of deriving single excitations in Python with
+qiskit-addon-sqd's JAX `enlarge_batch_from_transitions`, it asks **SBD** to
+select the next round's determinants, inside the same C++ diagonalization that
+just ran. They come back on the result and are fed forward as the next round's
+`include_configurations`.
+
+What that buys, and what it does not:
+
+- **No `JAX_PLATFORMS=cpu` needed.** The JAX expansion has no MPI awareness, so
+  on a GPU-enabled JAX install several ranks each try to claim a device and the
+  run dies with `CUDA_ERROR_OUT_OF_MEMORY`. Nothing here touches JAX.
+- **It is not faster.** Measured head to head on a 45-orbital system (8 ranks,
+  `--max_dim 15000`, threshold `1e-4`): 2248 s against 2250 s for the JAX path,
+  reaching bit-identical energies and subspace sizes at every round. Each round
+  is dominated by configuration recovery and by diagonalizing the subspace, so
+  where the expansion runs makes no measurable difference. Pick this driver for
+  the operational reason above, not for speed.
+
+```bash
+mpirun -np 8 python -u run_sqd_sbd_carryover.py \
+    --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
+    --counts count_dict_h2o.json \
+    --device gpu \
+    --adet_comm_size 4 --bdet_comm_size 2 \
+    --sbd_carryover_type 3 --sbd_carryover_threshold 1e-4
+```
+
+On the bundled 275-bitstring H2O pool this reaches **-76.2421767512 Ha** over a
+1742×1742 subspace — the same energy and the same subspace as
+`run_sqd_enlarge_subspace_sbd.py`, which is the point: at
+`--sbd_carryover_type 3` the two expansions are equivalent, so this is the
+cheaper way to get there. See
+[Tuning the expansion threshold](#tuning-the-expansion-threshold) for how far
+`--sbd_carryover_threshold` can push that number.
+
+### 5. run_sqd_sbd.ipynb — Jupyter walkthrough (serial)
 
 Interactive single-rank companion to `run_sqd_sbd.py`. Same SQD self-consistent
 loop on h2o, but inside a Jupyter kernel (`MPI.COMM_WORLD` size 1). Uses the
@@ -188,8 +226,19 @@ pytest --nbmake run_sqd_sbd.ipynb      # what CI runs; needs the nbtest extra
 
 ## SQD Parameters
 
-Reference for every flag `run_sqd_sbd.py` accepts, grouped the way `--help`
-groups them: SQD loop, SBD solver, MPI grid, checkpointing.
+Reference for the three drivers built on qiskit-addon-sqd's loop, grouped the
+way `--help` groups them: SQD loop, SBD solver, MPI grid, checkpointing.
+Throughout this section they are referred to by these short names:
+
+| Short name | Driver | How the subspace grows between iterations |
+|---|---|---|
+| **sqd** | `run_sqd_sbd.py` (section 2) | it doesn't — fixed pool, resampled each iteration |
+| **enlarge** | `run_sqd_enlarge_subspace_sbd.py` (section 3) | qiskit-addon-sqd's JAX single excitations |
+| **carryover** | `run_sqd_sbd_carryover.py` (section 4) | SBD's own carryover, in C++ |
+
+`run_sbd_diag.py` does **not** use this loop — it runs a single
+diagonalization and takes a different flag set, documented in section 1
+above.
 
 **How each iteration builds its subspace.** SQD samples bitstrings from a
 quantum device, repairs the noisy ones against an orbital-occupancy estimate
@@ -227,34 +276,91 @@ the **average orbital occupancies** (into recovery, source 3) and the
 
 ### SQD loop parameters
 
-Shared by both `run_sqd_sbd.py` and `run_sqd_enlarge_subspace_sbd.py` except
-where noted. **`--max_dim` is the one that most needs attention**: it has no
-universally safe default (see below), and in `run_sqd_enlarge_subspace_sbd.py`
-leaving it unset is riskier still, since each round's subspace can grow from
-the previous one rather than being resampled at a fixed size — the driver
-prints an OOM warning when it detects this.
+**`--max_dim` is the one that most needs attention**: it has no universally
+safe default (see below), and in **enlarge**/**carryover** leaving it unset is
+riskier still, since each round's subspace can grow from the previous one
+rather than being resampled at a fixed size — both drivers print an OOM
+warning when they detect this.
 
-*Shapes the subspace — changes the numbers you compute:*
+*Shapes the subspace — same flag, same default, in all three:*
 
 | Parameter | What it controls | Default |
 |-----------|-----------------|---------|
 | `--counts FILE` | Load hardware bitstrings from a JSON file (use this or `--samples`) | none — falls back to `--samples` if omitted |
 | `--samples N` | Generate N random bitstrings at the target Hamming weights; plumbing check only, energy not meaningful | `3000` (only used when `--counts` is omitted) |
 | `--samples_per_batch` | Dominant control on subspace dimension. With `--symmetrize_spin 1` the alpha and beta string sets are merged, so the subspace is up to `(2N)^2`, not `N^2` | `3000` |
-| `--symmetrize_spin` | `1` (default): merge the alpha and beta string pools every iteration, forcing `ci_strs_a == ci_strs_b`. SBD itself supports distinct alpha/beta determinant sets — this is purely a qiskit-addon-sqd loop-layer setting. `0`: sample and carry over alpha and beta independently, allowing them to differ | `1` |
-| `--num_batches` | Independent subsamples per iteration; occupancies are averaged across them | `1` (`run_sqd_enlarge_subspace_sbd.py`) / `3` (`run_sqd_sbd.py`) |
-| `--sqd_carryover_threshold` | `run_sqd_sbd.py` only. `\|coefficient\|` cutoff for carrying a determinant into the next iteration's sample pool. **Lower it to carry more** | `1e-4` |
-| `--enlarge_threshold` | `run_sqd_enlarge_subspace_sbd.py` only — the analogous "carry more" knob for that driver, but structurally different: it gates which *pairs* get expanded into single excitations via `enlarge_batch_from_transitions`, not which determinants survive into resampling. **Lower it to expand more pairs per round** | `1e-4` |
+| `--symmetrize_spin` | `1`: merge the alpha and beta string pools every iteration, forcing `ci_strs_a == ci_strs_b`. SBD itself supports distinct alpha/beta determinant sets — this is purely a qiskit-addon-sqd loop-layer setting. `0`: sample and carry over alpha and beta independently, allowing them to differ | `1` |
 | `--max_dim` | **Critical.** Cap on strings per spin sector, so the subspace cannot exceed `max_dim^2`. The main brake on runaway cost — no fixed value is safe for every system, since the right cap depends on available memory and orbital count. Start from a value known to work at a similar orbital count (e.g. `15000` was used for a 45-orbital system) and adjust down if you see an OOM | unset (no cap) |
 | `--include_hf` | Force the single Slater determinant with the lowest `num_elec_a`/`num_elec_b` orbital indices occupied into `include_configurations`, every iteration. Cheap correctness check: that determinant's own diagonal energy is an exact lower bound on what a subspace containing it can do — if forcing it in moves the result, the sampled pool was missing it (and probably its low-excitation neighbors too) | off |
+| `--energy_tol` | Stop when the iteration-to-iteration energy change falls below this | `1e-8` |
+| `--occupancies_tol` | Stop when the largest change in any single orbital occupancy falls below this — an infinity norm, not an average | `1e-5` |
 
-*Decides when to stop — changes nothing about the subspace:*
+*Same flag in all three, but a different default in each:*
 
-| Parameter | What it controls | Default |
-|-----------|-----------------|---------|
-| `--max_iterations` | Hard cap on loop iterations (not the inner `--sbd_max_it`). In `run_sqd_enlarge_subspace_sbd.py` this is a safety cap only — the loop normally stops earlier, once a round adds no new determinants or both tolerances below are met | `30` (`run_sqd_enlarge_subspace_sbd.py`) / `5` (`run_sqd_sbd.py`) |
-| `--energy_tol` | Iteration-to-iteration change in energy | `1e-8` |
-| `--occupancies_tol` | Largest change in any single orbital occupancy — an infinity norm, not an average | `1e-5` |
+| Parameter | What it controls | sqd | enlarge | carryover |
+|-----------|-----------------|-----|---------|-----------|
+| `--num_batches` | Independent subsamples per iteration; occupancies are averaged across them. Not the main lever on subspace size in enlarge/carryover — the expansion is | `3` | `1` | `1` |
+| `--max_iterations` | Hard cap on loop iterations (**not** the inner `--sbd_max_it`). In enlarge/carryover it is a safety cap only: the loop normally stops earlier, once a round adds no new determinants or both tolerances above are met | `5` | `30` | `30` |
+
+*How the subspace grows — one knob per driver, and they are **not**
+interchangeable:*
+
+| Driver | Parameter | What it gates | Default |
+|--------|-----------|---------------|---------|
+| **sqd** | `--sqd_carryover_threshold` | `\|coefficient\|` cutoff for carrying a determinant into the next iteration's **sample pool**. Generates no new determinants — pure selection. **Lower it to carry more** | `1e-4` |
+| **enlarge** | `--enlarge_threshold` | `\|amplitude\|^2` cutoff on determinant **pairs**, which are then expanded into all same-spin single excitations via `enlarge_batch_from_transitions`. **Lower it to expand from more pairs** | `1e-4` |
+| **carryover** | `--sbd_carryover_type` | Which mechanism SBD uses to pick the next round's determinants: `1` selection only, `2` singles off marginal probability, `3` singles off full-determinant amplitude | `3` |
+| **carryover** | `--sbd_carryover_threshold` | The cutoff SBD applies while doing the above. **Meaning depends on the type**: for `3` it is a full-determinant `\|c\|^2` cutoff, for `1`/`2` a marginal (half-determinant) probability | `1e-4` |
+
+At `--sbd_carryover_type 3`, **carryover**'s threshold gates the same quantity
+as **enlarge**'s — both are a full-determinant `|c|^2` cutoff followed by all
+same-spin singles. Verified: at `1e-4` on the bundled H2O pool the two drivers
+reach an identical energy over an identical final subspace. At other carryover
+types the quantity differs, so the values are **not** transferable.
+
+#### Tuning the expansion threshold
+
+The threshold is the main accuracy lever in **enlarge**/**carryover**, and the
+default `1e-4` is deliberately conservative. Lowering it prunes less, so more
+determinants survive into the next round and the subspace grows — which lowers
+(improves) the energy, since a variational subspace method can only get better
+as the subspace grows.
+
+Sweeping it on the bundled 275-bitstring H2O pool, with **carryover** at type 3
+(reproducible with the command in section 4 above, changing only
+`--sbd_carryover_threshold`):
+
+| threshold | energy (Ha) | gap to FCI | final subspace |
+|---|---|---|---|
+| `1e-4` (default) | -76.2421767512 | 1.60 mHa | 1742² = 3.0M |
+| `1e-5` | -76.2436018956 | 0.175 mHa | 5007² = 25.1M |
+| `1e-6` | -76.2437251036 | **0.052 mHa** | 7881² = 62.1M |
+
+against this system's FCI reference of `-76.24377680`. Two things to read off
+it. First, the payoff is real: two orders of magnitude on the threshold buys
+**30x** less error. Second, it is bought with determinants — 20x more of them —
+and the returns diminish sharply, with `1e-5`→`1e-6` costing 2.5x the subspace
+for a further 0.12 mHa. Sweep downward until the gain stops being worth the
+cost for your purpose, rather than reaching for the smallest value.
+
+**The one trap: `--max_dim` inverts this.** Everything above assumes the
+subspace is allowed to grow freely. Once a run is pinned at the cap, lowering
+the threshold can make the result *worse*, not better. The cap keeps the
+determinants already in the subspace and then fills the remaining budget
+**randomly** from this round's new candidates, so a lower threshold means a
+much larger candidate pool sampled just as thinly — you pay for generating
+them and then discard most, with no ranking to decide which survive.
+
+The symptom is easy to spot: the final subspace printed at the end is exactly
+`max_dim x max_dim`, and the energy moved the wrong way when you tightened the
+threshold. We have seen this reverse the ordering outright on a 45-orbital
+system at `--max_dim 15000`, where `1e-4` beat `1e-5` comfortably. If that
+happens, raise `--max_dim` (memory permitting) or back the threshold off —
+tightening it further will not help.
+
+So, in practice: leave `--max_dim` unset while you sweep the threshold, and
+only introduce it once you know the subspace size you are aiming at. Set both
+at once and it is hard to tell which one is limiting the answer.
 
 **Both stopping criteria must hold in the same iteration.** `fermion.py`'s
 convergence check combines the energy-change test and the occupancy-change test
