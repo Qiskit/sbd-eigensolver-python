@@ -140,15 +140,30 @@ both stop moving (`--energy_tol`/`--occupancies_tol`) -- `--max_iterations`
 is a safety cap, not the expected stopping mechanism.
 
 ```bash
-JAX_PLATFORMS=cpu mpirun -np 8 python -u run_sqd_enlarge_subspace_sbd.py \
+mpirun -np 8 python -u run_sqd_enlarge_subspace_sbd.py \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
     --counts count_dict_h2o.json \
     --device gpu \
     --adet_comm_size 4 --bdet_comm_size 2 --enlarge_threshold 1e-4
 ```
 
-Note that qiskit-addon-sqd's own JAX-based `enlarge_batch_from_transitions` has no MPI awareness. Set `JAX_PLATFORMS=cpu`
-when running an MPI job using more than 1 rank.
+**A note on JAX and GPUs.** The expansion step above is JAX. Since XLA reserves 75% of a device
+on first use, one rank claims it and the rest fail with `RESOURCE_EXHAUSTED: CUDA_ERROR_OUT_OF_MEMORY`.
+On a GPU backend this driver therefore does two things for you, so the command above needs no extra environment:
+
+- assigns each rank its own device, using `sbd.get_device_id()` so JAX lands
+  on the same card SBD already selected for that rank;
+- sets `XLA_PYTHON_CLIENT_PREALLOCATE=false`, so XLA takes memory on demand
+  instead of reserving 75% of the card away from SBD. Without this, SBD's
+  Davidson basis can run out of room at large `--max_dim` and fail inside
+  `tpb_diag` with `std::bad_alloc` -- a memory error that reads as SBD's
+  fault but is caused by JAX's reservation.
+
+`XLA_PYTHON_CLIENT_PREALLOCATE` is left alone if you set it yourself, and
+`JAX_PLATFORMS=cpu` still forces the expansion onto CPU. The device assignment
+always runs, and stays correct if you pin one GPU per rank yourself: with a
+single card visible the count is 1, so every rank resolves to device 0 -- its
+own.
 
 Same bundled 275-bitstring H2O pool as `run_sqd_sbd.py`'s own example above:
 plain SQD reaches **≈ -76.236 Ha** and stops there; this driver keeps going

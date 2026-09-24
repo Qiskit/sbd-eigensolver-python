@@ -33,14 +33,12 @@ what's already included (closed under single-excitation connectivity), or
 run reaching it before either real criterion is a sign something needs
 tuning, not the expected happy path.
 
-enlarge_batch_from_transitions is JAX-based and has no MPI awareness. Set
-JAX_PLATFORMS=cpu when running on more than 1 rank: otherwise, if JAX is
-set up for GPU, every rank tries to grab a GPU for that step at once and
-the run dies with CUDA_ERROR_OUT_OF_MEMORY. SBD's own --device gpu
-diagonalization is unaffected either way.
+enlarge_batch_from_transitions is JAX-based. By default, JAX may select the first GPU
+visible to each process, which can result in multiple ranks sharing the same GPU.
+Proper rank-to-GPU assignment helps avoid GPU memory contention and out-of-memory errors.
 
 Usage (MPI required):
-    JAX_PLATFORMS=cpu mpirun -np 8 python run_sqd_enlarge_subspace_sbd.py \
+    mpirun -np 8 python run_sqd_enlarge_subspace_sbd.py \
         --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
         --counts count_dict_h2o.json \
         --device gpu \
@@ -50,11 +48,13 @@ Usage (MPI required):
 
 import argparse
 import json
+import os
 import re
 import time
 from functools import partial
 from pathlib import Path
 
+import jax
 import numpy as np
 from mpi4py import MPI
 from pyscf import ao2mo, tools
@@ -319,15 +319,21 @@ def main():
         print()
 
     from sbd.sbd_solver import solve_sci_batch
-    from sbd.device_config import DeviceConfig, print_device_info
+    from sbd.device_config import DeviceConfig
 
     device_str = args.device
     if device_str == "auto":
-        device_str = "gpu" if DeviceConfig._check_cuda() else "cpu"
-
-    if rank == 0:
-        print_device_info()
-        print()
+        # Resolve on one rank and broadcast, so every rank agrees by
+        # construction. _check_cuda() shells out to nvidia-smi with a 2 s
+        # timeout, and at 8 concurrent ranks it has been measured at ~6 s, so
+        # it can time out on some ranks and not others. A diverged device_str
+        # would send the ranks that resolved to a GPU into
+        # jax.distributed.initialize() below -- a COMM_WORLD rendezvous --
+        # while the rest skip it, hanging the job until that times out.
+        # Resolving once is also cheaper: one probe, and no 8-way contention.
+        device_str = comm.bcast(
+            ("gpu" if DeviceConfig._check_cuda() else "cpu") if rank == 0 else None,
+            root=0)
 
     if device_str == "gpu":
         device_config = DeviceConfig.gpu()
@@ -335,6 +341,37 @@ def main():
         device_config = DeviceConfig.gpu_omp()
     else:
         device_config = DeviceConfig.cpu()
+
+    from sbd import get_device_id
+    jax_gpu_id = get_device_id(device_str)
+    if jax_gpu_id < 0:
+        # No device for this rank to use -- fall back to CPU.
+        #
+        # Via jax.config, NOT os.environ: unlike XLA_PYTHON_CLIENT_*, which the
+        # C++ client reads when it creates the backend, JAX_PLATFORMS is a
+        # jax.config option parsed at `import jax` -- already done by the time
+        # this runs, so setting the variable here is silently ignored. That
+        # left every rank on JAX's default device with no reservation cap, and
+        # --device cpu on a GPU node aborted with CUDA_ERROR_OUT_OF_MEMORY
+        # while printing that it was using the CPU.
+        jax.config.update("jax_platforms", "cpu")
+        print(f"[rank {rank}] WARNING: no GPU for this rank; forcing the SQD "
+              "subspace expansion onto CPU.", flush=True)
+    elif os.environ.get("JAX_PLATFORMS") == "cpu":
+        if rank == 0:
+            print("INFO: JAX_PLATFORMS=cpu was set, so the SQD subspace "
+                  "expansion runs on CPU.", flush=True)
+    else:
+        if not os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE"):
+            os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
+        # Must be the first JAX call in the process -- it fails if the backend
+        # is already initialised, so nothing above may touch jax.devices().
+        jax.distributed.initialize(cluster_detection_method="mpi4py",
+                                   local_device_ids=[jax_gpu_id])
+        if rank == 0:
+            print("INFO: the SQD subspace expansion runs on GPU, one device "
+                  "per rank.", flush=True)
 
     mf_as = tools.fcidump.to_scf(str(args.fcidump))
     hcore = mf_as.get_hcore()

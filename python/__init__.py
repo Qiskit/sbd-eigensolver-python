@@ -455,6 +455,22 @@ def get_rank():
     return _global_comm.Get_rank()
 
 
+def get_device_id(device=None):
+    """Get the device index this rank will use, or -1 if there is none.
+
+    Reports what the backend's own rank-to-device rule yields rather than
+    recomputing it here, so a caller putting another library on the same card
+    cannot drift out of step with SBD. Selects nothing and creates no
+    context, so it is safe to call before any GPU work.
+
+    Uses the communicator rank, i.e. the same ``gpu_id = rank % num_gpus``
+    convention SBD's own diagonalization applies, documented in
+    ``python/examples/README.md``.
+    """
+    _ensure_initialized()
+    return get_backend(device).planned_device_id(get_comm())
+
+
 def get_world_size():
     """Get total number of MPI processes."""
     _ensure_initialized()
@@ -709,6 +725,7 @@ __all__ = [
     'get_device',
     'get_comm_backend',
     'get_rank',
+    'get_device_id',
     'get_world_size',
     'get_comm',
     'barrier',
