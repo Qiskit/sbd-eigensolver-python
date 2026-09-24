@@ -632,9 +632,11 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             MPI_Comm_rank(comm, &mpi_rank);
             // Same rank % count rule the diag entry points apply. Deliberately
             // a second copy of that one-liner rather than a refactor of the
-            // three of them, so exposing the value cannot change how any
-            // existing path selects its device -- but the two must be kept in
-            // step, or this query starts lying.
+            // existing selection sites -- tpb_diag, gdb_diag,
+            // tpb_diag_from_files, and the offload pin all three share -- so
+            // exposing the value cannot change how any existing path selects
+            // its device. The copies must be kept in step, or this query
+            // starts lying.
             const int n = sbd_device_count();
             return n > 0 ? mpi_rank % n : -1;
         },

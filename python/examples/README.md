@@ -159,8 +159,11 @@ On a GPU backend this driver therefore does two things for you, so the command a
   `tpb_diag` with `std::bad_alloc` -- a memory error that reads as SBD's
   fault but is caused by JAX's reservation.
 
-Both are skipped if you set them yourself, and setting `JAX_PLATFORMS=cpu`
-still forces the expansion onto CPU.
+`XLA_PYTHON_CLIENT_PREALLOCATE` is left alone if you set it yourself, and
+`JAX_PLATFORMS=cpu` still forces the expansion onto CPU. The device assignment
+always runs, and stays correct if you pin one GPU per rank yourself: with a
+single card visible the count is 1, so every rank resolves to device 0 -- its
+own.
 
 Same bundled 275-bitstring H2O pool as `run_sqd_sbd.py`'s own example above:
 plain SQD reaches **≈ -76.236 Ha** and stops there; this driver keeps going
