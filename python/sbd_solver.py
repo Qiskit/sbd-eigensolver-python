@@ -263,7 +263,55 @@ def _solve_sci_core(
         nelec=nelec,
     )
 
-    return SCIResult(energy, sci_state, orbital_occupancies=occupancies)
+    rdm1, rdm2 = assemble_rdms(results, norb)
+
+    return SCIResult(energy, sci_state, orbital_occupancies=occupancies, rdm1=rdm1, rdm2=rdm2)
+
+
+def assemble_rdms(results: dict, norb: int) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Build spin-summed (rdm1, rdm2) from SBD's raw one_p_rdm/two_p_rdm.
+
+    Returns (None, None) when ``do_rdm`` was 0 (SBD leaves these keys as
+    empty lists in that case -- see ``sbdiag.h``'s ``do_rdm == 0`` branch,
+    which only computes the diagonal density, not the correlation
+    functions), matching SCIResult's own ``rdm1``/``rdm2`` default.
+
+    The reshape/transpose below is not a guess: it was verified against
+    PySCF's ``make_rdm1``/``make_rdm2`` on a fixed subspace, on all three
+    SBD backends (cpu, gpu-thrust, gpu-omp-offload) -- both element-wise on
+    the full tensors and via the energy identity
+    ``E = einsum("pr,pr->",rdm1,hcore) + 0.5*einsum("prqs,prqs->",rdm2,eri)``
+    that ``SCIResult.rdm1``/``rdm2`` are contracted with everywhere else in
+    qiskit-addon-sqd (e.g. ``fermion.py``'s own ``solve_fermion``).
+
+    SBD's documented layout (sbd-ext docs/user-guide.md, matching the C++
+    reference in apps/chemistry_tpb_selected_basis_diagonalization/main.cc):
+        one_p_rdm[s][i + L*j]                 = <c+_{i,s} c_{j,s}>
+        two_p_rdm[s+2t][i + L*j + L^2*k + L^3*l] = <c+_{i,s} c+_{j,t} c_{l,t} c_{k,s}>
+    A Fortran-order reshape implements those flat-index formulas directly
+    (arr_F[i, j] / arr_F[i, j, k, l]); rdm1 needs no further transpose
+    (it is symmetric here regardless), and rdm2's spin-summed block sum
+    needs axes (0, 2, 1, 3) to land in the "prqs" slot order SCIResult's
+    contract expects.
+    """
+    one_p_rdm = results.get("one_p_rdm")
+    two_p_rdm = results.get("two_p_rdm")
+    if not one_p_rdm or not two_p_rdm:
+        return None, None
+
+    one_p_rdm = np.asarray(one_p_rdm)
+    two_p_rdm = np.asarray(two_p_rdm)
+    L = norb
+
+    rdm1 = (np.reshape(one_p_rdm[0], (L, L), order="F")
+            + np.reshape(one_p_rdm[1], (L, L), order="F"))
+
+    spin_summed = sum(
+        np.reshape(two_p_rdm[s], (L, L, L, L), order="F") for s in range(4)
+    )
+    rdm2 = spin_summed.transpose(0, 2, 1, 3)
+
+    return rdm1, rdm2
 
 
 def solve_sci_batch(
