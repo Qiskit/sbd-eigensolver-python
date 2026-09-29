@@ -408,4 +408,6 @@ phases, not a fault.
 
 ## See Also
 
+- [`../gdb/README.md`](../gdb/README.md) — the general determinant basis, which
+  decomposes over MPI differently
 - [Repository README](../../README.md) — Installation, API reference

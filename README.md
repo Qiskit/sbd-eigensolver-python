@@ -58,6 +58,9 @@ matter for it.
 
 - [`examples/tpb/`](examples/tpb/README.md) — tensor-product basis: standalone TPB
   diagonalization, the SQD loops, and the subspace-enlargement driver.
+- [`examples/gdb/`](examples/gdb/README.md) — general determinant basis: standalone
+  GDB diagonalization over an explicit determinant list, and an iterative
+  heatbath-expansion driver.
 
 ## Integration with qiskit-addon-sqd
 
