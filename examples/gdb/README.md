@@ -197,6 +197,57 @@ different sizes from the same cutoff, so a cutoff-matched comparison mostly repo
 subspace size rather than seed quality. `--max_dim` and the `--log` series are there
 for that.
 
+### Feeding QPU samples in: `--subspace-from strings`
+
+`--strings-file` takes a plain text file, one `2*norb`-bit determinant per line — not a
+counts JSON. Converting a qiskit-addon-sqd counts file means two steps, and the second
+one is not optional:
+
+1. **Postselect** on the target Hamming weight per spin sector. `recover_configurations`
+   and friends do this in the SQD loop; doing it here keeps determinants with the wrong
+   electron count out of the subspace.
+2. **Interleave the bits.** qiskit-addon-sqd emits `[beta | alpha]` — the two halves
+   concatenated — while GDB wants them interleaved, bit `2*i` alpha orbital `i` and bit
+   `2*i + 1` beta orbital `i`. The drivers expose the conversion as `interleave()`.
+
+```python
+import json, pathlib, sys
+sys.path.insert(0, ".")                    # run from examples/gdb/
+from run_gdb_heatbath import interleave
+
+counts = json.loads(pathlib.Path("../tpb/count_dict_h2o.json").read_text())
+norb = len(next(iter(counts))) // 2
+n_alpha = n_beta = 5                       # the sector you are solving
+
+dets = {
+    interleave(key[norb:], key[:norb])     # key is [beta | alpha]
+    for key in counts
+    if key[norb:].count("1") == n_alpha and key[:norb].count("1") == n_beta
+}
+pathlib.Path("dets.txt").write_text("\n".join(sorted(dets)) + "\n")
+```
+
+A `set` drops duplicate samples, which GDB rejects rather than silently dedupes, and
+`sorted()` gives the ordering the shard contract wants. Then:
+
+```bash
+python run_gdb_heatbath.py \
+    --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
+    --subspace-from strings --strings-file dets.txt \
+    --cutoffs 1e-3,1e-4
+```
+
+On the bundled 275-bitstring h2o file that is a 275-determinant sparse subspace at
+−76.0723973374, which the ladder then grows — as opposed to the 75,625-determinant
+product space TPB would build from the same samples.
+
+**Skipping the interleave does not fail cleanly.** Feeding the concatenated strings
+straight through diagonalizes to a plausible-looking number (−66.8043 for the file
+above, against −76.0724 done right) and only aborts later, inside the heatbath
+expansion, with `std::out_of_range`. The electron-count check does not catch it either:
+permuting bits preserves how many are set, so the density still sums to 10. Check the
+energy against a known reference before trusting a first conversion.
+
 ### The loop needs no amplitudes
 
 A natural question, since `gdb_diag` does not return the wavefunction: the ladder never
