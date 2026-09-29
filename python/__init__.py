@@ -465,7 +465,7 @@ def get_device_id(device=None):
 
     Uses the communicator rank, i.e. the same ``gpu_id = rank % num_gpus``
     convention SBD's own diagonalization applies, documented in
-    ``examples/README.md``.
+    ``examples/tpb/README.md``.
     """
     _ensure_initialized()
     return get_backend(device).planned_device_id(get_comm())

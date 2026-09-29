@@ -197,6 +197,6 @@ The Thrust backend is stamped too (`cuda:cc90`); the CPU backend reports `None`.
 ## See Also
 
 - [README](README.md) — what the package is, the API, and the SQD integration
-- [`examples/README.md`](examples/README.md) — backend selection at runtime, bundled
-  test data and performance notes
+- [`examples/tpb/README.md`](examples/tpb/README.md) — backend selection at runtime,
+  bundled test data and performance notes
 - [Troubleshooting](README.md#troubleshooting) — build and runtime symptoms

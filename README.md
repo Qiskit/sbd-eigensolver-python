@@ -51,14 +51,13 @@ built), building against an existing host MPI, and fuller verification.
 
 ## Examples
 
-Located in [`examples/`](examples/README.md), organized by basis type since the
-solvers take different subspaces and decompose over MPI differently. Each folder's
-README is the authoritative list of what it contains and how to run it.
+Located in `examples/`, organized by basis type since the solvers take different
+subspaces and decompose over MPI differently. Each folder's README is the authoritative
+guide to what it contains, how to run it, and the backend and threading settings that
+matter for it.
 
 - [`examples/tpb/`](examples/tpb/README.md) — tensor-product basis: standalone TPB
   diagonalization, the SQD loops, and the subspace-enlargement driver.
-- [`examples/README.md`](examples/README.md) — backend selection, `--device` values,
-  bundled test data and performance notes, shared by all examples.
 
 ## Integration with qiskit-addon-sqd
 
