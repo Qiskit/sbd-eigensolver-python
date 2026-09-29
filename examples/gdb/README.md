@@ -282,15 +282,12 @@ pins a device and then diagonalizes on the host; the driver warns when it resolv
 there. AMD has no Thrust build, so AMD GDB is CPU-only.
 
 The Thrust path additionally requires **`helper == 1`** (`gdb/mult_thrust.h:310-314`,
-checked on every kernel launch), which means every rank must go to
-`t_comm_size × b_comm_size`. Since `helper = ranks / (t × b)`, leaving the basis in one
-block caps GPU GDB at a single rank — so **multi-GPU GDB requires `--b_comm_size`**.
-
-Because `h = ranks / (t · b)`, leaving the basis in a single block caps GPU GDB at one
-rank — the helper dimension takes every rank you add. So **multi-GPU GDB requires
-`--b_comm_size`**, e.g. `-np 4 --b_comm_size 4`. Asking for more ranks than `t · b` is
-refused up front, naming the helper dimension, rather than throwing from inside a
-kernel launch.
+checked on every kernel launch), so every rank must go to `t_comm_size × b_comm_size`.
+Since `helper = ranks / (t × b)`, leaving the basis in one block caps GPU GDB at a
+single rank — the helper dimension absorbs every rank you add. So **multi-GPU GDB
+requires `--b_comm_size`**, e.g. `-np 4 --b_comm_size 4`. Asking for more ranks than
+`t × b` is refused up front, naming the helper dimension, rather than throwing from
+inside a kernel launch.
 
 Only the Davidson runs on the device. `gdb/expansion.h` and `gdb/carryover.h` contain
 no `thrust::` code and are included outside any `SBD_THRUST` guard (`inc_all.h:23`), so
