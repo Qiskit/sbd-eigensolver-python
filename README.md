@@ -341,13 +341,13 @@ prefer it. Tracked as
 
 **Ranks die with `Bus error` or `SIGSEGV` inside the MPI's own copy path** (`MPIR_Localcopy`, `ucp_worker_progress`, ...) **on a GPU backend:** the MPI is not GPU-aware and was handed a device pointer. Rebuild UCX `--with-cuda` / `--with-rocm`, and confirm with `ucx_info -d | grep -i 'Transport: cuda'` (or `rocm`). Two things mislead here. A partly GPU-aware stack fails in only one place: an MPICH with GPU support *disabled* over a CUDA-aware UCX ran OMP-offload fine and crashed only in Thrust, because the inter-rank path went through UCX while the local-copy path did not. And on AMD a non-ROCm-aware MPI does not crash at all — ROCm maps device memory into the process address space, so the host copy succeeds and merely stages everything through the host aperture (measured on MI250X, XNACK off, 8 ranks) — so a working AMD run is not evidence that the MPI is ROCm-aware.
 
-**`GDB Thrust mult does not support h_comm_size > 1` from `gdb_diag` on more than one
-rank:** GDB's Thrust kernels never implemented the helper dimension, and the helper
-dimension is `ranks / (t_comm_size × b_comm_size)`. Since `gdb_diag` requires
-`b_comm_size == 1` (see [Configuration](#configuration)), which forces `t_comm_size` to
-1, every rank you add lands in the helper dimension — so GPU GDB is limited to a single
-rank in this release. Run GDB on one GPU, or on the CPU backend, where the helper
-dimension is unconstrained. TPB is unaffected and shards over `adet_comm_size` /
-`bdet_comm_size` as usual.
+**GDB on more than one GPU refuses to start, naming the helper dimension:** GDB's Thrust
+kernels never implemented that dimension, and it is the quotient
+`ranks / (t_comm_size × b_comm_size)` — so any rank you do not assign to `t` or `b` lands
+there. Give every rank to the basis: `-np 4` with `b_comm_size = 4` leaves a helper
+dimension of 1. Leaving `b_comm_size` at 1 puts *all* ranks in the helper dimension,
+which is why multi-GPU GDB requires a split basis. `gdb_diag` checks this before doing
+any work rather than letting the kernel throw mid-launch. The CPU backend has no such
+restriction, and TPB is unaffected.
 
 **Repository:** https://github.com/Qiskit/sbd-eigensolver-python
