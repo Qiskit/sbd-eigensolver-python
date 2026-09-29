@@ -1,0 +1,16 @@
+---
+features:
+  - |
+    A new :func:`sbd.get_device_id` function reports the GPU index the calling
+    rank will use, or ``-1`` when there is none -- a CPU-only build, or no visible
+    devices. It applies the same ``rank % num_gpus`` rule SBD's own
+    diagonalization uses, asking the backend rather than recomputing it, so
+    another library placed on the same card cannot drift out of step with SBD.
+    The device count comes from the GPU runtime rather than from parsing
+    ``nvidia-smi`` output.
+
+    The query selects no device and creates no context, so it is safe to call
+    before any GPU work and before another framework initializes its own backend.
+    That is what it is for: a framework such as JAX, initialized on a multi-GPU
+    node without being told which device belongs to this rank, will otherwise
+    claim a card SBD is about to use.

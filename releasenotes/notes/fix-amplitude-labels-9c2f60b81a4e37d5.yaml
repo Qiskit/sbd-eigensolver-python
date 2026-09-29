@@ -1,0 +1,17 @@
+---
+fixes:
+  - |
+    Wavefunction amplitudes are now labeled with the determinants that were
+    actually diagonalized rather than with the CI strings passed in. The two can
+    differ: the input is sorted into SBD's canonical order and deduplicated before
+    diagonalization, so amplitudes and labels are now taken from one list by
+    construction.
+
+    In practice this fixes duplicate CI strings, which the sorting step documents
+    that it removes. A caller who passed them got a ``RuntimeError`` complaining
+    that the amplitude count did not match the subspace size, rejecting a run that
+    had in fact succeeded; such a call now completes, returning the amplitudes for
+    the distinct determinants. Ordering was not observably wrong before, since the
+    canonical order happens to coincide with ascending integer order, but nothing
+    upstream guarantees that -- and if it ever stopped holding, the result would
+    have been correct amplitudes against the wrong labels, with no error raised.

@@ -1,0 +1,28 @@
+---
+features:
+  - |
+    The example drivers shipped under ``python/examples`` have been substantially
+    reworked. Their command-line options are now grouped by the layer they act on,
+    with the SBD solver's options prefixed to distinguish them from the SQD loop's
+    -- several names previously read as one layer and acted on the other -- and
+    every former spelling is kept as an alias. Three SQD options that had no
+    command-line spelling at all, the energy and occupancy convergence tolerances
+    and the loop's carryover threshold, now reach the SQD loop instead of being
+    stuck at its defaults.
+
+    The Hartree-Fock occupancy seed has been dropped from the SQD driver. Passing
+    it replaced postselection with configuration recovery in every run, so at the
+    first iteration -- where the only occupancies available are mean-field, with
+    every virtual orbital at exactly zero -- the subspace was largely synthesized
+    by bit flips against that prior rather than built from sampled
+    configurations. The driver now postselects at the first iteration and uses
+    solver-derived occupancies thereafter, which is what published SQD does.
+  - |
+    A new example driver, ``run_sqd_enlarge_subspace_sbd.py``, grows its own
+    subspace between diagonalizations. It drives the SQD loop one iteration at a
+    time and, after each solve, expands the dominant determinants through
+    same-spin single excitations using ``qiskit-addon-sqd``'s own excitation
+    utilities, feeding the result forward as the next round's configurations. It
+    stops when the expanded set adds nothing new -- the subspace is closed under
+    single-excitation connectivity -- or when both the energy and the occupancies
+    stop moving.
