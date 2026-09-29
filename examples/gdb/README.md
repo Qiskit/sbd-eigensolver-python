@@ -37,7 +37,7 @@ python run_gdb_diag.py --fcidump $GDB/fcidump_Fe4S4.txt \
 
 # Shard the basis: Fe4S4's four files, one per rank. For this data that is
 # already the balanced globally-sorted split, so no redistribution is needed.
-mpirun -np 4 -x OMP_NUM_THREADS=8 python run_gdb_diag.py --b_comm_size 4
+OMP_NUM_THREADS=8 mpirun -np 4 python run_gdb_diag.py --b_comm_size 4
 
 # Spend ranks on both named dimensions (t <= b, and t*b must divide the ranks)
 mpirun -np 8 python run_gdb_diag.py --b_comm_size 4 --t_comm_size 2
@@ -355,6 +355,11 @@ helper = ranks / (t_comm_size × b_comm_size)
 that quotient by integer division and never checks the remainder, which silently
 produces communicators of unequal size and a rank alone in its own basis ring, so
 `gdb_diag` refuses it.
+
+These examples set `OMP_NUM_THREADS` in the shell rather than through `mpirun`, because
+the flag for that is implementation-specific — `-x VAR=VAL` on Open MPI, `-env VAR VAL`
+on MPICH, and each rejects the other's spelling. Setting it in the shell works on both
+for a single-node run.
 
 ### What each dimension buys
 
