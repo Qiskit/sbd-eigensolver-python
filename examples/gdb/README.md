@@ -8,6 +8,16 @@ bitstrings used *as sampled*, with no product completion.
 
 For TPB and the SQD loops, see [`../tpb/README.md`](../tpb/README.md).
 
+## The default data
+
+Both drivers default `--fcidump` and `--detfiles` to upstream's own GDB app data under
+`vendor/sbd-upstream/apps/chemistry_gdb_selected_basis_diagonalization/`: the Fe4S4
+FCIDUMP at 36 orbitals, and its four `det0.txt`-`det3.txt` holding 14,884 determinants
+each, 59,536 in total. **Any command below that passes neither flag runs exactly that
+case** — the determinants come from those four files, not from nowhere. Upstream
+publishes no reference energy for it, so treat it as a self-consistency benchmark
+rather than a validation target.
+
 ## run_gdb_diag.py — standalone GDB diagonalization
 
 Stays on the in-memory entry point (`sbd.gdb_diag`) throughout: determinant text is
@@ -15,9 +25,15 @@ read in Python and handed to the binding as a list. SBD's own file-based entry
 point is deliberately not used.
 
 ```bash
-# Fe4S4, upstream's own GDB data: 4 files, 59,536 determinants, 36 orbitals.
-# Upstream publishes no reference energy for this case.
+# The default case: Fe4S4, upstream's four det files, 59,536 determinants.
 python run_gdb_diag.py
+
+# The same run with the defaults written out -- this is the --detfiles syntax to
+# copy for your own data. Files are comma-separated and concatenated in Python
+# into one in-memory list, so their combined order must be sorted and disjoint.
+GDB=../../vendor/sbd-upstream/apps/chemistry_gdb_selected_basis_diagonalization
+python run_gdb_diag.py --fcidump $GDB/fcidump_Fe4S4.txt \
+    --detfiles $GDB/det0.txt,$GDB/det1.txt,$GDB/det2.txt,$GDB/det3.txt
 
 # Shard the basis: Fe4S4's four files, one per rank. For this data that is
 # already the balanced globally-sorted split, so no redistribution is needed.
@@ -41,6 +57,13 @@ python run_gdb_diag.py \
 # Grow the subspace with SBD's own heatbath expansion (one round; the expanded
 # list comes back as carryover_det)
 python run_gdb_diag.py --carryover_type 2 --heatbath_cutoff 1e-4
+
+# On GPUs, use --device gpu (Thrust). It requires helper == 1, so every rank has
+# to go to t*b -- which means --b_comm_size is not optional for multi-GPU GDB.
+mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4
+
+# One rank, one GPU is the exception: b=1 already leaves helper == 1.
+python run_gdb_diag.py --device gpu
 ```
 
 The determinant bit order is the one the upstream app documents: reading from the
@@ -55,7 +78,7 @@ no extra machinery — `carryover_type` 2 and 3 return the parents *together wit
 new candidates, so one round's result **is** the next round's subspace.
 
 ```bash
-# Fe4S4 from upstream's shipped subspace, one cutoff
+# Fe4S4 from upstream's shipped subspace (the default data above), one cutoff
 python run_gdb_heatbath.py --cutoffs 1e-3
 
 # A ladder, stopping before the subspace passes 2M determinants
@@ -72,6 +95,44 @@ mpirun -np 4 python run_gdb_heatbath.py --b_comm_size 4 --device gpu --cutoffs 1
 # Record the (dimension, energy) series for a comparison table
 python run_gdb_heatbath.py --cutoffs 1e-3,1e-4 --log ladder.json
 ```
+
+### Parameters
+
+Seed — where the starting subspace comes from:
+
+| Parameter | What it controls | Default |
+|---|---|---|
+| `--seed` | `files` reads `--detfiles`; `hf` starts from the single Hartree-Fock determinant; `from-alpha` builds the `\|A\|^2` product of an alpha list; `strings` reads full determinants, e.g. sampled configurations | `files` |
+| `--fcidump` | FCIDUMP defining the Hamiltonian | Fe4S4, see [The default data](#the-default-data) |
+| `--detfiles` | `--seed files`: comma-separated determinant files, concatenated in Python. Their combined order must be sorted and disjoint | upstream's four Fe4S4 files |
+| `--alpha-file` / `--alpha-limit` | `--seed from-alpha`: the alpha list, and a cap on how many of its strings to keep. The product costs `N^2` determinants, so this is the size dial | none / `0` (all) |
+| `--strings-file` | `--seed strings`: a file of `2*norb`-bit determinants | none |
+
+Ladder — how far the expansion is pushed. A rung runs rounds at one cutoff until the
+energy stops moving, then the next cutoff begins:
+
+| Parameter | What it controls | Default |
+|---|---|---|
+| `--cutoffs` | The ladder itself: comma-separated `heatbath_cutoff` values, smallest step last. Each rung admits candidates whose estimated contribution exceeds it | `1e-3` |
+| `--max_rounds` | Cap on rounds **per rung**, so a rung that never converges cannot run forever | `8` |
+| `--energy_tol` | Advance to the next rung once `\|dE\|` between rounds falls below this (Hartree) | `1e-5` |
+| `--max_dim` | Stop before diagonalizing a subspace larger than this. The brake that keeps rows of a comparison cost-matched | `0` (no cap) |
+| `--carryover_type` | Heatbath variant, 2 or 3. Types 0 and 1 do not expand, so they cannot drive the loop | `2` |
+| `--heatbath_truncation` | Weight threshold applied to **parents**, before expanding — not the cutoff. See the warning below; leave it at 0 | `0.0` |
+| `--heatbath_batch_size` | Expansion batch size per rank | `1000000` |
+
+Solver, MPI and output — the same meanings as in `run_gdb_diag.py`:
+
+| Parameter | What it controls | Default |
+|---|---|---|
+| `--device` | `cpu`, `gpu` (Thrust, the only GPU backend with GDB kernels), `gpu-omp` (no GDB kernels — runs on the host), `auto` | `cpu` |
+| `--method` | 0=Davidson, 1=Davidson storing the Hamiltonian. GDB has no Lanczos | `0` |
+| `--tolerance` / `--iteration` / `--block` | Davidson residual tolerance, iteration cap, and basis-vector count. Also accepted as `--eps` / `--max_it` / `--max_nb`, matching SBD's own names | `1e-6` / `30` / `10` |
+| `--bit_length` | Bits per packed word | `64` |
+| `--b_comm_size` | Basis shards — the only dimension that divides memory | `1` |
+| `--t_comm_size` | Tasks per ring station; must not exceed `--b_comm_size` | `1` |
+| `--determinant_distribution` | Placement across `b_comm`; see [Placement across `b_comm`](#placement-across-b_comm) | `equal-bra-a` |
+| `--log FILE` | Write the per-round `(rung, cutoff, round, dimension, energy, delta_energy, seconds)` series as JSON — the machine-readable form of the table the driver prints | none |
 
 ### Why a cutoff *ladder*
 
