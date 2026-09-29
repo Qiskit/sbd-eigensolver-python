@@ -222,41 +222,27 @@ Total MPI ranks = `task_comm_size × adet_comm_size × bdet_comm_size`.
 config = sbd.GDB_SBD()
 ```
 
-Shares `method`, `max_it`, `max_nb`, `eps`, `max_time`, `init`, `do_shuffle`,
-`do_rdm`, `carryover_type`, `ratio`, `threshold` and `bit_length` with `TPB_SBD`,
-and replaces the determinant communicators with a single basis communicator:
+Shares `max_it`, `max_nb`, `eps`, `max_time`, `init`, `do_rdm`, `carryover_type`,
+`ratio`, `threshold` and `bit_length` with `TPB_SBD`, and replaces the determinant
+communicators with a single basis communicator:
 
 | Attribute | Default | Description |
 |-----------|---------|-------------|
-| `b_comm_size` | 1 | Basis communicator size, i.e. how many shards the determinant list is split into — the only dimension that divides memory |
-| `t_comm_size` | 1 | Task communicator size — must not exceed `b_comm_size`, see below |
+| `method` | 0 | 0=Davidson, 1=Davidson+Ham. GDB has no Lanczos, so TPB's 2 and 3 are rejected |
+| `b_comm_size` | 1 | Basis communicator size — how many shards the determinant list is split into |
+| `t_comm_size` | 1 | Task communicator size — must not exceed `b_comm_size` |
 | `seed` | 1729 | Seed for the initial vector |
 | `heatbath_cutoff` | 1e-4 | Heatbath expansion cutoff |
 | `heatbath_truncation` | 0.0 | Weight truncation applied before heatbath expansion |
 | `heatbath_batch_size` | 200000000 | Heatbath expansion batch size |
 
-**How the three GDB dimensions relate**, and whose constraint each one is:
+Total MPI ranks = `t_comm_size × b_comm_size × helper`, where the helper dimension is
+the derived quotient and is not settable. With `b_comm_size > 1` each rank passes its
+own shard of the determinant list rather than the whole list.
 
-`b_comm_size` splits the determinant list across ranks and is the only dimension that
-divides memory — the other two divide work. Above 1, every rank passes its own shard
-rather than the whole list (see `gdb_diag` below). It was pinned to 1 before this
-wrapper could shard an in-memory list; upstream never required it, and its own `run.sh`
-for the GDB app runs `--b_comm_size 2` through the file-based path.
-
-`t_comm_size ≤ b_comm_size` is *upstream's* algorithm, not a wrapper choice. GDB's
-matrix-vector product rotates the ket around `b_comm` as a ring, so there are exactly
-`b_comm_size` ring stations and one "task" is one station — there cannot be more task
-ranks than stations. Upstream does not check this, and exceeding it faults inside
-helper construction, so `gdb_diag` rejects it up front.
-
-`t_comm_size × b_comm_size` must divide the rank count exactly. The helper dimension is
-the quotient, `ranks / (t_comm_size × b_comm_size)`; it is derived rather than settable
-and divides work without dividing memory. On the Thrust backend it must be 1, because
-the GPU kernels never implemented that dimension — which is why more than one GPU
-requires `b_comm_size > 1`.
-
-See [`examples/gdb/README.md`](examples/gdb/README.md) for the shard contract, the six
-determinant-placement schemes and worked rank layouts.
+See [`examples/gdb/README.md`](examples/gdb/README.md) for the decomposition, the shard
+contract, the six determinant-placement schemes, and why the helper dimension must be 1
+on the Thrust backend.
 
 ### Diagonalization
 
@@ -286,14 +272,11 @@ SBD's canonical order internally, which `sort_bitarray` reproduces.
 
 `det` may be a single `(ndets, words)` array or **this rank's shard of one**:
 `sbd_data.b_comm_size` decides which. At `1` every rank passes the whole basis; above
-`1` every rank passes its own shard and the union over b_comm positions is the basis,
-which is the only way GDB's memory scales. Sharded runs carry further constraints —
-`t_comm_size ≤ b_comm_size`, their product dividing the rank count, a helper dimension
-of 1 on the Thrust backend, and shards that are globally sorted and disjoint. All are
-checked and raise rather than silently diagonalizing the wrong subspace. See
-[`examples/gdb/README.md`](examples/gdb/README.md) for the decomposition, the six
-determinant-placement schemes, and which returned values are replicated versus
-sharded.
+`1` every rank passes its own shard, the union over b_comm positions being the basis.
+Sharded input must be globally sorted and disjoint; that and the rank-layout constraints
+are checked, and raise rather than silently diagonalizing the wrong subspace.
+[`examples/gdb/README.md`](examples/gdb/README.md) has the shard contract, the
+placement schemes, and which returned values are replicated versus sharded.
 
 `gdb_diag` does not return the wavefunction amplitudes, because SBD's `gdb::diag`
 has no in-memory output for them. Passing `savename` makes SBD write them instead, as
