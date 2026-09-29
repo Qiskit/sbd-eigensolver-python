@@ -85,7 +85,7 @@ python run_gdb_heatbath.py --cutoffs 1e-3
 python run_gdb_heatbath.py --cutoffs 1e-3,1e-4,1e-5 --max_dim 2000000
 
 # The no-input null: start from the Hartree-Fock determinant alone
-python run_gdb_heatbath.py --seed hf --cutoffs 1e-3,1e-4
+python run_gdb_heatbath.py --subspace-from hf --cutoffs 1e-3,1e-4
 
 # Sharded. At --b_comm_size == ranks with t=1 the expansion comes back already
 # sharded for the next round, so nothing has to be gathered.
@@ -98,21 +98,22 @@ python run_gdb_heatbath.py --cutoffs 1e-3,1e-4 --log ladder.json
 
 ### Parameters
 
-`--fcidump` and `--detfiles` are spelled and defaulted exactly as in `run_gdb_diag.py`,
-so a command that feeds one driver its data feeds the other. Two input flags do **not**
-carry over: the alpha list is `--alpha-file` here but `--from-alpha` there, and `--seed`
-means different things in the two drivers — here it selects where the subspace comes
-from, while in `run_gdb_diag.py` it is the integer RNG seed for a random initial vector.
+Input flags match `run_gdb_diag.py`: `--fcidump`, `--detfiles` and `--alpha-limit` are
+spelled and defaulted identically, and the alpha list is accepted as either
+`--alpha-file` or `--from-alpha` by both drivers, so a command that feeds one its data
+feeds the other. The one flag that is *not* shared is `--seed`, which in
+`run_gdb_diag.py` is the integer RNG seed for a random initial vector; this driver's
+equivalent is `--subspace-from` (`--seed` still works here but warns, and will go).
 
 Seed — where the starting subspace comes from:
 
 | Parameter | What it controls | Default |
 |---|---|---|
-| `--seed` | `files` reads `--detfiles`; `hf` starts from the single Hartree-Fock determinant; `from-alpha` builds the `\|A\|^2` product of an alpha list; `strings` reads full determinants, e.g. sampled configurations | `files` |
+| `--subspace-from` | `files` reads `--detfiles`; `hf` starts from the single Hartree-Fock determinant; `from-alpha` builds the `\|A\|^2` product of an alpha list; `strings` reads full determinants, e.g. sampled configurations | `files` |
 | `--fcidump` | FCIDUMP defining the Hamiltonian | Fe4S4, see [The default data](#the-default-data) |
-| `--detfiles` | `--seed files`: comma-separated determinant files, concatenated in Python. Their combined order must be sorted and disjoint | upstream's four Fe4S4 files |
-| `--alpha-file` / `--alpha-limit` | `--seed from-alpha`: the alpha list, and a cap on how many of its strings to keep. The product costs `N^2` determinants, so this is the size dial | none / `0` (all) |
-| `--strings-file` | `--seed strings`: a file of `2*norb`-bit determinants | none |
+| `--detfiles` | `--subspace-from files`: comma-separated determinant files, concatenated in Python. Their combined order must be sorted and disjoint | upstream's four Fe4S4 files |
+| `--alpha-file` (or `--from-alpha`) / `--alpha-limit` | `--subspace-from from-alpha`: the alpha list, and a cap on how many of its strings to keep. The product costs `N^2` determinants, so this is the size dial | none / `0` (all) |
+| `--strings-file` | `--subspace-from strings`: a file of `2*norb`-bit determinants | none |
 
 Ladder — how far the expansion is pushed. A rung runs rounds at one cutoff until the
 energy stops moving, then the next cutoff begins:
@@ -172,10 +173,10 @@ run can never cross, which makes a sparse run self-checking even without a refer
 
 ### Seeds
 
-`--seed` selects where the starting subspace comes from, so one driver produces
+`--subspace-from` selects where the starting subspace comes from, so one driver produces
 every row of a seed comparison:
 
-| `--seed` | starting subspace |
+| `--subspace-from` | starting subspace |
 |---|---|
 | `files` *(default)* | determinant files, defaulting to upstream's four Fe4S4 files |
 | `hf` | the Hartree-Fock determinant alone, built from the FCIDUMP header — the no-input null |

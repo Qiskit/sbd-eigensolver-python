@@ -96,7 +96,7 @@ def parse_args():
                        help='Comma-separated files of full determinants, one '
                             '2*norb-bit string per line. Concatenated in Python '
                             'and passed as a single in-memory list')
-    parser.add_argument('--from-alpha', default='', metavar='FILE',
+    parser.add_argument('--from-alpha', '--alpha-file', default='', metavar='FILE',
                        dest='from_alpha',
                        help='Instead of --detfiles, read a norb-bit alpha list and '
                             'form the full |A|^2 product basis by interleaving it '

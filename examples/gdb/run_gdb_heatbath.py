@@ -88,20 +88,24 @@ def parse_args():
                        help='FCIDUMP file defining the Hamiltonian')
 
     # --- the seed ---------------------------------------------------------
-    parser.add_argument('--seed', default='files',
+    # --seed is the old spelling, kept working but deprecated: run_gdb_diag.py uses
+    # --seed for the integer RNG seed of its random initial vector, so the same flag
+    # meant two incompatible things across the two drivers.
+    parser.add_argument('--subspace-from', '--seed', default='files',
+                       dest='subspace_from',
                        choices=['files', 'hf', 'from-alpha', 'strings'],
                        help='Where the starting subspace comes from')
     parser.add_argument('--detfiles', default=_DEFAULT_DETFILES,
-                       help='--seed files: comma-separated files of 2*norb-bit '
+                       help='--subspace-from files: comma-separated files of 2*norb-bit '
                             'determinant strings')
-    parser.add_argument('--alpha-file', default='', dest='alpha_file',
-                       help='--seed from-alpha: a norb-bit alpha determinant list, '
+    parser.add_argument('--alpha-file', '--from-alpha', default='', dest='alpha_file',
+                       help='--subspace-from from-alpha: a norb-bit alpha determinant list, '
                             'interleaved with itself into the full product basis')
     parser.add_argument('--alpha-limit', type=int, default=0, dest='alpha_limit',
-                       help='--seed from-alpha: keep only the first N alpha strings '
+                       help='--subspace-from from-alpha: keep only the first N alpha strings '
                             '(the product costs N^2 determinants)')
     parser.add_argument('--strings-file', default='', dest='strings_file',
-                       help='--seed strings: a file of 2*norb-bit determinant '
+                       help='--subspace-from strings: a file of 2*norb-bit determinant '
                             'strings, e.g. sampled configurations')
 
     # --- the ladder -------------------------------------------------------
@@ -154,7 +158,17 @@ def parse_args():
     parser.add_argument('--log', default='', metavar='FILE',
                        help='Write the per-round (dimension, energy) series as JSON')
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # argparse's own `deprecated=` needs Python 3.13, and this supports 3.10, so
+    # detect the old spelling in argv instead. Warn rather than fail: --seed still
+    # works, it is only ambiguous across the two drivers.
+    if any(a == '--seed' or a.startswith('--seed=') for a in sys.argv[1:]):
+        print("NOTE: --seed is deprecated here and will be removed; use "
+              "--subspace-from. run_gdb_diag.py uses --seed for its integer RNG "
+              "seed, so the same flag meant two different things.", file=sys.stderr)
+
+    return args
 
 
 def read_strings(paths):
@@ -210,10 +224,10 @@ def build_seed(args, sbd, norb, nelec, ms2, rank):
     """The starting determinant array for this rank, plus a description."""
     total_bits = 2 * norb
 
-    if args.seed == 'hf':
+    if args.subspace_from == 'hf':
         strings = [hartree_fock_string(norb, nelec, ms2)]
         source = f"Hartree-Fock determinant ({nelec} electrons, MS2={ms2})"
-    elif args.seed == 'from-alpha':
+    elif args.subspace_from == 'from-alpha':
         if not args.alpha_file:
             raise ValueError("--seed from-alpha requires --alpha-file")
         alpha = read_strings([args.alpha_file])
@@ -226,10 +240,10 @@ def build_seed(args, sbd, norb, nelec, ms2, rank):
         strings = [interleave(a, b) for a in alpha for b in alpha]
         source = f"{args.alpha_file}: {len(alpha)} alpha -> {len(alpha)}^2 product"
     else:
-        paths = ([args.strings_file] if args.seed == 'strings'
+        paths = ([args.strings_file] if args.subspace_from == 'strings'
                  else [p for p in args.detfiles.split(',') if p])
         if not paths or not all(paths):
-            raise ValueError(f"--seed {args.seed} requires input file(s)")
+            raise ValueError(f"--subspace-from {args.subspace_from} requires input file(s)")
         strings = read_strings(paths)
         source = f"{len(paths)} file(s): {', '.join(paths)}"
 
