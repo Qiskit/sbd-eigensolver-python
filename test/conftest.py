@@ -100,7 +100,16 @@ def backend():
     """The SBD backend module to test, for tests calling the extension directly."""
     import sbd
 
-    return sbd.get_backend(_requested_device())
+    device = _requested_device()
+    # Pin the package default to the same backend this fixture hands out, or the two
+    # disagree on an install with more than one backend built. get_backend(None) here
+    # auto-resolves and PREFERS Thrust, while the module-level entry points reach
+    # _ensure_initialized() whose default is 'cpu' -- so a test would build its
+    # FCIDump and config from one module and call tpb_diag/gdb_diag in another,
+    # failing with "incompatible function arguments". Invisible on a CPU-only build,
+    # which is why it went unnoticed.
+    sbd.init(device=device or sbd.get_device())
+    return sbd.get_backend(device)
 
 
 @pytest.fixture(scope="session")
