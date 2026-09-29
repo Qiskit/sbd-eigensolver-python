@@ -4,10 +4,24 @@ Python bindings for the Selected Basis Diagonalization (SBD) library, with CPU a
 
 ## Overview
 
-SBD (Selected Basis Diagonalization) is a high-performance library for quantum chemistry calculations. The Python bindings provide access to SBD's **Tensor-Product Basis (TPB)** diagonalization method on CPU and GPU.
+SBD (Selected Basis Diagonalization) is a high-performance library for quantum
+chemistry calculations. These bindings expose two of its diagonalization methods on CPU
+and GPU. They differ in the shape of the subspace they span, which is what decides
+which one you want:
+
+- **Tensor-Product Basis (TPB)** — the subspace is the Cartesian product of an alpha
+  and a beta determinant list, so its dimension is `|adet| × |bdet|`. The mature path,
+  and the one the qiskit-addon-sqd integration uses.
+- **General-Determinant Basis (GDB)** — the subspace is the explicit determinant list
+  you pass, so it can be an arbitrary *sparse* set rather than a product. Experimental:
+  newer, a smaller tested surface, and still evolving as upstream SBD does.
+
+If your subspace is a product, prefer TPB — it represents that case with two
+half-determinant lists instead of every product element, and needs no extra
+constraints. Reach for GDB when the subspace is not a product.
 
 **Key Features:**
-- **TPB diagonalization** for quantum chemistry Hamiltonians
+- **TPB and GDB diagonalization** for quantum chemistry Hamiltonians
 - Three backends, selected per call at runtime via `device=`:
   `'cpu'` (host OpenMP), `'gpu'` (NVHPC Thrust/CUDA, NVIDIA only) and
   `'gpu-omp'` (OpenMP target offload, **NVIDIA or AMD**). All the backends your
@@ -16,7 +30,9 @@ SBD (Selected Basis Diagonalization) is a high-performance library for quantum c
 - MPI parallelization
 - Integration with [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) for SQD workflows
 
-In addition to TPB, this package also contains experimental support for SBD's **General-Determinant Basis (GDB)** method. However, SBD's **Creation/Annihilation operator (CAOP)** method is currently not supported by this wrapper; users who need it should reference and use the C++ CLI apps in the upstream submodule (`vendor/sbd-upstream/apps/`).
+SBD's **Creation/Annihilation operator (CAOP)** method is not supported by this
+wrapper; users who need it should reference and use the C++ CLI apps in the upstream
+submodule (`vendor/sbd-upstream/apps/`).
 
 > [!NOTE]
 > This package is newly open-sourced. The Python API follows semantic versioning, but the build configuration and GPU backends have been exercised on a limited set of platforms — please report issues.
@@ -65,6 +81,15 @@ matter for it.
 ## Integration with qiskit-addon-sqd
 
 SBD can serve as the eigensolver backend for qiskit-addon-sqd's SQD workflow.
+
+> [!NOTE]
+> This integration is **TPB-only**, and not merely for want of plumbing.
+> `solve_sci`/`solve_sci_batch` call `tpb_diag`, and the addon's interface describes a
+> product subspace by construction: `ci_strings` is a `(strings_a, strings_b)` pair and
+> `SCIState.amplitudes` is an `|a| × |b|` matrix. A sparse determinant list cannot be
+> expressed that way without padding back up to the full product, which discards the
+> reason to use GDB. For GDB, call `gdb_diag` directly or use the drivers in
+> [`examples/gdb/`](examples/gdb/README.md).
 
 **Note:** Requires [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) with distributed (SPMD) support — `diagonalize_fermionic_hamiltonian` calling `sci_solver` on every MPI rank. This is available in `qiskit-addon-sqd` version `0.13.1` or higher.
 
@@ -253,11 +278,24 @@ results = sbd.gdb_diag(fcidump, det, sbd_data,
 spin-beta orbital `i`. The determinants must be distinct; they are sorted into
 SBD's canonical order internally, which `sort_bitarray` reproduces.
 
+`det` may be a single `(ndets, words)` array or **this rank's shard of one**:
+`sbd_data.b_comm_size` decides which. At `1` every rank passes the whole basis; above
+`1` every rank passes its own shard and the union over b_comm positions is the basis,
+which is the only way GDB's memory scales. Sharded runs carry further constraints —
+`t_comm_size ≤ b_comm_size`, their product dividing the rank count, a helper dimension
+of 1 on the Thrust backend, and shards that are globally sorted and disjoint. All are
+checked and raise rather than silently diagonalizing the wrong subspace. See
+[`examples/gdb/README.md`](examples/gdb/README.md) for the decomposition, the six
+determinant-placement schemes, and which returned values are replicated versus
+sharded.
+
 `gdb_diag` does not return the wavefunction amplitudes, because SBD's `gdb::diag`
-has no in-memory output for them. Passing `savename` makes SBD write them to
-`f"{savename}000000.bin"` instead: two `size_t` headers
-(`n_dets`, `words_per_det`), then `n_dets × words_per_det` `size_t` determinant
-words in canonical order, then `n_dets` `float64` amplitudes.
+has no in-memory output for them. Passing `savename` makes SBD write them instead, as
+one file per b_comm position — `f"{savename}{rank_b:06d}.bin"`, so just
+`…000000.bin` when `b_comm_size` is 1 and `b_comm_size` files otherwise, each holding
+only that shard. Each file is two `size_t` headers (`n_dets`, `words_per_det`), then
+`n_dets × words_per_det` `size_t` determinant words in canonical order, then `n_dets`
+`float64` amplitudes.
 
 The optional `device` parameter overrides the default set by `init()`.
 
