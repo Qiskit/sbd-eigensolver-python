@@ -35,10 +35,10 @@ wavefunction cut the subspace to 506.
 
 Seeds, so the same driver produces every row of a seed comparison:
 
-    --seed files       determinant files (default: upstream's four Fe4S4 files)
-    --seed hf          the Hartree-Fock determinant alone, the no-input null
-    --seed from-alpha  an alpha list interleaved with itself (a TPB-shaped space)
-    --seed strings     an arbitrary bitstring file, e.g. sampled configurations
+    --subspace-from files       determinant files (default: upstream's four Fe4S4 files)
+    --subspace-from hf          the Hartree-Fock determinant alone, the no-input null
+    --subspace-from from-alpha  an alpha list interleaved with itself (a TPB-shaped space)
+    --subspace-from strings     an arbitrary bitstring file, e.g. sampled configurations
 
 Usage:
     # Fe4S4 from upstream's shipped subspace, one cutoff
@@ -48,7 +48,7 @@ Usage:
     python run_gdb_heatbath.py --cutoffs 1e-3,1e-4,1e-5 --max_dim 2000000
 
     # The null hypothesis: no input subspace at all, just Hartree-Fock
-    python run_gdb_heatbath.py --seed hf --cutoffs 1e-3,1e-4
+    python run_gdb_heatbath.py --subspace-from hf --cutoffs 1e-3,1e-4
 
     # Sharded across 4 ranks/GPUs. At --b_comm_size == ranks with t=1 the
     # expansion comes back already sharded for the next round, no gather needed.
@@ -88,10 +88,7 @@ def parse_args():
                        help='FCIDUMP file defining the Hamiltonian')
 
     # --- the seed ---------------------------------------------------------
-    # --seed is the old spelling, kept working but deprecated: run_gdb_diag.py uses
-    # --seed for the integer RNG seed of its random initial vector, so the same flag
-    # meant two incompatible things across the two drivers.
-    parser.add_argument('--subspace-from', '--seed', default='files',
+    parser.add_argument('--subspace-from', default='files',
                        dest='subspace_from',
                        choices=['files', 'hf', 'from-alpha', 'strings'],
                        help='Where the starting subspace comes from')
@@ -158,17 +155,7 @@ def parse_args():
     parser.add_argument('--log', default='', metavar='FILE',
                        help='Write the per-round (dimension, energy) series as JSON')
 
-    args = parser.parse_args()
-
-    # argparse's own `deprecated=` needs Python 3.13, and this supports 3.10, so
-    # detect the old spelling in argv instead. Warn rather than fail: --seed still
-    # works, it is only ambiguous across the two drivers.
-    if any(a == '--seed' or a.startswith('--seed=') for a in sys.argv[1:]):
-        print("NOTE: --seed is deprecated here and will be removed; use "
-              "--subspace-from. run_gdb_diag.py uses --seed for its integer RNG "
-              "seed, so the same flag meant two different things.", file=sys.stderr)
-
-    return args
+    return parser.parse_args()
 
 
 def read_strings(paths):
@@ -194,7 +181,7 @@ def interleave(alpha, beta):
 def hartree_fock_string(norb, nelec, ms2):
     """The Hartree-Fock determinant: the lowest orbitals doubly occupied.
 
-    Built from the FCIDUMP header alone, so ``--seed hf`` needs no input subspace at
+    Built from the FCIDUMP header alone, so ``--subspace-from hf`` needs no input subspace at
     all. That is the point of it: if expansion from HF reaches the same place as
     expansion from a sampled subspace, the sampling added nothing.
     """
@@ -229,7 +216,7 @@ def build_seed(args, sbd, norb, nelec, ms2, rank):
         source = f"Hartree-Fock determinant ({nelec} electrons, MS2={ms2})"
     elif args.subspace_from == 'from-alpha':
         if not args.alpha_file:
-            raise ValueError("--seed from-alpha requires --alpha-file")
+            raise ValueError("--subspace-from from-alpha requires --alpha-file")
         alpha = read_strings([args.alpha_file])
         if args.alpha_limit:
             alpha = alpha[:args.alpha_limit]

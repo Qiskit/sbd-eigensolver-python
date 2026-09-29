@@ -249,28 +249,3 @@ def test_both_drivers_accept_either_alpha_flag_spelling(alpha_flag):
     ]))
     assert _dimension(stdout) == 576
     assert _energy(stdout) == pytest.approx(H2O_576_ENERGY, abs=1e-8)
-
-
-def test_heatbath_still_accepts_the_deprecated_seed_flag(tmp_path):
-    """``--seed`` keeps working, and says it is on the way out.
-
-    It is the old spelling of ``--subspace-from``, renamed because
-    ``run_gdb_diag.py`` uses ``--seed`` for an integer RNG seed -- the same flag
-    taking a string here and an int there. Kept working so existing commands do
-    not break; warned about so they get updated.
-    """
-    _require(H2O_DIR / "h2o-1em3-alpha.txt")
-    log = tmp_path / "ladder.json"
-    completed = _run("run_gdb_heatbath.py", [
-        "--fcidump", str(H2O_DIR / "fcidump.txt"),
-        "--seed", "from-alpha",
-        "--alpha-file", str(H2O_DIR / "h2o-1em3-alpha.txt"),
-        "--alpha-limit", str(TINY_ALPHA_LIMIT),
-        "--cutoffs", "1e-3", "--max_rounds", "1",
-        "--log", str(log),
-    ])
-    _assert_ok(completed)
-    assert "--seed is deprecated" in completed.stderr, (
-        f"no deprecation notice:\n{completed.stderr[-2000:]}"
-    )
-    assert json.loads(log.read_text())["rounds"][0]["dimension"] == TINY_ALPHA_LIMIT ** 2

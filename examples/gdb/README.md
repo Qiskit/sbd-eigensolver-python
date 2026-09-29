@@ -101,9 +101,9 @@ python run_gdb_heatbath.py --cutoffs 1e-3,1e-4 --log ladder.json
 Input flags match `run_gdb_diag.py`: `--fcidump`, `--detfiles` and `--alpha-limit` are
 spelled and defaulted identically, and the alpha list is accepted as either
 `--alpha-file` or `--from-alpha` by both drivers, so a command that feeds one its data
-feeds the other. The one flag that is *not* shared is `--seed`, which in
-`run_gdb_diag.py` is the integer RNG seed for a random initial vector; this driver's
-equivalent is `--subspace-from` (`--seed` still works here but warns, and will go).
+feeds the other. The one flag that is *not* shared is `--seed`: in
+`run_gdb_diag.py` it is the integer RNG seed for a random initial vector, and this
+driver has none — `--subspace-from` selects the starting subspace and is unrelated.
 
 Seed — where the starting subspace comes from:
 
