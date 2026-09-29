@@ -28,9 +28,7 @@ import pytest
 # So a missing file means a broken checkout or a move that did not update this file, and
 # the tests should fail and say so rather than skip and report success.
 DATA_DIR = Path(__file__).resolve().parents[1] / "vendor" / "sbd-upstream" / "data"
-COUNTS_PATH = (
-    Path(__file__).resolve().parents[1] / "python" / "examples" / "count_dict_h2o.json"
-)
+COUNTS_PATH = Path(__file__).resolve().parents[1] / "examples" / "tpb" / "count_dict_h2o.json"
 
 
 # Slow tests are opt-in through a command-line flag rather than excluded by default,
