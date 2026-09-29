@@ -228,31 +228,35 @@ and replaces the determinant communicators with a single basis communicator:
 
 | Attribute | Default | Description |
 |-----------|---------|-------------|
-| `b_comm_size` | 1 | Basis communicator size — must be 1 for `gdb_diag`, see below |
-| `t_comm_size` | 1 | Task communicator size — must be 1 while `b_comm_size` is, see below |
+| `b_comm_size` | 1 | Basis communicator size, i.e. how many shards the determinant list is split into — the only dimension that divides memory |
+| `t_comm_size` | 1 | Task communicator size — must not exceed `b_comm_size`, see below |
 | `seed` | 1729 | Seed for the initial vector |
 | `heatbath_cutoff` | 1e-4 | Heatbath expansion cutoff |
 | `heatbath_truncation` | 0.0 | Weight truncation applied before heatbath expansion |
 | `heatbath_batch_size` | 200000000 | Heatbath expansion batch size |
 
-**Why both must be 1**, since the two constraints have different owners:
+**How the three GDB dimensions relate**, and whose constraint each one is:
 
-`b_comm_size == 1` is a limitation of *this wrapper*, not of SBD. Upstream's in-memory
-`gdb::diag` expects each rank to pass **its own shard** of the determinant list — that
-is what upstream's file-based entry point hands it, after distributing determinant
-files across `b_comm`. This wrapper passes the whole list from every rank, which is
-only consistent with a single basis block, so it rejects anything else rather than
-have each rank diagonalize the full subspace while believing it held a shard. Upstream
-itself runs with a split basis: its own `run.sh` for the GDB app passes
-`--b_comm_size 2`.
+`b_comm_size` splits the determinant list across ranks and is the only dimension that
+divides memory — the other two divide work. Above 1, every rank passes its own shard
+rather than the whole list (see `gdb_diag` below). It was pinned to 1 before this
+wrapper could shard an in-memory list; upstream never required it, and its own `run.sh`
+for the GDB app runs `--b_comm_size 2` through the file-based path.
 
-`t_comm_size == 1` then follows from *upstream's* algorithm rather than from us. GDB's
+`t_comm_size ≤ b_comm_size` is *upstream's* algorithm, not a wrapper choice. GDB's
 matrix-vector product rotates the ket around `b_comm` as a ring, so there are exactly
-`b_comm_size` ring stations and one "task" is one station — meaning `t_comm_size`
-cannot exceed `b_comm_size`. With the basis in a single block there is a single task.
+`b_comm_size` ring stations and one "task" is one station — there cannot be more task
+ranks than stations. Upstream does not check this, and exceeding it faults inside
+helper construction, so `gdb_diag` rejects it up front.
 
-Ranks are not wasted in the meantime: the derived helper dimension,
-`ranks / (t_comm_size × b_comm_size)`, absorbs them and does not change the energy.
+`t_comm_size × b_comm_size` must divide the rank count exactly. The helper dimension is
+the quotient, `ranks / (t_comm_size × b_comm_size)`; it is derived rather than settable
+and divides work without dividing memory. On the Thrust backend it must be 1, because
+the GPU kernels never implemented that dimension — which is why more than one GPU
+requires `b_comm_size > 1`.
+
+See [`examples/gdb/README.md`](examples/gdb/README.md) for the shard contract, the six
+determinant-placement schemes and worked rank layouts.
 
 ### Diagonalization
 
