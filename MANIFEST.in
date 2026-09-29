@@ -18,3 +18,4 @@ include vendor/sbd-upstream/LICENSE.txt
 # Example scripts and notebook, referenced by the README.
 recursive-include examples *.py *.ipynb *.md *.json
 include python/examples/README.md
+include INSTALL.md
