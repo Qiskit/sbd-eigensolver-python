@@ -249,3 +249,88 @@ def test_both_drivers_accept_either_alpha_flag_spelling(alpha_flag):
     ]))
     assert _dimension(stdout) == 576
     assert _energy(stdout) == pytest.approx(H2O_576_ENERGY, abs=1e-8)
+
+
+# --- spin-weight validation ---------------------------------------------------
+
+COUNTS_FILE = REPO_ROOT / "examples" / "tpb" / "count_dict_h2o.json"
+
+
+def _interleave(alpha: str, beta: str) -> str:
+    """Bit 2*i alpha orbital i, bit 2*i+1 beta orbital i, counting from the right.
+
+    Spelled out here rather than imported from the driver so the test does not
+    agree with the code under test by construction.
+    """
+    a, b = alpha[::-1], beta[::-1]
+    return "".join(a[i] + b[i] for i in range(len(a)))[::-1]
+
+
+def _counts_as_files(tmp_path):
+    """The bundled counts file written both correctly and incorrectly.
+
+    qiskit-addon-sqd emits ``[beta | alpha]`` concatenated; GDB wants the two
+    interleaved. The "wrong" file is that raw concatenation, which is the mistake
+    a first conversion actually makes.
+    """
+    counts = json.loads(COUNTS_FILE.read_text())
+    norb = len(next(iter(counts))) // 2
+    right = sorted({_interleave(k[norb:], k[:norb]) for k in counts})
+    wrong = sorted(set(counts))
+    good, bad = tmp_path / "right.txt", tmp_path / "wrong.txt"
+    good.write_text("\n".join(right) + "\n")
+    bad.write_text("\n".join(wrong) + "\n")
+    return good, bad
+
+
+def _heatbath_on(strings_file, tmp_path, extra=()):
+    return _run("run_gdb_heatbath.py", [
+        "--fcidump", str(H2O_DIR / "fcidump.txt"),
+        "--subspace-from", "strings", "--strings-file", str(strings_file),
+        "--cutoffs", "1e-3", "--max_rounds", "1",
+        "--log", str(tmp_path / "ladder.json"), *extra,
+    ])
+
+
+def test_interleaved_counts_are_accepted(tmp_path):
+    """The documented conversion of a counts file must run."""
+    _require(COUNTS_FILE)
+    _require(H2O_DIR / "fcidump.txt")
+    good, _ = _counts_as_files(tmp_path)
+    _assert_ok(_heatbath_on(good, tmp_path))
+    rounds = json.loads((tmp_path / "ladder.json").read_text())["rounds"]
+    assert rounds[0]["dimension"] == 275
+
+
+def test_concatenated_counts_are_refused_with_a_diagnosis(tmp_path):
+    """Feeding [beta | alpha] straight through must be caught before it is solved.
+
+    Without the check this diagonalizes to a plausible-looking energy and only
+    aborts later inside the heatbath expansion with std::out_of_range, so the
+    failure gave no hint of its cause. The occupation density cannot catch it
+    either: permuting bits preserves how many are set.
+    """
+    _require(COUNTS_FILE)
+    _require(H2O_DIR / "fcidump.txt")
+    _, bad = _counts_as_files(tmp_path)
+    completed = _heatbath_on(bad, tmp_path)
+    assert completed.returncode != 0, "mis-ordered determinants were accepted"
+    combined = completed.stdout + completed.stderr
+    assert "do not have 5 alpha and 5 beta electrons" in combined, combined[-2000:]
+    assert "INTERLEAVED" in combined, "the message should name the likely cause"
+
+
+def test_skip_weight_check_bypasses_the_validation(tmp_path):
+    """The escape hatch must skip the check, not merely survive it.
+
+    Asserted by the absence of the refusal: the run still fails downstream, since
+    the determinants really are malformed, but it fails in SBD rather than here.
+    """
+    _require(COUNTS_FILE)
+    _require(H2O_DIR / "fcidump.txt")
+    _, bad = _counts_as_files(tmp_path)
+    completed = _heatbath_on(bad, tmp_path, extra=("--skip-weight-check",))
+    combined = completed.stdout + completed.stderr
+    assert "do not have 5 alpha and 5 beta electrons" not in combined, (
+        "--skip-weight-check did not skip the check"
+    )

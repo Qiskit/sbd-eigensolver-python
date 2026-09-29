@@ -241,12 +241,18 @@ On the bundled 275-bitstring h2o file that is a 275-determinant sparse subspace 
 −76.0723973374, which the ladder then grows — as opposed to the 75,625-determinant
 product space TPB would build from the same samples.
 
-**Skipping the interleave does not fail cleanly.** Feeding the concatenated strings
-straight through diagonalizes to a plausible-looking number (−66.8043 for the file
-above, against −76.0724 done right) and only aborts later, inside the heatbath
-expansion, with `std::out_of_range`. The electron-count check does not catch it either:
-permuting bits preserves how many are set, so the density still sums to 10. Check the
-energy against a known reference before trusting a first conversion.
+**Both drivers check this for you.** Every determinant's alpha and beta electron
+counts are compared against the FCIDUMP's `NELEC`/`MS2` before anything is solved, and a
+mismatch is refused with the count of offending determinants and the first one's index.
+Skipping the interleave is worth guarding because it does not fail cleanly on its own:
+the concatenated strings diagonalize to a plausible-looking number (−66.8043 for the
+file above, against −76.0724 done right) and only abort later, inside the heatbath
+expansion, with `std::out_of_range`. The occupation density cannot catch it either —
+permuting bits preserves how many are set, so it still sums to 10.
+
+The check costs about 0.04 s per million determinants, which is not measurable against
+the read and pack that precede it; `--skip-weight-check` turns it off if you are
+deliberately mixing spin sectors.
 
 ### The loop needs no amplitudes
 

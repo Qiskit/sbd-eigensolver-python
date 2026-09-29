@@ -76,6 +76,68 @@ _DEFAULT_FCIDUMP = f"{_GDB_APP}/fcidump_Fe4S4.txt"
 _DEFAULT_DETFILES = ",".join(f"{_GDB_APP}/det{i}.txt" for i in range(4))
 
 
+# One 256-entry popcount table, applied to the packed determinant words by viewing
+# them as bytes. numpy.bitwise_count would be ~9x faster but needs numpy 2.0, and
+# this package's floor is 1.19; at 0.018 s per million determinants the table is
+# already a ~6% addition to the read-and-pack this replaces nothing of.
+_POPCOUNT = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
+
+# Interleaved layout: alpha sits on the even bit positions, beta on the odd ones.
+_ALPHA_MASK = np.uint64(0x5555555555555555)
+_BETA_MASK = np.uint64(0xAAAAAAAAAAAAAAAA)
+
+
+def _popcount_rows(words):
+    """Bits set per row of a (n, words) uint64 array."""
+    return _POPCOUNT[words.view(np.uint8)].reshape(words.shape[0], -1).sum(
+        axis=1, dtype=np.int64)
+
+
+def spin_weights(det):
+    """Per-determinant (n_alpha, n_beta) for a packed interleaved determinant array."""
+    words = np.ascontiguousarray(det, dtype=np.uint64)
+    if words.ndim == 1:
+        words = words.reshape(1, -1)
+    return _popcount_rows(words & _ALPHA_MASK), _popcount_rows(words & _BETA_MASK)
+
+
+def check_spin_weights(det, nelec, ms2, bit_length=64):
+    """Refuse a determinant list whose electron counts per spin are not uniform.
+
+    A wrong bit order is the failure this catches, and it is worth catching here
+    because it does not fail cleanly downstream: concatenated ``[beta | alpha]``
+    strings (what qiskit-addon-sqd emits) diagonalize to a plausible-looking
+    energy and only abort later inside the heatbath expansion. The occupation
+    density cannot catch it either, since permuting bits preserves how many are
+    set, so it still sums to the right electron count.
+
+    Costs about 0.018 s per million determinants -- a few percent of the read and
+    pack that precede it.
+    """
+    if bit_length != 64:
+        return  # the masks above assume 64-bit words
+    want_a = (nelec + ms2) // 2
+    want_b = nelec - want_a
+    got_a, got_b = spin_weights(det)
+    bad = (got_a != want_a) | (got_b != want_b)
+    n_bad = int(bad.sum())
+    if not n_bad:
+        return
+    first = int(np.argmax(bad))
+    raise ValueError(
+        f"{n_bad} of {len(bad)} determinants do not have {want_a} alpha and "
+        f"{want_b} beta electrons (first at index {first}: "
+        f"{int(got_a[first])} alpha, {int(got_b[first])} beta).\n"
+        "  The usual cause is bit order: GDB expects alpha and beta INTERLEAVED "
+        "(bit 2*i alpha orbital i, bit 2*i+1 beta orbital i), while "
+        "qiskit-addon-sqd emits them CONCATENATED as [beta | alpha]. Interleave "
+        "before packing -- see examples/gdb/README.md.\n"
+        "  The other cause is samples that were never postselected on the target "
+        "Hamming weight.\n"
+        "  Pass --skip-weight-check to proceed anyway."
+    )
+
+
 def parse_args():
     """Parse command line arguments for all GDB_SBD parameters."""
     parser = argparse.ArgumentParser(
@@ -90,6 +152,13 @@ def parse_args():
                             "so GDB runs on the host there")
 
     # --- input ------------------------------------------------------------
+    parser.add_argument('--skip-weight-check', action='store_true',
+                       dest='skip_weight_check',
+                       help='Do not verify that every determinant has the expected '
+                            'alpha/beta electron count. The check costs about '
+                            '0.02 s per million determinants and catches a wrong '
+                            'bit order, which otherwise returns a plausible wrong '
+                            'energy with no error at all')
     parser.add_argument('--fcidump', default=_DEFAULT_FCIDUMP,
                        help='FCIDUMP file defining the Hamiltonian')
     parser.add_argument('--detfiles', default=_DEFAULT_DETFILES,
@@ -260,6 +329,7 @@ def main():
     fcidump = sbd.LoadFCIDump(args.fcidump)
     norb = int(fcidump.header["NORB"])
     nelec = int(fcidump.header["NELEC"])
+    ms2 = int(fcidump.header.get("MS2", 0))
     total_bits = 2 * norb
 
     b_size = args.b_comm_size
@@ -331,6 +401,12 @@ def main():
     if det.shape[0] == 0:
         print("ERROR: no determinants read", file=sys.stderr)
         return 1
+    if not args.skip_weight_check:
+        try:
+            check_spin_weights(det, nelec, ms2, args.bit_length)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
     words = det.shape[1]
 
     config = sbd.GDB_SBD()
