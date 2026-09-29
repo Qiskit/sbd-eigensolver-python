@@ -272,10 +272,34 @@ picked (`Found amdclang++ in PATH: …` / `Found NVIDIA HPC SDK at: …`) and, f
 the offload backend, the resolved architecture; on a host with both toolchains
 force the choice with `SBD_GPU_VENDOR=amd|nvidia`.
 
-**MPI errors:** Verify `MPI_HOME`, check `python -c "from mpi4py import MPI; print(MPI.Get_version())"`.
+**`MPI_HOME=... is not the MPI that mpi4py is linked against`:** the build stops here
+deliberately rather than producing extensions that link one MPI while `mpi4py` loads
+another — a mismatch that surfaces later as undefined symbols or a hang inside the first
+collective. `MPI_HOME` is only for layouts the build cannot infer; unset it to use
+`mpi4py`'s own MPI, or reinstall `mpi4py` against the MPI you want
+(`pip install --no-binary :all: mpi4py`). To see which MPI that is:
+`python -c "from mpi4py import MPI; print(MPI.Get_library_version())"`.
 
-**OMP-offload runs all land on GPU 0 in multi-GPU jobs:** symptom — every MPI rank shows large memory only on GPU 0 in `nvidia-smi` (or `rocm-smi`). The bindings call `omp_set_default_device(mpi_rank % n_dev)`, but `omp_get_num_devices()` can return 0 in some dlopen scenarios. The bindings fall back to counting the entries in the vendor's device-visibility variable — `CUDA_VISIBLE_DEVICES` on NVIDIA, `ROCR_VISIBLE_DEVICES` or `HIP_VISIBLE_DEVICES` on AMD — so make sure the relevant one is exported and lists all your GPUs (e.g. `0,1,2,3`). Slurm/`srun --gres=gpu:N` and OpenMPI's default binding policy already do this; if you've custom-restricted it to a single GPU per rank, set it manually before launch.
+**`OMP: Error #15: Initializing libomp.dylib, but found libomp.dylib already
+initialized` on macOS:** two copies of the same LLVM OpenMP runtime in one process. It
+aborts at the first parallel region, so the import succeeds and the first
+diagonalization dies. Usually it means the environment provides `libomp` twice — for
+example Homebrew `llvm` *and* Homebrew `libomp`, or a Homebrew copy alongside the conda
+env's. Build against one only; the conda env's is the one loaded at import time, so
+prefer it. Tracked as
+[issue #27](https://github.com/Qiskit/sbd-eigensolver-python/issues/27).
+
+**OMP-offload runs all land on GPU 0 in multi-GPU jobs:** symptom — every MPI rank shows large memory only on GPU 0 in `nvidia-smi` (or `rocm-smi`). The bindings call `omp_set_default_device(mpi_rank % n_dev)`, but `omp_get_num_devices()` can return 0 in some dlopen scenarios. The bindings fall back to counting the entries in the vendor's device-visibility variable — `CUDA_VISIBLE_DEVICES` on NVIDIA, `ROCR_VISIBLE_DEVICES` or `HIP_VISIBLE_DEVICES` on AMD — so make sure the relevant one is exported and lists all your GPUs (e.g. `0,1,2,3`). Slurm/`srun --gres=gpu:N` and OpenMPI's default binding policy already do this; if you've custom-restricted it to a single GPU per rank, set it manually before launch. Note the index is the **global** MPI rank, not a node-local one, so the assignment is even only when the launcher places ranks on nodes in contiguous blocks — round-robin placement leaves each node using a strided subset of its GPUs.
 
 **Ranks die with `Bus error` or `SIGSEGV` inside the MPI's own copy path** (`MPIR_Localcopy`, `ucp_worker_progress`, ...) **on a GPU backend:** the MPI is not GPU-aware and was handed a device pointer. Rebuild UCX `--with-cuda` / `--with-rocm`, and confirm with `ucx_info -d | grep -i 'Transport: cuda'` (or `rocm`). Two things mislead here. A partly GPU-aware stack fails in only one place: an MPICH with GPU support *disabled* over a CUDA-aware UCX ran OMP-offload fine and crashed only in Thrust, because the inter-rank path went through UCX while the local-copy path did not. And on AMD a non-ROCm-aware MPI does not crash at all — ROCm maps device memory into the process address space, so the host copy succeeds and merely stages everything through the host aperture (measured on MI250X, XNACK off, 8 ranks) — so a working AMD run is not evidence that the MPI is ROCm-aware.
+
+**`GDB Thrust mult does not support h_comm_size > 1` from `gdb_diag` on more than one
+rank:** GDB's Thrust kernels never implemented the helper dimension, and the helper
+dimension is `ranks / (t_comm_size × b_comm_size)`. Since `gdb_diag` requires
+`b_comm_size == 1` (see [Configuration](#configuration)), which forces `t_comm_size` to
+1, every rank you add lands in the helper dimension — so GPU GDB is limited to a single
+rank in this release. Run GDB on one GPU, or on the CPU backend, where the helper
+dimension is unconstrained. TPB is unaffected and shards over `adet_comm_size` /
+`bdet_comm_size` as usual.
 
 **Repository:** https://github.com/Qiskit/sbd-eigensolver-python
