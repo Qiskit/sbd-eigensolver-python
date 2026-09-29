@@ -6,9 +6,7 @@ Cartesian product of an alpha and a beta list that TPB uses. TPB's dimension is
 makes it the right solver for an arbitrary sparse subspace — a set of sampled
 bitstrings used *as sampled*, with no product completion.
 
-For backend selection, `--device` values and bundled test data, see
-[`../README.md`](../README.md). For TPB and the SQD loops, see
-[`../tpb/README.md`](../tpb/README.md).
+For TPB and the SQD loops, see [`../tpb/README.md`](../tpb/README.md).
 
 ## run_gdb_diag.py — standalone GDB diagonalization
 
@@ -274,6 +272,28 @@ For Fe4S4 the four shipped files are already the balanced globally-sorted split
 `--b_comm_size 4` the driver hands file *i* to shard *i* and `input` placement is
 already count-balanced.
 
+### Choosing a backend
+
+`--device` selects the compute backend per run:
+
+```bash
+--device cpu       # host OpenMP (default)
+--device gpu       # NVHPC Thrust, NVIDIA only -- the only GPU backend with GDB kernels
+--device gpu-omp   # OpenMP target offload; compiles for GDB but has no GDB kernels
+--device auto      # GPU if one is available, else CPU
+```
+
+`sbd.available_backends()` reports what this install actually built — a static scan, so
+it is safe to call outside `mpirun` — and `sbd.loaded_backends()` reports what the
+current process has imported.
+
+One interaction to know about: **`'cpu'` and `'gpu-omp'` must not be used in the same
+process.** Both link the same OpenMP runtime and the CPU module is built without offload
+support, so whichever loads first initializes that runtime; if it is the CPU backend, the
+offload backend can no longer acquire a device and silently runs on the host — right
+answers, exit 0, idle GPU. `'cpu'` and `'gpu'` (Thrust) coexist fine, since Thrust does
+not route device work through OpenMP.
+
 ### On GPUs
 
 GDB has **Thrust kernels only** (`--device gpu`, NVIDIA). There is no `omp target`
@@ -314,6 +334,5 @@ return an uninitialized energy.
 
 ## See Also
 
-- [`../README.md`](../README.md) — backend selection, test data, performance tips
-- [`../tpb/README.md`](../tpb/README.md) — TPB and the SQD loops
+- [`../tpb/README.md`](../tpb/README.md) — TPB, the SQD loops, and the bundled test data
 - [Repository README](../../README.md) — installation, API reference
