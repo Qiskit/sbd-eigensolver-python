@@ -27,8 +27,9 @@ The extension modules are compiled on your machine â€” no wheels are published â
 backends you get depend on the toolchain the build finds. For the common CPU case:
 
 ```bash
-# an environment with a compiler, MPI and BLAS (plus llvm-openmp on macOS)
-conda create -n sbd -c conda-forge python=3.12 mpi4py openblas
+conda create -y -n sbd -c conda-forge \
+    python=3.13.12 pybind11 numpy setuptools wheel openblas pyscf pip mpi4py
+#   ...plus llvm-openmp on macOS
 conda activate sbd
 
 pip install sbd-eigensolver
