@@ -129,6 +129,21 @@ different sizes from the same cutoff, so a cutoff-matched comparison mostly repo
 subspace size rather than seed quality. `--max_dim` and the `--log` series are there
 for that.
 
+### The loop needs no amplitudes
+
+A natural question, since `gdb_diag` does not return the wavefunction: the ladder never
+needs it. The amplitudes are what drive the selection — weight truncation keeps
+determinants by `|c|`, and heatbath scoring is essentially `|c_i · H_ij|` — but SBD
+consumes them internally (`WeightTruncation` then `HeatbathExpansion`, which takes the
+coefficients as an input) and hands back only the expanded determinant list. That list
+is the next subspace, so the loop closes with nothing but determinants crossing the
+Python boundary.
+
+Where amplitudes *would* be needed is Python-side selection — deciding yourself which
+determinants to expand, as `../tpb/run_sqd_enlarge_subspace_sbd.py` does for TPB. For
+GDB that means reading them back from the per-shard `savename` files, since
+`gdb::diag` has no in-memory amplitude output.
+
 ### `--heatbath_truncation` is not the cutoff
 
 It discards **parents** by weight *before* expansion starts, and its default of 0
