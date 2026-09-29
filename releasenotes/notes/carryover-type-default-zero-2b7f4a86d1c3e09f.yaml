@@ -1,0 +1,14 @@
+---
+upgrade:
+  - |
+    :func:`sbd.sbd_solver.solve_sci` and
+    :func:`sbd.sbd_solver.solve_sci_batch` now configure SBD with
+    ``carryover_type = 0`` instead of ``1``. SBD's carryover is its own iterative
+    mechanism for choosing the next subspace, whereas an SQD loop selects the next
+    subspace itself from the returned amplitudes -- the solver discards SBD's
+    carryover lists entirely, so computing them was pure work, which for
+    ``carryover_type = 2`` includes building singles-extended determinant lists.
+
+    Energies are bit-identical across carryover types, so this is a speedup rather
+    than a change in results. Pass ``sbd_config={"carryover_type": 1}`` to restore
+    the previous setting.

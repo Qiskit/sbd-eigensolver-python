@@ -1,0 +1,16 @@
+---
+upgrade:
+  - |
+    The ``h_comm_size`` attribute has been removed from the ``TPB_SBD`` and
+    ``GDB_SBD`` configuration objects. Upstream SBD declares the field but never
+    reads it: ``diag()`` shadows it with a local
+    ``h_comm_size = mpi_size / (task_comm_size * base_comm_size)`` and passes that
+    to the determinant-basis communicator, so the attribute could only ever read
+    back as 1 and silently ignored whatever was assigned to it.
+
+    Code that assigns ``sbd_data.h_comm_size`` now raises ``AttributeError``.
+    Note also that an ``"h_comm_size"`` key in the ``sbd_config`` dictionary
+    accepted by :func:`sbd.sbd_solver.solve_sci` is now skipped without warning,
+    since unknown keys are ignored. To change the helper dimension of the MPI
+    grid, change the number of ranks or one of ``adet_comm_size``,
+    ``bdet_comm_size`` and ``task_comm_size``.
