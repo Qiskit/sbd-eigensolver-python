@@ -181,7 +181,7 @@ MPICC=$MPI_HOME/bin/mpicc python -m pip install --no-binary=mpi4py --no-cache-di
 # confirm which MPI mpi4py uses -- setup.py builds against exactly this
 python -c "from mpi4py import MPI; print(MPI.Get_library_version())"
 
-# only for the SQD examples (python/examples/run_sqd_sbd.py and .ipynb)
+# only for the SQD examples (examples/tpb/run_sqd_sbd.py and .ipynb)
 pip install "qiskit-addon-sqd>=0.13.1"
 
 # install sbd-eigensolver
@@ -213,14 +213,14 @@ The Thrust backend is stamped too (`cuda:cc90`); the CPU backend reports `None`.
 
 ## Examples
 
-Located in `python/examples/`:
+Located in [`examples/`](examples/README.md), organized by basis type since the
+solvers take different subspaces and decompose over MPI differently. Each folder's
+README is the authoritative list of what it contains and how to run it.
 
-- [`run_sbd_diag.py`](python/examples/run_sbd_diag.py) — Standalone TPB diagonalization (no Qiskit dependency)
-- [`run_sqd_sbd.ipynb`](python/examples/run_sqd_sbd.ipynb) — Jupyter Notebook SQD loop with SBD solver (random or hardware bitstrings)
-- [`run_sqd_sbd.py`](python/examples/run_sqd_sbd.py) — SQD loop with SBD solver (random or hardware bitstrings)
-- [`run_sqd_enlarge_subspace_sbd.py`](python/examples/run_sqd_enlarge_subspace_sbd.py) — SQD that also grows its own subspace between rounds via single excitations
-
-See [python/examples/README.md](python/examples/README.md) for usage details.
+- [`examples/tpb/`](examples/tpb/README.md) — tensor-product basis: standalone TPB
+  diagonalization, the SQD loops, and the subspace-enlargement driver.
+- [`examples/README.md`](examples/README.md) — backend selection, `--device` values,
+  bundled test data and performance notes, shared by all examples.
 
 ## Integration with qiskit-addon-sqd
 
@@ -255,9 +255,9 @@ result = diagonalize_fermionic_hamiltonian(
 )
 ```
 
-See [SQD Parameters](python/examples/README.md#sqd-parameters) for how each
+See [SQD Parameters](examples/tpb/README.md#sqd-parameters) for how each
 parameter feeds the loop, and
-[python/examples/run_sqd_sbd.py](python/examples/run_sqd_sbd.py) for a
+[examples/tpb/run_sqd_sbd.py](examples/tpb/run_sqd_sbd.py) for a
 complete example.
 
 qiskit-addon-sqd is the orchestrator in that recipe: it owns the loop
@@ -267,7 +267,7 @@ say in how the subspace grows between iterations.
 
 ### SQD with subspace enlargement
 
-[`run_sqd_enlarge_subspace_sbd.py`](python/examples/run_sqd_enlarge_subspace_sbd.py)
+[`run_sqd_enlarge_subspace_sbd.py`](examples/tpb/run_sqd_enlarge_subspace_sbd.py)
 builds on the same recipe, but grows its own subspace between rounds: after
 each solve, it expands the dominant determinant pairs via qiskit-addon-sqd's
 own `enlarge_batch_from_transitions` (same-spin single excitations, both
@@ -277,7 +277,7 @@ alpha and beta) and feeds the result forward as the next round's
 own outer Python loop, rather than delegating the whole multi-iteration loop
 to one call — that is what makes injecting a step between rounds possible.
 
-On the bundled H2O pool ([`count_dict_h2o.json`](python/examples/count_dict_h2o.json),
+On the bundled H2O pool ([`count_dict_h2o.json`](examples/tpb/count_dict_h2o.json),
 275 bitstrings), plain SQD reaches ≈ -76.236 Ha and stops there; this driver
 keeps going past that fixed pool on its own and converges to
 **-76.2421767512 Ha**.
