@@ -345,7 +345,23 @@ return an uninitialized energy.
 | `density`, `one_p_rdm`, `two_p_rdm` | replicated on every rank |
 | `carryover_det` | **this rank's shard**, as an `(n, words)` array. For `carryover_type` 1 it is split over `b_comm` *and duplicated* across the helper dimension, so gathering means one representative per `rank % b_comm_size`; for types 2 and 3 it is split over the world communicator with no duplication, so a plain allgather is correct |
 | `local_dim` / `global_dim` | determinants on this rank, and summed over `b_comm` |
-| `savename` | one file per shard, `f"{savename}{rank_b:06d}.bin"` — rank 0's file is not the whole wavefunction, and GDB has no combined matrix-form dump |
+| `savename` | optional, and off by default: writes the amplitudes to one file per shard rather than returning them — see below |
+
+### Getting the amplitudes, if you want them
+
+Usually you do not. `gdb::diag` has no in-memory output for the wavefunction, and
+nothing in the normal flow needs it: the energy, density and RDMs are returned directly,
+and a heatbath ladder takes its next subspace from `carryover_det` (see [The loop needs
+no amplitudes](#the-loop-needs-no-amplitudes)). GDB is also not wired into
+qiskit-addon-sqd, whose `SCIState` would be the usual consumer — that path is TPB-only.
+
+When you do want them — your own analysis, or a selection step written in Python — pass
+`savename` and read the files back. SBD writes one per b_comm position,
+`f"{savename}{rank_b:06d}.bin"`: a single `…000000.bin` at `b_comm_size 1`, otherwise
+`b_comm_size` files each holding only that shard, so no single file is the whole
+wavefunction. Each is two `size_t` headers (`n_dets`, `words_per_det`), then
+`n_dets × words_per_det` `size_t` determinant words in canonical order, then `n_dets`
+`float64` amplitudes.
 
 ## See Also
 

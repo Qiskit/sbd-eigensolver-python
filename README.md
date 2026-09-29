@@ -278,13 +278,11 @@ are checked, and raise rather than silently diagonalizing the wrong subspace.
 [`examples/gdb/README.md`](examples/gdb/README.md) has the shard contract, the
 placement schemes, and which returned values are replicated versus sharded.
 
-`gdb_diag` does not return the wavefunction amplitudes, because SBD's `gdb::diag`
-has no in-memory output for them. Passing `savename` makes SBD write them instead, as
-one file per b_comm position — `f"{savename}{rank_b:06d}.bin"`, so just
-`…000000.bin` when `b_comm_size` is 1 and `b_comm_size` files otherwise, each holding
-only that shard. Each file is two `size_t` headers (`n_dets`, `words_per_det`), then
-`n_dets × words_per_det` `size_t` determinant words in canonical order, then `n_dets`
-`float64` amplitudes.
+`gdb_diag` returns no wavefunction amplitudes — `gdb::diag` has no in-memory output for
+them — and for most uses none are needed: the energy, density and RDMs come back
+directly, and an iterative heatbath run gets its next subspace from `carryover_det`. If
+you do want the amplitudes, `savename` writes them to disk; the file layout is in
+[`examples/gdb/README.md`](examples/gdb/README.md).
 
 The optional `device` parameter overrides the default set by `init()`.
 
