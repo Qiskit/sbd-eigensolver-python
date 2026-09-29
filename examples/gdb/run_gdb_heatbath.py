@@ -321,8 +321,20 @@ def main():
         return 1
 
     def global_dim(local):
-        return comm.allreduce(int(local.shape[0]), op=MPI.SUM) \
-            if args.b_comm_size > 1 else int(local.shape[0])
+        """Determinants across the whole basis, counted once each.
+
+        Summing over the world communicator would over-count: ranks sharing a b_comm
+        position hold identical shards, so with t_comm_size or the helper dimension
+        above 1 each shard is counted once per replica. Contribute only from the ranks
+        that are one-per-b-position -- with the layout
+        ``rank = h*(b*t) + t_index*b + b_index``, those are exactly ranks
+        ``0 .. b_comm_size - 1`` -- which gives the b_comm sum without building a
+        sub-communicator.
+        """
+        if args.b_comm_size == 1:
+            return int(local.shape[0])
+        mine = int(local.shape[0]) if rank < args.b_comm_size else 0
+        return comm.allreduce(mine, op=MPI.SUM)
 
     # Collective: every rank must call it, so it cannot live inside a rank guard.
     # This deadlocks otherwise -- rank 0 waits in the allreduce while the others walk
