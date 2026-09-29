@@ -321,11 +321,11 @@ def init(device='cpu', comm_backend='mpi'):
 
     Args:
         device: Default compute device — 'cpu', 'gpu', 'gpu-omp', or 'auto'.
-                'gpu' is the NVIDIA-only Thrust backend; 'gpu-omp' is OpenMP
-                target offload and serves NVIDIA and AMD alike.
-                Aliases: 'gpu-thrust' / 'gpu-nvidia' / 'cuda' (= 'gpu');
-                         'gpu-omp-offload' / 'gpu-nvhpc-omp' / 'gpu-nvidia-omp' /
-                         'gpu-amd-omp' / 'gpu-rocm-omp' / 'rocm' (= 'gpu-omp').
+            'gpu' is the NVIDIA-only Thrust backend; 'gpu-omp' is OpenMP
+            target offload and serves NVIDIA and AMD alike.
+            Aliases for 'gpu': 'gpu-thrust', 'gpu-nvidia', 'cuda'.
+            Aliases for 'gpu-omp': 'gpu-omp-offload', 'gpu-nvhpc-omp',
+            'gpu-nvidia-omp', 'gpu-amd-omp', 'gpu-rocm-omp', 'rocm'.
         comm_backend: Communication backend — 'mpi'.
 
     Raises:
