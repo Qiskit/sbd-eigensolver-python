@@ -48,9 +48,6 @@ from a git checkout with the submodule, every environment variable the build rea
 (GPU toolchains, architectures, MPI and BLAS selection, narrowing which backends get
 built), building against an existing host MPI, and fuller verification.
 
-GPU backends need a **GPU-aware MPI** — CUDA-aware on NVIDIA, ROCm-aware on AMD —
-because every one of them hands MPI device pointers.
-
 ## Examples
 
 Located in [`examples/`](examples/README.md), organized by basis type since the
@@ -201,12 +198,31 @@ and replaces the determinant communicators with a single basis communicator:
 
 | Attribute | Default | Description |
 |-----------|---------|-------------|
-| `b_comm_size` | 1 | Basis communicator size (must be 1 for `gdb_diag`) |
-| `t_comm_size` | 1 | Task communicator size |
+| `b_comm_size` | 1 | Basis communicator size — must be 1 for `gdb_diag`, see below |
+| `t_comm_size` | 1 | Task communicator size — must be 1 while `b_comm_size` is, see below |
 | `seed` | 1729 | Seed for the initial vector |
 | `heatbath_cutoff` | 1e-4 | Heatbath expansion cutoff |
 | `heatbath_truncation` | 0.0 | Weight truncation applied before heatbath expansion |
 | `heatbath_batch_size` | 200000000 | Heatbath expansion batch size |
+
+**Why both must be 1**, since the two constraints have different owners:
+
+`b_comm_size == 1` is a limitation of *this wrapper*, not of SBD. Upstream's in-memory
+`gdb::diag` expects each rank to pass **its own shard** of the determinant list — that
+is what upstream's file-based entry point hands it, after distributing determinant
+files across `b_comm`. This wrapper passes the whole list from every rank, which is
+only consistent with a single basis block, so it rejects anything else rather than
+have each rank diagonalize the full subspace while believing it held a shard. Upstream
+itself runs with a split basis: its own `run.sh` for the GDB app passes
+`--b_comm_size 2`.
+
+`t_comm_size == 1` then follows from *upstream's* algorithm rather than from us. GDB's
+matrix-vector product rotates the ket around `b_comm` as a ring, so there are exactly
+`b_comm_size` ring stations and one "task" is one station — meaning `t_comm_size`
+cannot exceed `b_comm_size`. With the basis in a single block there is a single task.
+
+Ranks are not wasted in the meantime: the derived helper dimension,
+`ranks / (t_comm_size × b_comm_size)`, absorbs them and does not change the energy.
 
 ### Diagonalization
 
