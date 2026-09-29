@@ -98,6 +98,12 @@ python run_gdb_heatbath.py --cutoffs 1e-3,1e-4 --log ladder.json
 
 ### Parameters
 
+`--fcidump` and `--detfiles` are spelled and defaulted exactly as in `run_gdb_diag.py`,
+so a command that feeds one driver its data feeds the other. Two input flags do **not**
+carry over: the alpha list is `--alpha-file` here but `--from-alpha` there, and `--seed`
+means different things in the two drivers — here it selects where the subspace comes
+from, while in `run_gdb_diag.py` it is the integer RNG seed for a random initial vector.
+
 Seed — where the starting subspace comes from:
 
 | Parameter | What it controls | Default |
@@ -125,7 +131,7 @@ Solver, MPI and output — the same meanings as in `run_gdb_diag.py`:
 
 | Parameter | What it controls | Default |
 |---|---|---|
-| `--device` | `cpu`, `gpu` (Thrust, the only GPU backend with GDB kernels), `gpu-omp` (no GDB kernels — runs on the host), `auto` | `cpu` |
+| `--device` | `cpu` or `gpu` (Thrust) are the two real choices; `gpu-omp` and `auto` run GDB on the host, see [Choosing a backend](#choosing-a-backend) | `cpu` |
 | `--method` | 0=Davidson, 1=Davidson storing the Hamiltonian. GDB has no Lanczos | `0` |
 | `--tolerance` / `--iteration` / `--block` | Davidson residual tolerance, iteration cap, and basis-vector count. Also accepted as `--eps` / `--max_it` / `--max_nb`, matching SBD's own names | `1e-6` / `30` / `10` |
 | `--bit_length` | Bits per packed word | `64` |
@@ -355,9 +361,12 @@ already count-balanced.
 ```bash
 --device cpu       # host OpenMP (default)
 --device gpu       # NVHPC Thrust, NVIDIA only -- the only GPU backend with GDB kernels
---device gpu-omp   # OpenMP target offload; compiles for GDB but has no GDB kernels
---device auto      # GPU if one is available, else CPU
 ```
+
+`gpu-omp` and `auto` are accepted too, but for GDB neither is a GPU path: `gpu-omp` has
+no GDB kernels and silently diagonalizes on the host (the drivers warn), and `auto`
+prefers Thrust but falls back to `gpu-omp` where Thrust is not built — landing on the
+host as well. **For GDB, pick `cpu` or `gpu` explicitly.**
 
 `sbd.available_backends()` reports what this install actually built — a static scan, so
 it is safe to call outside `mpirun` — and `sbd.loaded_backends()` reports what the
