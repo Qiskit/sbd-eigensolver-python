@@ -26,7 +26,9 @@ constraints. Reach for GDB when the subspace is not a product.
   `'cpu'` (host OpenMP), `'gpu'` (NVHPC Thrust/CUDA, NVIDIA only) and
   `'gpu-omp'` (OpenMP target offload, **NVIDIA or AMD**). All the backends your
   toolchain supports can be built into one install; each is imported only when
-  first used
+  first used. **TPB runs on all three; GDB has Thrust kernels only**, so GDB on a
+  GPU is NVIDIA-only and under `'gpu-omp'` it falls back to the host — see
+  [`examples/gdb/README.md`](examples/gdb/README.md)
 - MPI parallelization
 - Integration with [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) for SQD workflows
 
