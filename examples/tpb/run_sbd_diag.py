@@ -107,7 +107,12 @@ def parse_args():
     
     # Initialization and options
     parser.add_argument('--init', type=int, default=0,
-                       help='Initialization method')
+                       help='Initialization method. 1 selects a random starting '
+                            'vector, which is the only mode --seed affects')
+    parser.add_argument('--seed', type=int, default=1729,
+                       help='Seed for the random starting vector (--init 1). Vary it '
+                            'to check whether a result depends on where the solver '
+                            'started; the converged energy should not')
     parser.add_argument('--shuffle', '--do_shuffle', type=int, default=0, dest='do_shuffle',
                        help='Shuffle determinants loaded from --adetfile before '
                             'mirroring/deriving beta from them (0=no, 1-4=yes, '
@@ -186,6 +191,7 @@ def main():
     config.max_nb = args.max_nb
     config.max_time = args.max_time
     config.init = args.init
+    config.seed = args.seed
     config.do_shuffle = args.do_shuffle
     config.do_rdm = 1 if args.rdm_output else 0
     config.bit_length = args.bit_length
