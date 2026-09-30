@@ -91,6 +91,9 @@ pip install -e . --no-build-isolation --force-reinstall --no-deps
 ```bash
 # --- NVIDIA GPU backends (Thrust and OpenMP target-offload): point at NVHPC.
 #     Only needed if nvc++ is not already on PATH. Adjust the path.
+#     Either the compilers directory or the version root above it works, and
+#     NVHPC_ROOT -- which NVIDIA's own modulefile sets to the version root -- is
+#     read too, so `module load nvhpc` alone is enough.
 export NVHPC_HOME=/opt/nvidia/hpc_sdk/Linux_x86_64/2025/compilers
 
 # --- AMD GPU backend (OpenMP target-offload): point at ROCm LLVM toolchain

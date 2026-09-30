@@ -265,7 +265,9 @@ The optional `device` parameter overrides the default set by `init()`.
 the build respects a caller-set compiler, so `nvc++`/`amdclang++` never run. Unset
 `CC`/`CXX`, or keep conda compilers out of the build env.
 
-**GPU not building:** On NVIDIA check `which nvc++` and set `NVHPC_HOME`. On AMD
+**GPU not building:** On NVIDIA check `which nvc++` and set `NVHPC_HOME` (or rely on
+`NVHPC_ROOT` from `module load nvhpc`; either the compilers directory or the version
+root works). On AMD
 check `which amdclang++` and set `ROCM_HOME`. The build prints which toolchain it
 picked (`Found amdclang++ in PATH: …` / `Found NVIDIA HPC SDK at: …`) and, for
 the offload backend, the resolved architecture; on a host with both toolchains
