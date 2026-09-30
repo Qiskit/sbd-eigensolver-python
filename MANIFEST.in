@@ -16,4 +16,5 @@ recursive-include vendor/sbd-upstream/include *.h
 include vendor/sbd-upstream/LICENSE.txt
 
 # Example scripts and notebook, referenced by the README.
-recursive-include python/examples *.py *.ipynb *.md
+recursive-include examples *.py *.ipynb *.md *.json
+include INSTALL.md
