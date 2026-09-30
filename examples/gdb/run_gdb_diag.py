@@ -138,6 +138,15 @@ def check_spin_weights(det, nelec, ms2, bit_length=64):
     )
 
 
+def looks_like_a_single_determinant(density, tolerance=1e-6):
+    """True when every occupancy is 0 or 1: a one-determinant wavefunction.
+
+    For a subspace of more than one determinant that means Davidson never iterated --
+    the start vector had no coupling to the rest, so the residual was zero at once.
+    """
+    return all(min(abs(x), abs(1.0 - x)) < tolerance for x in density)
+
+
 def parse_args():
     """Parse command line arguments for all GDB_SBD parameters."""
     parser = argparse.ArgumentParser(
@@ -491,6 +500,15 @@ def main():
     combined = [density[2 * i] + density[2 * i + 1] for i in range(len(density) // 2)]
     print(f"Density: {np.round(combined, 6).tolist()}")
     print(f"  (sums to {sum(combined):.6f}; should equal the electron count {nelec})")
+    if results["global_dim"] > 1 and looks_like_a_single_determinant(density):
+        print("  WARNING: every occupancy is 0 or 1, so the wavefunction is a single "
+              "determinant")
+        print("  and Davidson did not iterate (look for 'tol=0' above). The energy is "
+              "a diagonal")
+        print("  element -- a valid upper bound, not the subspace's ground state. "
+              "Expanding the")
+        print("  subspace once (--carryover_type 2) gives Davidson something to "
+              "couple.")
 
     carryover = results['carryover_det']
     if args.carryover_type:

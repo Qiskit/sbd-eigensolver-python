@@ -81,11 +81,13 @@ new candidates, so one round's result **is** the next round's subspace.
 # Fe4S4 from upstream's shipped subspace (the default data above), one cutoff
 python run_gdb_heatbath.py --cutoffs 1e-3
 
-# A ladder, stopping before the subspace passes 2M determinants
+# A ladder, stopping before the subspace passes 2M determinants. The last cutoff
+# dominates the cost, so --max_dim is the brake.
 python run_gdb_heatbath.py --cutoffs 1e-3,1e-4,1e-5 --max_dim 2000000
 
-# The no-input null: start from the Hartree-Fock determinant alone
-python run_gdb_heatbath.py --subspace-from hf --cutoffs 1e-3,1e-4
+# The no-input null: the Hartree-Fock determinant alone. Run it serially -- one
+# determinant cannot be sharded.
+OMP_NUM_THREADS=48 python run_gdb_heatbath.py --subspace-from hf --cutoffs 1e-3,1e-4
 
 # Sharded. At --b_comm_size == ranks with t=1 the expansion comes back already
 # sharded for the next round, so nothing has to be gathered.
@@ -170,6 +172,13 @@ The energy is variational, so it must fall monotonically; the driver flags a ris
 which would mean the subspace shrank or a round failed to converge. For h2o and n2 the
 FCI limits in that basis (−76.24377680 and −109.04874199) are hard ceilings a correct
 run can never cross, which makes a sparse run self-checking even without a reference.
+
+### What the rungs cost
+
+Each rung's expansion is much larger than the one before, so the last cutoff you name
+dominates the run — a rung is reachable or not rather than merely slow, since past some
+point the expansion outgrows what can be diagonalized. `--max_dim` is what makes that a
+clean stop with a `stop_reason` instead of running out of memory mid-round.
 
 ### Seeds
 

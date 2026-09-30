@@ -162,7 +162,17 @@ def parse_args():
     parser.add_argument('--log', default='', metavar='FILE',
                        help='Write the per-round (dimension, energy) series as JSON')
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # One determinant cannot be sharded: rank 0 owns it, the rest get empty shards,
+    # and a single parent gives OpenMP nothing to divide either.
+    if args.subspace_from == 'hf' and args.b_comm_size > 1:
+        print("WARNING: --subspace-from hf is a single determinant, so "
+              f"--b_comm_size {args.b_comm_size} leaves the", file=sys.stderr)
+        print("  other ranks with empty shards and runs the first rounds on one "
+              "core. Use -np 1.", file=sys.stderr)
+
+    return args
 
 
 def read_strings(paths):
@@ -245,6 +255,15 @@ def check_spin_weights(det, nelec, ms2, bit_length=64):
         "Hamming weight.\n"
         "  Pass --skip-weight-check to proceed anyway."
     )
+
+
+def looks_like_a_single_determinant(density, tolerance=1e-6):
+    """True when every occupancy is 0 or 1: a one-determinant wavefunction.
+
+    For a subspace of more than one determinant that means Davidson never iterated --
+    the start vector had no coupling to the rest, so the residual was zero at once.
+    """
+    return all(min(abs(x), abs(1.0 - x)) < tolerance for x in density)
 
 
 def hartree_fock_string(norb, nelec, ms2):
@@ -492,6 +511,14 @@ def main():
                 shown = "" if delta is None else f"{delta:+.6f}"
                 print(f"  {rung:>4} {round_index:>5} {dim:>12} {energy:>18.10f} "
                       f"{shown:>12} {elapsed:>7.1f}", flush=True)
+            # Only the seed round can be a no-op; after that the subspace contains
+            # its own excitation neighbours.
+            if (rank == 0 and rung == 0 and round_index == 0 and dim > 1
+                    and looks_like_a_single_determinant(result["density"])):
+                print("  NOTE: the seed diagonalization returned a single "
+                      "determinant, so Davidson did")
+                print("  not iterate there -- the ladder effectively starts from one "
+                      "determinant.", flush=True)
             history.append({
                 "rung": rung, "cutoff": cutoff, "round": round_index,
                 "dimension": dim, "energy": energy,
