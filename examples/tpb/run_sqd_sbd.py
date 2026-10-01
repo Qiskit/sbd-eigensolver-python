@@ -201,6 +201,34 @@ def parse_args():
                           "representation (RIKEN default 20). Must be <= 63: "
                           "bitadvance() shifts a 64-bit size_t by this amount, "
                           "so 64 is undefined behavior.")
+    sbd.add_argument("--sbd_carryover_type", type=int, default=0,
+                     choices=[0, 1, 2, 3],
+                     help="Let SBD pick the next iteration's determinants instead "
+                          "of SQD thresholding the amplitudes. 0 (default): off. "
+                          "1: rank half-determinants by marginal weight. 2: type 1 "
+                          "plus all single excitations of what it selected. 3: rank "
+                          "whole determinants by amplitude, then singles-extend. "
+                          "Any non-zero value also stops SBD dumping the "
+                          "wavefunction, since nothing reads it -- which is the "
+                          "point at large subspace size. Needs an addon with "
+                          "SCIResult.carryover (qiskit-addon-sqd#369); without it "
+                          "the carryover is ignored and the dump still happens.")
+    sbd.add_argument("--sbd_carryover_ratio", type=float, default=None,
+                     metavar="FLOAT",
+                     help="Fraction of half-determinants to keep, ranked by "
+                          "weight. Applies to --sbd_carryover_type 1 and 2 only, "
+                          "and ONLY when non-zero: set it to 0 to select by "
+                          "--sbd_carryover_threshold instead. Ignored outright by "
+                          "type 3. Default 0.1 (note upstream SBD's own default is "
+                          "0.0).")
+    sbd.add_argument("--sbd_carryover_threshold", type=float, default=None,
+                     metavar="FLOAT",
+                     help="Meaning depends on the type. Types 1 and 2: truncate "
+                          "once cumulative weight reaches 1 - this, used ONLY when "
+                          "--sbd_carryover_ratio is 0. Type 3: a direct cutoff -- "
+                          "drop determinants with weight below this. Default 1e-4. "
+                          "Distinct from --sqd_carryover_threshold, which is the "
+                          "SQD layer's own knob.")
 
     # ---- MPI decomposition: hardware shape, not physics ----------------------
     mpi = p.add_argument_group(
@@ -260,6 +288,31 @@ def main():
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
+
+    # SBD reads exactly one of ratio/threshold per carryover type and silently
+    # ignores the other (sbdiag.h, the carryover_type branch), so a setting that
+    # cannot take effect is worth saying out loud rather than leaving the user to
+    # wonder why tuning it changed nothing. Defaults are filled in after this so
+    # "was it passed?" is answerable at all.
+    ratio_given = args.sbd_carryover_ratio is not None
+    threshold_given = args.sbd_carryover_threshold is not None
+    if not ratio_given:
+        args.sbd_carryover_ratio = 0.1
+    if not threshold_given:
+        args.sbd_carryover_threshold = 1e-4
+    if rank == 0 and args.sbd_carryover_type != 0:
+        if (threshold_given and args.sbd_carryover_type in (1, 2)
+                and args.sbd_carryover_ratio != 0):
+            print(f"WARNING: --sbd_carryover_threshold "
+                  f"{args.sbd_carryover_threshold:g} has no effect with "
+                  f"--sbd_carryover_type {args.sbd_carryover_type} while "
+                  f"--sbd_carryover_ratio is {args.sbd_carryover_ratio:g}. Types 1 "
+                  "and 2 read the threshold only when the ratio is 0. Pass "
+                  "--sbd_carryover_ratio 0 to select by threshold.\n")
+        if ratio_given and args.sbd_carryover_type == 3:
+            print(f"WARNING: --sbd_carryover_ratio {args.sbd_carryover_ratio:g} has "
+                  "no effect with --sbd_carryover_type 3, which selects by "
+                  "--sbd_carryover_threshold alone.\n")
 
     norb, nelec_total, ms2 = parse_fcidump_header(args.fcidump)
     num_elec_a = (nelec_total + ms2) // 2
@@ -344,7 +397,9 @@ def main():
         if rank == 0:
             print(f"Resuming from {args.resume_from}: iteration {last['iteration']}, "
                   f"{len(last['ci_strs_a'])} alpha / {len(last['ci_strs_b'])} beta "
-                  "strings carried in as include_configurations")
+                  "strings carried in as include_configurations "
+                  "(a checkpoint written under --sbd_carryover_type != 0 holds "
+                  "SBD's carryover, not the whole solved subspace)")
     include_configurations = (include_a, include_b) if (include_a or include_b) else None
 
     if args.counts:
@@ -384,6 +439,9 @@ def main():
         "adet_comm_size": args.adet_comm_size,
         "bdet_comm_size": args.bdet_comm_size,
         "task_comm_size": args.task_comm_size,
+        "carryover_type": args.sbd_carryover_type,
+        "ratio": args.sbd_carryover_ratio,
+        "threshold": args.sbd_carryover_threshold,
     }
 
     sbd_solver = partial(
@@ -409,8 +467,14 @@ def main():
             print(f"Iteration {iteration}")
             for i, r in enumerate(results):
                 total_e = r.energy + nuclear_repulsion_energy
-                dim = np.prod(r.sci_state.amplitudes.shape)
-                print(f"  Batch {i}: E={total_e:.10f}, dim={dim:_}")
+                if r.sci_state is None:
+                    # SBD selected the carryover itself, so no eigenvector came
+                    # back. The solved dimension is printed by the wrapper.
+                    co_a, co_b = r.carryover
+                    extent = f"carryover {len(co_a):_}a/{len(co_b):_}b"
+                else:
+                    extent = f"dim={np.prod(r.sci_state.amplitudes.shape):_}"
+                print(f"  Batch {i}: E={total_e:.10f}, {extent}")
             due = (iteration % args.checkpoint_frequency == 0
                    or iteration == args.max_iterations)
             if args.checkpoint_path and due:
@@ -423,13 +487,21 @@ def main():
                 # final state rather than whatever iteration happened to land on
                 # a multiple of --checkpoint_frequency.
                 r = results[0]
+                # With no eigenvector, checkpoint SBD's carryover instead of the
+                # solved subspace: same JSON keys, so --resume_from is unchanged,
+                # but a resume then seeds from what the loop itself carries
+                # forward rather than from everything that was diagonalized.
+                strs_a, strs_b = (
+                    r.carryover if r.sci_state is None
+                    else (r.sci_state.ci_strs_a, r.sci_state.ci_strs_b)
+                )
                 entry = {
                     "iteration": iteration,
                     "energy": r.energy + nuclear_repulsion_energy,
                     "occupancies_a": r.orbital_occupancies[0].tolist(),
                     "occupancies_b": r.orbital_occupancies[1].tolist(),
-                    "ci_strs_a": [int(x) for x in r.sci_state.ci_strs_a],
-                    "ci_strs_b": [int(x) for x in r.sci_state.ci_strs_b],
+                    "ci_strs_a": [int(x) for x in strs_a],
+                    "ci_strs_b": [int(x) for x in strs_b],
                 }
                 checkpoint_history.append(entry)
                 tmp = Path(args.checkpoint_path).with_suffix(".tmp")
@@ -456,6 +528,10 @@ def main():
               f"--sbd_method {args.method} --sbd_eps {args.eps:g} "
               f"--sbd_max_it {args.max_it} --sbd_max_nb {args.max_nb} "
               f"--sbd_bit_length {args.bit_length}")
+        print("               "
+              f"--sbd_carryover_type {args.sbd_carryover_type} "
+              f"--sbd_carryover_ratio {args.sbd_carryover_ratio:g} "
+              f"--sbd_carryover_threshold {args.sbd_carryover_threshold:g}")
         print("MPI grid     : "
               f"--task_comm_size {args.task_comm_size} "
               f"--adet_comm_size {args.adet_comm_size} "

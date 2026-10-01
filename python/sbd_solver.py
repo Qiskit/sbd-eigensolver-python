@@ -171,13 +171,21 @@ def _solve_sci_core(
     # same value the C++ engine will use to interpret them.
     sbd_data = _create_sbd_config(sbd_config, backend, device_config)
 
+    # When SBD selects its own carryover, the eigenvector has no other consumer in
+    # the loop (qiskit-addon-sqd#369 reads SCIResult.carryover and never touches
+    # sci_state), so skip dumping and re-reading the full |adet| x |bdet| matrix.
+    # Both conditions matter: an addon without the carryover field has nothing else
+    # to build the next subspace from, so it still needs the amplitudes.
+    skip_wf = sbd_data.carryover_type != 0 and _addon_accepts_carryover()
+
     adet = _ci_strings_to_sbd_dets(strings_a, norb, backend, sbd_data.bit_length)
     bdet = _ci_strings_to_sbd_dets(strings_b, norb, backend, sbd_data.bit_length)
 
     # Use .bin extension to trigger SBD's fast binary write path
     # (SaveMatrixFormWF in restart.h checks extension: .bin -> raw doubles)
     wf_dump_file = sbd_dir / "wavefunction.bin"
-    sbd_data.dump_matrix_form_wf = str(wf_dump_file)
+    if not skip_wf:
+        sbd_data.dump_matrix_form_wf = str(wf_dump_file)
 
     results = backend.tpb_diag(
         mpi_comm, sbd_data, fcidump, adet, bdet, loadname="", savename=""
@@ -187,9 +195,20 @@ def _solve_sci_core(
     mpi_comm.Barrier()
 
     if mpi_rank != 0:
+        # Placeholder: only rank 0 is given the energy and the wavefunction. With
+        # skip_wf there is no SCIState to stand in, so carry an empty carryover
+        # instead -- a result with neither field satisfies no caller, and
+        # qiskit-addon-sqd rejects it outright.
+        placeholder = (
+            {"carryover": (np.array([], dtype=np.int64), np.array([], dtype=np.int64))}
+            if skip_wf
+            else {}
+        )
         return SCIResult(
             0.0,
-            SCIState(
+            None
+            if skip_wf
+            else SCIState(
                 amplitudes=np.empty((0, 0), dtype=np.float64),
                 ci_strs_a=np.array([], dtype=np.int64),
                 ci_strs_b=np.array([], dtype=np.int64),
@@ -200,6 +219,7 @@ def _solve_sci_core(
                 np.zeros(norb, dtype=np.float64),
                 np.zeros(norb, dtype=np.float64),
             ),
+            **placeholder,
         )
 
     # --- rank 0 only ---
@@ -227,41 +247,53 @@ def _solve_sci_core(
     # amplitude magnitude (fermion.py, _carryover_* / weights_a / weights_b), so
     # every iteration after the first was seeded from uniform weights. See #19.
     #
-    # The dump is requested unconditionally above, so neither a missing file nor a
-    # size mismatch is a situation to paper over: both mean the run did not do what
-    # was asked, and a loud failure is the only honest response.
+    # The dump is requested above whenever these amplitudes are needed at all, so
+    # neither a missing file nor a size mismatch is a situation to paper over: both
+    # mean the run did not do what was asked, and a loud failure is the only honest
+    # response.
     # Label the amplitudes with the lists that were actually diagonalized, not with
     # the inputs. _ci_strings_to_sbd_dets ends in sort_bitarray, which sorts into
     # SBD's canonical order AND removes duplicates, so adet/bdet can differ from
     # strings_a/strings_b -- and the dump is written in adet/bdet order. Deriving the
     # labels from adet/bdet makes the amplitudes and their labels come from one list
     # by construction, instead of relying on the two orders agreeing.
-    solved_strings_a = _sbd_dets_to_ci_strings(adet, norb, backend, sbd_data.bit_length)
-    solved_strings_b = _sbd_dets_to_ci_strings(bdet, norb, backend, sbd_data.bit_length)
-    n_a = len(solved_strings_a)
-    n_b = len(solved_strings_b)
-    if not wf_dump_file.exists():
-        raise RuntimeError(
-            f"SBD wrote no wavefunction dump at {wf_dump_file}. It is requested on "
-            "every call, so a missing file means the diagonalization did not "
-            "complete as expected."
+    if skip_wf:
+        # Report the dimension sci_state would otherwise have carried, so the
+        # per-iteration series survives without the eigenvector.
+        n_a, n_b = len(adet), len(bdet)
+        print(f"  [sbd] solved subspace {n_a:_} x {n_b:_} = {n_a * n_b:_}")
+        sci_state = None
+    else:
+        solved_strings_a = _sbd_dets_to_ci_strings(
+            adet, norb, backend, sbd_data.bit_length
         )
-    flat = np.fromfile(str(wf_dump_file), dtype=np.float64)
-    if flat.size != n_a * n_b:
-        raise RuntimeError(
-            f"wavefunction dump at {wf_dump_file} holds {flat.size} amplitudes, "
-            f"expected {n_a * n_b} ({n_a} alpha x {n_b} beta over the "
-            "diagonalized subspace). SaveMatrixFormWF writes the full subspace; a "
-            "different size means the dump and the subspace have diverged."
+        solved_strings_b = _sbd_dets_to_ci_strings(
+            bdet, norb, backend, sbd_data.bit_length
         )
+        n_a = len(solved_strings_a)
+        n_b = len(solved_strings_b)
+        if not wf_dump_file.exists():
+            raise RuntimeError(
+                f"SBD wrote no wavefunction dump at {wf_dump_file}. It is requested "
+                "whenever the amplitudes are needed, so a missing file means the "
+                "diagonalization did not complete as expected."
+            )
+        flat = np.fromfile(str(wf_dump_file), dtype=np.float64)
+        if flat.size != n_a * n_b:
+            raise RuntimeError(
+                f"wavefunction dump at {wf_dump_file} holds {flat.size} amplitudes, "
+                f"expected {n_a * n_b} ({n_a} alpha x {n_b} beta over the "
+                "diagonalized subspace). SaveMatrixFormWF writes the full subspace; "
+                "a different size means the dump and the subspace have diverged."
+            )
 
-    sci_state = SCIState(
-        amplitudes=flat.reshape(n_a, n_b),
-        ci_strs_a=solved_strings_a,
-        ci_strs_b=solved_strings_b,
-        norb=norb,
-        nelec=nelec,
-    )
+        sci_state = SCIState(
+            amplitudes=flat.reshape(n_a, n_b),
+            ci_strs_a=solved_strings_a,
+            ci_strs_b=solved_strings_b,
+            norb=norb,
+            nelec=nelec,
+        )
 
     rdm1, rdm2 = assemble_rdms(results, norb)
 
@@ -275,6 +307,17 @@ def _solve_sci_core(
     extra = {}
     if carryover_a is not None and _addon_accepts_carryover():
         extra["carryover"] = (carryover_a, carryover_b)
+
+    if skip_wf and "carryover" not in extra:
+        raise RuntimeError(
+            f"carryover_type={sbd_data.carryover_type} was requested, so the "
+            "wavefunction was not dumped, but SBD selected no carryover "
+            "determinants -- leaving nothing to build the next subspace from. "
+            f"Either the selection was too aggressive (ratio={sbd_data.ratio}, "
+            f"threshold={sbd_data.threshold}) or this SBD build does not implement "
+            f"carryover_type={sbd_data.carryover_type}. Set carryover_type=0 to go "
+            "back to selecting from the amplitudes."
+        )
 
     return SCIResult(
         energy, sci_state, orbital_occupancies=occupancies, rdm1=rdm1, rdm2=rdm2, **extra

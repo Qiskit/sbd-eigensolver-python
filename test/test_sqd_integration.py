@@ -314,3 +314,60 @@ def test_diagonalize_fermionic_hamiltonian_standalone(
 def test_diagonalize_fermionic_hamiltonian_mpi(data_dir, device_config, counts_path):
     """The self-consistent loop runs to completion across the launched ranks."""
     _check_diagonalize_fermionic_hamiltonian(data_dir, device_config, counts_path)
+
+
+# --- SBD-selected carryover skips the wavefunction dump ------------------------------
+#
+# With carryover_type != 0 SBD ranks and selects the next subspace in C++, so the
+# eigenvector has no consumer and is not dumped. The point of the test is the absence
+# of the file: a run that quietly kept writing it would still give the right energy.
+
+
+def test_sbd_carryover_skips_wavefunction_dump(data_dir, device_config, tmp_path):
+    """``carryover_type != 0`` returns no SCI state and writes no wavefunction."""
+    from mpi4py import MPI
+
+    from sbd.sbd_solver import _addon_accepts_carryover, solve_sci_batch
+
+    if not _addon_accepts_carryover():
+        pytest.skip(
+            "installed qiskit-addon-sqd has no SCIResult.carryover (needs #369); "
+            "the solver keeps returning sci_state so the loop has something to use"
+        )
+
+    comm = MPI.COMM_WORLD
+    hcore, eri, _ = _load_hamiltonian(data_dir)
+    strings = _read_alpha_determinants(
+        data_dir / "h2o" / "h2o-1em3-alpha.txt", limit=SMALL_SUBSPACE_DETS
+    )
+
+    results = solve_sci_batch(
+        [(strings, strings)],
+        hcore,
+        eri,
+        norb=NORB,
+        nelec=NELEC,
+        sbd_config=_sbd_config(comm, carryover_type=1),
+        device_config=device_config,
+        temp_dir=tmp_path,
+        clean_temp_dir=False,
+    )
+    result = results[0]
+
+    # Holds on every rank: no rank materializes the eigenvector, and each still
+    # returns something the loop can use.
+    assert result.sci_state is None
+    assert result.carryover is not None
+
+    # Only rank 0 is given the energy and the selected determinants.
+    if comm.Get_rank() != 0:
+        return
+
+    carryover_a, carryover_b = result.carryover
+    assert len(carryover_a) > 0
+    assert len(carryover_b) > 0
+    # The energy is unaffected by how the next subspace gets chosen.
+    assert result.energy == pytest.approx(SMALL_SUBSPACE_ENERGY, abs=1e-8)
+    # clean_temp_dir=False above keeps the directory, so this is a real check that
+    # nothing was written rather than a check that it was tidied away.
+    assert not list(tmp_path.rglob("wavefunction.bin"))
