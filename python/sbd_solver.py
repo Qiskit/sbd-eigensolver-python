@@ -265,7 +265,61 @@ def _solve_sci_core(
 
     rdm1, rdm2 = assemble_rdms(results, norb)
 
-    return SCIResult(energy, sci_state, orbital_occupancies=occupancies, rdm1=rdm1, rdm2=rdm2)
+    # When SBD selected its own carryover, hand it to the loop rather than letting it
+    # re-derive the same choice by thresholding our amplitudes. qiskit-addon-sqd takes
+    # a solver's carryover as-is (fermion.py, _select_carryover_by_threshold) and its
+    # ``carryover_threshold`` then does not apply.
+    carryover_a, carryover_b = extract_carryover(
+        results, norb, backend, sbd_data.bit_length
+    )
+    extra = {}
+    if carryover_a is not None and _addon_accepts_carryover():
+        extra["carryover"] = (carryover_a, carryover_b)
+
+    return SCIResult(
+        energy, sci_state, orbital_occupancies=occupancies, rdm1=rdm1, rdm2=rdm2, **extra
+    )
+
+
+def _addon_accepts_carryover() -> bool:
+    """True when the installed qiskit-addon-sqd has ``SCIResult.carryover``.
+
+    The field arrived with qiskit-addon-sqd#369. On an older addon, passing it
+    would be a TypeError, so the carryover is simply not reported and the loop
+    falls back to thresholding the amplitudes as it always has.
+    """
+    if SCIResult is None:
+        return False
+    import dataclasses
+
+    return any(f.name == "carryover" for f in dataclasses.fields(SCIResult))
+
+
+def extract_carryover(results: dict, norb: int, backend, bit_length: int):
+    """Convert SBD's carryover determinant lists to CI strings.
+
+    ``tpb_diag`` always returns ``carryover_adet``/``carryover_bdet`` in its results
+    dict, but they are empty unless the caller asked for a carryover type --
+    ``_create_sbd_config`` leaves ``carryover_type`` at 0, so the common path pays
+    nothing here and gets ``(None, None)``.
+
+    SBD hands these back as packed half-determinants, the same representation
+    ``_ci_strings_to_sbd_dets`` produces going in, so converting back with
+    ``_sbd_dets_to_ci_strings`` yields plain CI-string ints -- the shape
+    ``SCIResult.carryover`` wants.
+    """
+    co_a = results.get("carryover_adet")
+    co_b = results.get("carryover_bdet")
+    if not co_a and not co_b:
+        return None, None
+    empty = np.array([], dtype=np.int64)
+    carryover_a = (
+        _sbd_dets_to_ci_strings(co_a, norb, backend, bit_length) if co_a else empty
+    )
+    carryover_b = (
+        _sbd_dets_to_ci_strings(co_b, norb, backend, bit_length) if co_b else empty
+    )
+    return carryover_a, carryover_b
 
 
 def assemble_rdms(results: dict, norb: int) -> tuple[np.ndarray | None, np.ndarray | None]:
@@ -526,13 +580,13 @@ def _create_sbd_config(config_dict: dict | None = None, backend=None, device_con
     sbd_data.init = 0
     sbd_data.do_shuffle = 0
     sbd_data.do_rdm = 0
-    # SBD's carryover is NOT consumed on this path: it is SBD's own iterative
-    # mechanism (its CLI writes it out with --carryover_adetfile and you re-run),
-    # whereas the SQD loop selects its own determinants from the amplitudes we
-    # return. Since _solve_sci_core discards results["carryover_*"], asking SBD to
-    # compute it is pure work -- for carryover_type=2 that includes building
-    # singles-extended determinant lists. Default it off; a caller who wants it
-    # can still set carryover_type through sbd_config.
+    # Off by default, but no longer discarded: since qiskit-addon-sqd#369 the loop
+    # accepts a solver's own carryover (SCIResult.carryover) instead of thresholding
+    # the amplitudes, and _solve_sci_core reports it when SBD computed one. Default
+    # stays 0 because computing it is real work -- carryover_type=2 builds
+    # singles-extended determinant lists -- and because the amplitude-threshold path
+    # remains the behaviour callers expect. Set carryover_type through sbd_config to
+    # let SBD choose the next iteration's determinants instead.
     sbd_data.carryover_type = 0
     sbd_data.ratio = 0.1
     sbd_data.threshold = 1e-4
