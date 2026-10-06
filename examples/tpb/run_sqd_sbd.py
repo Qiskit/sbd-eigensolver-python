@@ -52,6 +52,16 @@ from pyscf import ao2mo, tools
 from qiskit.primitives import BitArray
 from qiskit_addon_sqd.fermion import SCIResult, diagonalize_fermionic_hamiltonian
 
+# Subspace policies arrived in qiskit-addon-sqd 0.15.0 (#369). On an older addon the
+# loop's own default schedule is the only one, selected by passing
+# carryover_threshold= directly, so keep that path working rather than raising.
+# Other policies (e.g. Trim SQD) are not exposed as flags; examples/tpb/README.md
+# shows how to pass one from Python.
+try:
+    from qiskit_addon_sqd.fermion import StandardPolicy
+except ImportError:  # qiskit-addon-sqd < 0.15.0
+    StandardPolicy = None
+
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -107,11 +117,14 @@ def parse_args():
                           "host-side and superlinear in determinants per spin, and "
                           "grows between iterations as carryover accumulates. "
                           "Unset means no cap.")
-    sqd.add_argument("--sqd_carryover_threshold", type=float, default=1e-4,
+    sqd.add_argument("--sqd_carryover_threshold", type=float, default=None,
+                     metavar="FLOAT",
                      help="SQD keeps every determinant whose |coefficient| is at "
                           "least this, and carries it into the next iteration's "
-                          "subspace. Lower it to carry more. Distinct from "
-                          "--sbd_carryover_threshold, which SQD does not use.")
+                          "subspace. Lower it to carry more. Default 1e-4. Distinct from "
+                          "--sbd_carryover_threshold, which SQD does not use. Has "
+                          "NO effect when --sbd_carryover_type is non-zero: the "
+                          "loop then takes SBD's selection as given.")
     sqd.add_argument("--include_hf", action="store_true",
                      help="Force the single Slater determinant with the lowest "
                           "num_elec_a/num_elec_b orbital indices occupied into "
@@ -288,6 +301,35 @@ def load_counts_as_bitarray(counts_path, num_bits):
     return BitArray.from_bool_array(bool_matrix)
 
 
+def build_policy(args, rank):
+    """Build the SQD subspace policy, and warn when its threshold cannot take effect.
+
+    Returns ``(policy, kwargs)``, where ``kwargs`` is what to pass to
+    ``diagonalize_fermionic_hamiltonian``. Since qiskit-addon-sqd 0.15.0 the loop
+    raises if given both ``policy=`` and ``carryover_threshold=``, so the threshold
+    travels inside the policy; that keeps this driver usable as a template for a
+    different policy (see examples/tpb/README.md). On an older addon there are no
+    policies and the threshold is passed directly, which selects the same schedule.
+    """
+    threshold_given = args.sqd_carryover_threshold is not None
+    threshold = 1e-4 if args.sqd_carryover_threshold is None else args.sqd_carryover_threshold
+    args.sqd_carryover_threshold = threshold
+
+    # A solver that reports its own carryover bypasses the policy's carryover
+    # selection: _select_carryover returns it before thresholding anything.
+    if rank == 0 and args.sbd_carryover_type != 0 and threshold_given:
+        print(f"WARNING: --sqd_carryover_threshold {threshold:g}: no effect with "
+              f"--sbd_carryover_type {args.sbd_carryover_type}: SBD then selects "
+              "the carryover itself and the loop takes that selection as given. "
+              "Tune the selection with --sbd_carryover_ratio / "
+              "--sbd_carryover_threshold instead.\n")
+
+    if StandardPolicy is None:
+        return None, {"carryover_threshold": threshold}
+    policy = StandardPolicy(carryover_threshold=threshold)
+    return policy, {"policy": policy}
+
+
 def main():
     args = parse_args()
     comm = MPI.COMM_WORLD
@@ -318,6 +360,8 @@ def main():
             print(f"WARNING: --sbd_carryover_ratio {args.sbd_carryover_ratio:g} has "
                   "no effect with --sbd_carryover_type 3, which selects by "
                   "--sbd_carryover_threshold alone.\n")
+
+    _, policy_kwargs = build_policy(args, rank)
 
     norb, nelec_total, ms2 = parse_fcidump_header(args.fcidump)
     num_elec_a = (nelec_total + ms2) // 2
@@ -556,7 +600,6 @@ def main():
             max_iterations=args.max_iterations,
             energy_tol=args.energy_tol,
             occupancies_tol=args.occupancies_tol,
-            carryover_threshold=args.sqd_carryover_threshold,
             max_dim=args.max_dim,
             include_configurations=include_configurations,
             initial_occupancies=initial_occupancies,
@@ -564,6 +607,9 @@ def main():
             symmetrize_spin=bool(args.symmetrize_spin),
             callback=callback,
             seed=rand_seed,
+            # Either policy= or, on an addon older than 0.15.0, carryover_threshold=
+            # -- never both, which the loop rejects. See build_policy.
+            **policy_kwargs,
         )
     except RuntimeError as e:
         if "Failed to open FCIDUMP" in str(e):
