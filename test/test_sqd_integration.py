@@ -324,7 +324,13 @@ def test_diagonalize_fermionic_hamiltonian_mpi(data_dir, device_config, counts_p
 
 
 def test_sbd_carryover_skips_wavefunction_dump(data_dir, device_config, tmp_path):
-    """``carryover_type != 0`` returns no SCI state and writes no wavefunction."""
+    """``carryover_type=1`` returns no SCI state and writes no wavefunction.
+
+    Only type 1 qualifies: it ranks by the marginal weight the loop wants, so the
+    eigenvector has no remaining consumer. Types 2/3 singles-extend and are re-sorted
+    canonically by SBD, so they need the amplitudes to restore the required order --
+    see ``test_sbd_carryover_is_weight_ordered``.
+    """
     from mpi4py import MPI
 
     from sbd.sbd_solver import _addon_accepts_carryover, solve_sci_batch
@@ -371,3 +377,68 @@ def test_sbd_carryover_skips_wavefunction_dump(data_dir, device_config, tmp_path
     # clean_temp_dir=False above keeps the directory, so this is a real check that
     # nothing was written rather than a check that it was tidied away.
     assert not list(tmp_path.rglob("wavefunction.bin"))
+
+
+@pytest.mark.parametrize("carryover_type", [2, 3])
+def test_sbd_carryover_is_weight_ordered(
+    data_dir, device_config, tmp_path, carryover_type
+):
+    """Types 2/3 keep the dump and hand over a weight-ordered carryover.
+
+    ``SCIResult.carryover`` must be in descending marginal-weight order, because
+    ``_select_carryover`` returns a solver's carryover untouched and a later
+    truncation to ``max_dim`` keeps the leading entries. SBD returns types 2/3 in
+    canonical order (``SinglesExtendHalfdets`` ends in ``sort_bitarray``), so the
+    solver re-ranks them from the amplitudes. Without that, ``max_dim`` would keep
+    the numerically smallest strings and could discard the high-weight parents.
+    """
+    from mpi4py import MPI
+
+    from sbd.sbd_solver import _addon_accepts_carryover, solve_sci_batch
+
+    if not _addon_accepts_carryover():
+        pytest.skip("installed qiskit-addon-sqd has no SCIResult.carryover")
+
+    comm = MPI.COMM_WORLD
+    hcore, eri, _ = _load_hamiltonian(data_dir)
+    strings = _read_alpha_determinants(
+        data_dir / "h2o" / "h2o-1em3-alpha.txt", limit=SMALL_SUBSPACE_DETS
+    )
+    results = solve_sci_batch(
+        [(strings, strings)],
+        hcore,
+        eri,
+        norb=NORB,
+        nelec=NELEC,
+        sbd_config=_sbd_config(comm, carryover_type=carryover_type),
+        device_config=device_config,
+        temp_dir=tmp_path,
+        clean_temp_dir=False,
+    )
+    result = results[0]
+
+    if comm.Get_rank() != 0:
+        return
+
+    # These types need the amplitudes, so the dump is taken rather than skipped.
+    assert result.sci_state is not None
+    assert result.carryover is not None
+    assert result.energy == pytest.approx(SMALL_SUBSPACE_ENERGY, abs=1e-8)
+
+    probabilities = np.abs(result.sci_state.amplitudes) ** 2
+    for strings_co, solved, weights in (
+        (result.carryover[0], result.sci_state.ci_strs_a, probabilities.sum(axis=1)),
+        (result.carryover[1], result.sci_state.ci_strs_b, probabilities.sum(axis=0)),
+    ):
+        assert len(strings_co) > 0
+        order = np.argsort(solved, kind="stable")
+        sorted_solved = solved[order]
+        pos = np.minimum(
+            np.searchsorted(sorted_solved, strings_co), sorted_solved.size - 1
+        )
+        in_subspace = sorted_solved[pos] == strings_co
+        # Strings that were in the subspace come first, ranked by descending weight;
+        # the singles-generated ones have no weight and must follow.
+        assert np.all(np.diff(in_subspace.astype(int)) <= 0)
+        ranked = weights[order[pos[in_subspace]]]
+        assert np.all(np.diff(ranked) <= 1e-12)

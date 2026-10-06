@@ -208,11 +208,16 @@ def parse_args():
                           "1: rank half-determinants by marginal weight. 2: type 1 "
                           "plus all single excitations of what it selected. 3: rank "
                           "whole determinants by amplitude, then singles-extend. "
-                          "Any non-zero value also stops SBD dumping the "
-                          "wavefunction, since nothing reads it -- which is the "
-                          "point at large subspace size. Needs an addon with "
-                          "SCIResult.carryover (qiskit-addon-sqd#369); without it "
-                          "the carryover is ignored and the dump still happens.")
+                          "Type 1 ALSO skips the wavefunction dump, because its "
+                          "ranking already is the marginal weight the loop wants and "
+                          "nothing else reads the eigenvector -- that is the win at "
+                          "large subspace size. Types 2 and 3 keep the dump: they "
+                          "singles-extend and SBD re-sorts the result into canonical "
+                          "order, so the amplitudes are needed to restore the "
+                          "descending-weight order that SCIResult.carryover requires. "
+                          "Needs qiskit-addon-sqd >= 0.15.0 for SCIResult.carryover "
+                          "(added in #369); on an older addon the carryover is "
+                          "ignored and the dump always happens.")
     sbd.add_argument("--sbd_carryover_ratio", type=float, default=None,
                      metavar="FLOAT",
                      help="Fraction of half-determinants to keep, ranked by "

@@ -171,12 +171,22 @@ def _solve_sci_core(
     # same value the C++ engine will use to interpret them.
     sbd_data = _create_sbd_config(sbd_config, backend, device_config)
 
-    # When SBD selects its own carryover, the eigenvector has no other consumer in
-    # the loop (qiskit-addon-sqd#369 reads SCIResult.carryover and never touches
-    # sci_state), so skip dumping and re-reading the full |adet| x |bdet| matrix.
-    # Both conditions matter: an addon without the carryover field has nothing else
-    # to build the next subspace from, so it still needs the amplitudes.
-    skip_wf = sbd_data.carryover_type != 0 and _addon_accepts_carryover()
+    # ``SCIResult.carryover`` must be ordered by DESCENDING MARGINAL WEIGHT: the loop
+    # takes a solver's carryover as given (fermion.py, ``_select_carryover`` returns it
+    # before any ranking) and a later truncation to ``max_dim`` keeps the leading
+    # entries, so a wrong order silently drops the strings that mattered.
+    #
+    # Only carryover_type 1 satisfies that by itself. It ranks half-determinants by
+    # p(D^alpha) = sum_beta |c|^2 -- exactly the addon's marginal weight -- and writes
+    # them out in that order, so its eigenvector has no remaining consumer and the
+    # |adet| x |bdet| dump can be skipped entirely.
+    #
+    # Types 2 and 3 singles-extend their selection, and SinglesExtendHalfdets ends in
+    # sort_bitarray (upstream extend.h), which re-sorts into CANONICAL order because
+    # SBD indexes subspaces by binary search. That destroys the weight order, and the
+    # generated determinants never had a weight at all. So those types keep the dump
+    # and we re-rank their carryover from the amplitudes below.
+    skip_wf = sbd_data.carryover_type == 1 and _addon_accepts_carryover()
 
     adet = _ci_strings_to_sbd_dets(strings_a, norb, backend, sbd_data.bit_length)
     bdet = _ci_strings_to_sbd_dets(strings_b, norb, backend, sbd_data.bit_length)
@@ -299,11 +309,18 @@ def _solve_sci_core(
 
     # When SBD selected its own carryover, hand it to the loop rather than letting it
     # re-derive the same choice by thresholding our amplitudes. qiskit-addon-sqd takes
-    # a solver's carryover as-is (fermion.py, _select_carryover_by_threshold) and its
-    # ``carryover_threshold`` then does not apply.
+    # a solver's carryover as given -- ``_select_carryover`` returns it before applying
+    # any threshold, ratio or ranking -- so ``carryover_threshold`` does not apply AND
+    # the order we hand over is the order a ``max_dim`` truncation will keep.
     carryover_a, carryover_b = extract_carryover(
         results, norb, backend, sbd_data.bit_length
     )
+    if carryover_a is not None and sci_state is not None:
+        # Types 2/3 come back in canonical order (see the skip_wf comment); rank them
+        # the way the addon would have. Type 1 never reaches here with a sci_state.
+        carryover_a, carryover_b = rank_carryover_from_amplitudes(
+            carryover_a, carryover_b, sci_state
+        )
     extra = {}
     if carryover_a is not None and _addon_accepts_carryover():
         extra["carryover"] = (carryover_a, carryover_b)
@@ -336,6 +353,69 @@ def _addon_accepts_carryover() -> bool:
     import dataclasses
 
     return any(f.name == "carryover" for f in dataclasses.fields(SCIResult))
+
+
+def _rank_by_marginal_weight(
+    carryover: np.ndarray, solved: np.ndarray, weights: np.ndarray
+) -> np.ndarray:
+    """Order one spin sector's carryover by descending marginal weight.
+
+    ``SCIResult.carryover`` is required to be in that order, and the loop applies no
+    ranking of its own. Carryover strings that were in the diagonalized subspace get
+    their weight from the amplitudes; the rest -- the ones carryover_type 2/3 generate
+    by single excitation -- were never in the subspace and so have no weight at all.
+    Those go last, which is the right priority: a truncation to ``max_dim`` then sheds
+    weightless additions before it sheds a ranked parent.
+
+    Mirrors the addon's own ordering (``_rank_carryover``, a stable argsort of negated
+    marginal weights) so the two agree on ties.
+    """
+    if carryover.size == 0 or solved.size == 0:
+        return carryover
+    # Look each carryover string up in the solved list. searchsorted needs a sorted
+    # haystack, so sort once and carry the permutation to recover weight positions.
+    order = np.argsort(solved, kind="stable")
+    sorted_solved = solved[order]
+    pos = np.minimum(np.searchsorted(sorted_solved, carryover), sorted_solved.size - 1)
+    found = sorted_solved[pos] == carryover
+
+    ranked = carryover[found]
+    ranked_weights = weights[order[pos[found]]]
+    # Stable argsort of the negated weights, matching the addon exactly.
+    ranked = ranked[np.argsort(-ranked_weights, kind="stable")]
+    return np.concatenate([ranked, carryover[~found]])
+
+
+def rank_carryover_from_amplitudes(
+    carryover_a: np.ndarray,
+    carryover_b: np.ndarray,
+    sci_state,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Re-rank a carryover SBD returned in canonical order, using the amplitudes.
+
+    Needed for carryover_type 2/3 only; type 1 already comes out weight-ordered.
+
+    The ranking is PER SECTOR, where the loop would rank the two sectors jointly under
+    ``symmetrize_spin``. That is safe here, and not by luck. ``symmetrize_spin`` hands
+    the solver the SAME array for both sectors, so the subspace is symmetric and the
+    amplitude matrix is symmetric (or antisymmetric, for a triplet at Ms=0); marginal
+    weights square the amplitudes, so the two sectors' weights are equal either way
+    and the per-sector rankings coincide. Singles extension is spin-agnostic, so types
+    2/3 inherit it. Measured on h2o: for a symmetric subspace the two carryover lists
+    come out bit-identical for types 1, 2 and 3.
+
+    That matters because ``batch_to_ci_strings`` IGNORES ``carryover_strings_b`` under
+    ``symmetrize_spin`` -- it assumes the two are equal -- so a solver whose lists
+    differed there would silently lose its beta selection. Ours do not differ. When
+    ``symmetrize_spin`` is off, both lists are used and may legitimately differ.
+    """
+    probabilities = np.abs(sci_state.amplitudes) ** 2
+    weights_a = probabilities.sum(axis=1)
+    weights_b = probabilities.sum(axis=0)
+    return (
+        _rank_by_marginal_weight(carryover_a, sci_state.ci_strs_a, weights_a),
+        _rank_by_marginal_weight(carryover_b, sci_state.ci_strs_b, weights_b),
+    )
 
 
 def extract_carryover(results: dict, norb: int, backend, bit_length: int):
