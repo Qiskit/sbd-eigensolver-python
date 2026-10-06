@@ -63,7 +63,7 @@ matter for it.
 
 SBD can serve as the eigensolver backend for qiskit-addon-sqd's SQD workflow.
 
-**Note:** Requires [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) with distributed (SPMD) support — `diagonalize_fermionic_hamiltonian` calling `sci_solver` on every MPI rank. This is available in `qiskit-addon-sqd` version `0.13.1` or higher.
+**Note:** Requires [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) with distributed (SPMD) support — `diagonalize_fermionic_hamiltonian` calling `sci_solver` on every MPI rank. This is available in `qiskit-addon-sqd` version `0.13.1` or higher. SBD-selected carryover and subspace policies need `0.15.0` or higher.
 
 ### Plain SQD
 
@@ -98,9 +98,18 @@ parameter feeds the loop, and
 complete example.
 
 qiskit-addon-sqd is the orchestrator in that recipe: it owns the loop
-(sampling, configuration recovery, subsampling), and SBD is plugged in
-purely as the per-batch eigensolver (`sci_solver=sbd_solver` above) with no
-say in how the subspace grows between iterations.
+(sampling, configuration recovery, subsampling), and SBD is plugged in as the
+per-batch eigensolver (`sci_solver=sbd_solver` above). By default SBD has no say
+in how the subspace grows between iterations: SQD chooses the carryover from the
+amplitudes SBD returns.
+
+With `qiskit-addon-sqd >= 0.15.0`, SBD can choose the carryover itself instead:
+set `"carryover_type"` in `sbd_config` and SQD takes SBD's selection as given. With
+type 1, the amplitudes never leave SBD, which saves a full wavefunction write and
+read every iteration. See
+[SBD-selected carryover](examples/tpb/README.md#sbd-selected-carryover) for what
+each type does and costs, and the section after it for running the loop with a
+different subspace policy such as Trim SQD.
 
 ### SQD with subspace enlargement
 
