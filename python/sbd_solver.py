@@ -312,13 +312,13 @@ def _solve_sci_core(
     # a solver's carryover as given -- ``_select_carryover`` returns it before applying
     # any threshold, ratio or ranking -- so ``carryover_threshold`` does not apply AND
     # the order we hand over is the order a ``max_dim`` truncation will keep.
-    carryover_a, carryover_b = extract_carryover(
+    carryover_a, carryover_b = _extract_carryover(
         results, norb, backend, sbd_data.bit_length
     )
     if carryover_a is not None and sci_state is not None:
         # Types 2/3 come back in canonical order (see the skip_wf comment); rank them
         # the way the addon would have. Type 1 never reaches here with a sci_state.
-        carryover_a, carryover_b = rank_carryover_from_amplitudes(
+        carryover_a, carryover_b = _rank_carryover_from_amplitudes(
             carryover_a, carryover_b, sci_state
         )
     extra = {}
@@ -386,7 +386,7 @@ def _rank_by_marginal_weight(
     return np.concatenate([ranked, carryover[~found]])
 
 
-def rank_carryover_from_amplitudes(
+def _rank_carryover_from_amplitudes(
     carryover_a: np.ndarray,
     carryover_b: np.ndarray,
     sci_state,
@@ -418,7 +418,7 @@ def rank_carryover_from_amplitudes(
     )
 
 
-def extract_carryover(results: dict, norb: int, backend, bit_length: int):
+def _extract_carryover(results: dict, norb: int, backend, bit_length: int):
     """Convert SBD's carryover determinant lists to CI strings.
 
     ``tpb_diag`` always returns ``carryover_adet``/``carryover_bdet`` in its results
