@@ -1,0 +1,22 @@
+---
+features:
+  - |
+    SBD can now choose the carryover for the next SQD iteration. When
+    ``carryover_type`` is non-zero in ``sbd_config``,
+    :func:`sbd.sbd_solver.solve_sci` and :func:`sbd.sbd_solver.solve_sci_batch`
+    return SBD's selection in ``SCIResult.carryover``, which ``qiskit-addon-sqd``
+    0.15.0 and later uses as given in place of its own amplitude threshold. With
+    an older ``qiskit-addon-sqd`` the selection is not reported and the default
+    behavior is unchanged.
+
+    With ``carryover_type = 1`` the wavefunction is no longer written to disk and
+    read back. ``SCIResult.sci_state`` is ``None``, since SBD's ranking is already
+    the marginal weight the loop orders carryover by. Types 2 and 3 still return
+    the wavefunction, which is used to put their carryover in descending order of
+    weight, as ``SCIResult.carryover`` requires. The default,
+    ``carryover_type = 0``, is unchanged.
+  - |
+    The ``examples/tpb/run_sqd_sbd.py`` driver gains ``--sbd_carryover_type``,
+    ``--sbd_carryover_ratio`` and ``--sbd_carryover_threshold``, and warns when a
+    setting cannot take effect. ``examples/tpb/README.md`` also shows how to run
+    the loop with a different subspace policy, such as Trim SQD.
