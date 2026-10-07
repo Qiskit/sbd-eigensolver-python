@@ -10,5 +10,4 @@ upgrade:
     ``carryover_type = 2`` includes building singles-extended determinant lists.
 
     Energies are bit-identical across carryover types, so this is a speedup rather
-    than a change in results. Pass ``sbd_config={"carryover_type": 1}`` to restore
-    the previous setting.
+    than a change in results.
