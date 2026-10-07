@@ -1,11 +1,11 @@
 ---
 features:
   - |
-    The example drivers shipped under ``python/examples`` have been substantially
-    reworked. Their command-line options are now grouped by the layer they act on,
-    with the SBD solver's options prefixed to distinguish them from the SQD loop's
-    -- several names previously read as one layer and acted on the other -- and
-    every former spelling is kept as an alias. Three SQD options that had no
+    The example drivers under ``examples/tpb`` have been substantially reworked.
+    Their command-line options are now grouped by the layer they act on, with the
+    SBD solver's options prefixed to distinguish them from the SQD loop's --
+    several names previously read as one layer and acted on the other -- and every
+    former spelling is kept as an alias. Three SQD options that had no
     command-line spelling at all, the energy and occupancy convergence tolerances
     and the loop's carryover threshold, now reach the SQD loop instead of being
     stuck at its defaults.
