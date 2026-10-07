@@ -1,0 +1,27 @@
+---
+features:
+  - |
+    :func:`sbd.gdb_diag` can now shard the determinant basis across ranks. With
+    ``GDB_SBD.b_comm_size`` greater than 1, each rank passes only its own shard,
+    and the union of the shards is the basis. This is what lets GDB's memory
+    scale with the number of ranks, and it is also what makes multi-GPU GDB work:
+    on the Thrust backend every rank must belong to a basis or task position,
+    which previously left GDB on a GPU limited to a single rank. Shards must be
+    globally sorted and disjoint, and a violation raises an error. The new
+    ``determinant_distribution`` argument chooses how determinants are placed
+    across ranks. The result now also carries ``local_dim`` and ``global_dim``,
+    so a caller can check that the shards add up to the intended basis.
+  - |
+    :func:`sbd.from_strings` and :func:`sbd.sort_bitarray_array` are bulk,
+    array-based forms of :func:`sbd.from_string` and :func:`sbd.sort_bitarray`.
+    They loop in C++ rather than once per determinant across the Python
+    boundary, which matters for GDB bases of millions of determinants.
+  - |
+    New example drivers in ``examples/gdb``: ``run_gdb_diag.py`` diagonalizes a
+    given determinant list, and ``run_gdb_heatbath.py`` grows the basis with
+    SBD's heatbath expansion, round by round, down a ladder of cutoffs.
+upgrade:
+  - |
+    :func:`sbd.gdb_diag` now rejects ``GDB_SBD.method`` values 2 and 3. GDB
+    implements only Davidson (methods 0 and 1); the Lanczos methods exist for
+    TPB alone, so these values previously did not select Lanczos for GDB.
