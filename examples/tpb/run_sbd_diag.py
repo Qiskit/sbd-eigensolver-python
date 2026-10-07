@@ -107,7 +107,15 @@ def parse_args():
     
     # Initialization and options
     parser.add_argument('--init', type=int, default=0,
-                       help='Initialization method')
+                       help='Starting vector. 0 puts unit weight on the FIRST '
+                            'determinant of the basis -- which is Hartree-Fock only '
+                            'if the basis happens to be ordered that way. 1 is random. '
+                            'Nothing else is implemented, and other values start from '
+                            'a zero vector without complaining')
+    parser.add_argument('--seed', type=int, default=1729,
+                       help='Seed for --init 1, ignored otherwise (default matches '
+                            "upstream's). Vary it to check whether a result depends "
+                            'on where the solver started; the energy should not')
     parser.add_argument('--shuffle', '--do_shuffle', type=int, default=0, dest='do_shuffle',
                        help='Shuffle determinants loaded from --adetfile before '
                             'mirroring/deriving beta from them (0=no, 1-4=yes, '
@@ -186,6 +194,7 @@ def main():
     config.max_nb = args.max_nb
     config.max_time = args.max_time
     config.init = args.init
+    config.seed = args.seed
     config.do_shuffle = args.do_shuffle
     config.do_rdm = 1 if args.rdm_output else 0
     config.bit_length = args.bit_length
