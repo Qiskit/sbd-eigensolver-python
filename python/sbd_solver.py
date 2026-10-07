@@ -369,15 +369,32 @@ def _rank_by_marginal_weight(
 
     Mirrors the addon's own ordering (``_rank_carryover``, a stable argsort of negated
     marginal weights) so the two agree on ties.
+
+    Raises if none of the carryover is in the subspace, since the returned order
+    would then be SBD's canonical order rather than a ranking. That should not
+    happen: types 2/3 extend from the determinants SBD selected out of the
+    subspace, and those parents are part of the carryover.
     """
-    if carryover.size == 0 or solved.size == 0:
+    if carryover.size == 0:
         return carryover
-    # Look each carryover string up in the solved list. searchsorted needs a sorted
-    # haystack, so sort once and carry the permutation to recover weight positions.
-    order = np.argsort(solved, kind="stable")
-    sorted_solved = solved[order]
-    pos = np.minimum(np.searchsorted(sorted_solved, carryover), sorted_solved.size - 1)
-    found = sorted_solved[pos] == carryover
+    if solved.size:
+        # Look each carryover string up in the solved list. searchsorted needs a
+        # sorted haystack, so sort once and carry the permutation to recover
+        # weight positions.
+        order = np.argsort(solved, kind="stable")
+        sorted_solved = solved[order]
+        pos = np.minimum(np.searchsorted(sorted_solved, carryover), sorted_solved.size - 1)
+        found = sorted_solved[pos] == carryover
+    else:
+        found = np.zeros(carryover.size, dtype=bool)
+    if not found.any():
+        raise RuntimeError(
+            f"none of the {carryover.size} carryover determinants were in the "
+            "diagonalized subspace, so none of them has a marginal weight and the "
+            "order returned here would be SBD's canonical order, not a weight "
+            "ranking. qiskit-addon-sqd truncates the carryover to max_dim by keeping "
+            "the leading entries, so it would keep an arbitrary subset."
+        )
 
     ranked = carryover[found]
     ranked_weights = weights[order[pos[found]]]
