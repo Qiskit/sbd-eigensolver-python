@@ -175,9 +175,12 @@ def _assert_result_is_consistent(result, nelec=NELEC):
     assert alpha_occupancies.sum() == pytest.approx(nelec[0], abs=1e-6)
     assert beta_occupancies.sum() == pytest.approx(nelec[1], abs=1e-6)
 
+    # With carryover_type=1 the solver reports SBD's carryover instead of the
+    # eigenvector, so there is no state to check.
     state = result.sci_state
-    assert state.amplitudes.shape == (len(state.ci_strs_a), len(state.ci_strs_b))
-    assert np.isfinite(state.amplitudes).all()
+    if state is not None:
+        assert state.amplitudes.shape == (len(state.ci_strs_a), len(state.ci_strs_b))
+        assert np.isfinite(state.amplitudes).all()
 
 
 # --- solve_sci_batch over a fixed subspace -------------------------------------------
@@ -244,7 +247,17 @@ def test_published_energy_mpi(data_dir, device_config):
 # tests above are what guard the number.
 
 
-def _check_diagonalize_fermionic_hamiltonian(data_dir, device_config, counts_path):
+def _check_diagonalize_fermionic_hamiltonian(
+    data_dir, device_config, counts_path, carryover_type=0
+):
+    """Run the qiskit-addon-sqd loop with SBD as the solver.
+
+    ``carryover_type=1`` drives the SBD-selected carryover path end to end: the loop
+    must accept ``sci_state=None``, take SBD's carryover in place of its own
+    threshold, and build the next iteration from it. ``symmetrize_spin`` is on, and
+    under it the loop ignores ``carryover_strings_b``, so the two lists must agree --
+    otherwise the beta selection would be silently dropped.
+    """
     from functools import partial
 
     from mpi4py import MPI
@@ -256,7 +269,10 @@ def _check_diagonalize_fermionic_hamiltonian(data_dir, device_config, counts_pat
     from qiskit.primitives import BitArray
     from qiskit_addon_sqd.fermion import diagonalize_fermionic_hamiltonian
 
-    from sbd.sbd_solver import solve_sci_batch
+    from sbd.sbd_solver import _addon_accepts_carryover, solve_sci_batch
+
+    if carryover_type and not _addon_accepts_carryover():
+        pytest.skip("installed qiskit-addon-sqd has no SCIResult.carryover")
 
     comm = MPI.COMM_WORLD
     hcore, eri, nuclear_repulsion = _load_hamiltonian(data_dir)
@@ -270,9 +286,15 @@ def _check_diagonalize_fermionic_hamiltonian(data_dir, device_config, counts_pat
         # eight digits; the loop only needs each iteration to converge. max_nb matches the
         # example notebook and upstream's own default. bit_length is inherited from
         # SOLVER_CONFIG and must not be overridden -- see the note there.
-        sbd_config=_sbd_config(comm, eps=1e-8, max_it=10, max_nb=10),
+        sbd_config=_sbd_config(
+            comm, eps=1e-8, max_it=10, max_nb=10, carryover_type=carryover_type
+        ),
         device_config=device_config,
     )
+
+    # Every iteration's results, as the loop hands them over. The callback runs on
+    # the control process only, which is also the only rank that asserts below.
+    iterations = []
 
     result = diagonalize_fermionic_hamiltonian(
         hcore,
@@ -288,12 +310,26 @@ def _check_diagonalize_fermionic_hamiltonian(data_dir, device_config, counts_pat
         # Seeded so a failure can be reproduced, though the assertions below do not
         # depend on which determinants the sampling happens to pick.
         seed=np.random.default_rng(42),
+        callback=iterations.append,
     )
 
     if comm.Get_rank() != 0:
         return
 
     _assert_result_is_consistent(result)
+
+    # max_iterations=2, so the second iteration was built from the first's carryover.
+    assert len(iterations) == 2
+    for results in iterations:
+        for r in results:
+            if carryover_type == 1:
+                assert r.sci_state is None
+                carryover_a, carryover_b = r.carryover
+                assert len(carryover_a) > 0
+                np.testing.assert_array_equal(carryover_a, carryover_b)
+            else:
+                assert r.sci_state is not None
+                assert r.carryover is None
 
     # A bracket rather than an equality: the subspace comes out of upstream's sampling.
     # The lower bound is the FCI energy, which no subspace of it can beat; the upper is
@@ -303,17 +339,25 @@ def _check_diagonalize_fermionic_hamiltonian(data_dir, device_config, counts_pat
     assert -76.25 < total_energy < -75.9
 
 
+@pytest.mark.parametrize("carryover_type", [0, 1])
 def test_diagonalize_fermionic_hamiltonian_standalone(
-    data_dir, device_config, counts_path
+    data_dir, device_config, counts_path, carryover_type
 ):
     """The self-consistent loop runs to completion in a single process."""
-    _check_diagonalize_fermionic_hamiltonian(data_dir, device_config, counts_path)
+    _check_diagonalize_fermionic_hamiltonian(
+        data_dir, device_config, counts_path, carryover_type
+    )
 
 
 @pytest.mark.mpi
-def test_diagonalize_fermionic_hamiltonian_mpi(data_dir, device_config, counts_path):
+@pytest.mark.parametrize("carryover_type", [0, 1])
+def test_diagonalize_fermionic_hamiltonian_mpi(
+    data_dir, device_config, counts_path, carryover_type
+):
     """The self-consistent loop runs to completion across the launched ranks."""
-    _check_diagonalize_fermionic_hamiltonian(data_dir, device_config, counts_path)
+    _check_diagonalize_fermionic_hamiltonian(
+        data_dir, device_config, counts_path, carryover_type
+    )
 
 
 # --- SBD-selected carryover skips the wavefunction dump ------------------------------
@@ -323,7 +367,7 @@ def test_diagonalize_fermionic_hamiltonian_mpi(data_dir, device_config, counts_p
 # of the file: a run that quietly kept writing it would still give the right energy.
 
 
-def test_sbd_carryover_skips_wavefunction_dump(data_dir, device_config, tmp_path):
+def _check_sbd_carryover_skips_wavefunction_dump(data_dir, device_config, tmp_path):
     """``carryover_type=1`` returns no SCI state and writes no wavefunction.
 
     Only type 1 qualifies: it ranks by the marginal weight the loop wants, so the
@@ -379,8 +423,20 @@ def test_sbd_carryover_skips_wavefunction_dump(data_dir, device_config, tmp_path
     assert not list(tmp_path.rglob("wavefunction.bin"))
 
 
-@pytest.mark.parametrize("carryover_type", [2, 3])
-def test_sbd_carryover_is_weight_ordered(
+def test_sbd_carryover_skips_wavefunction_dump_standalone(
+    data_dir, device_config, tmp_path
+):
+    """``carryover_type=1`` skips the dump in a single process."""
+    _check_sbd_carryover_skips_wavefunction_dump(data_dir, device_config, tmp_path)
+
+
+@pytest.mark.mpi
+def test_sbd_carryover_skips_wavefunction_dump_mpi(data_dir, device_config, tmp_path):
+    """``carryover_type=1`` skips the dump across the launched ranks."""
+    _check_sbd_carryover_skips_wavefunction_dump(data_dir, device_config, tmp_path)
+
+
+def _check_sbd_carryover_is_weight_ordered(
     data_dir, device_config, tmp_path, carryover_type
 ):
     """Types 2/3 keep the dump and hand over a weight-ordered carryover.
@@ -437,8 +493,31 @@ def test_sbd_carryover_is_weight_ordered(
             np.searchsorted(sorted_solved, strings_co), sorted_solved.size - 1
         )
         in_subspace = sorted_solved[pos] == strings_co
+        # Without this, both assertions below would pass on an empty selection.
+        assert in_subspace.any()
         # Strings that were in the subspace come first, ranked by descending weight;
         # the singles-generated ones have no weight and must follow.
         assert np.all(np.diff(in_subspace.astype(int)) <= 0)
         ranked = weights[order[pos[in_subspace]]]
         assert np.all(np.diff(ranked) <= 1e-12)
+
+
+@pytest.mark.parametrize("carryover_type", [2, 3])
+def test_sbd_carryover_is_weight_ordered_standalone(
+    data_dir, device_config, tmp_path, carryover_type
+):
+    """Types 2/3 hand over a weight-ordered carryover in a single process."""
+    _check_sbd_carryover_is_weight_ordered(
+        data_dir, device_config, tmp_path, carryover_type
+    )
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("carryover_type", [2, 3])
+def test_sbd_carryover_is_weight_ordered_mpi(
+    data_dir, device_config, tmp_path, carryover_type
+):
+    """Types 2/3 hand over a weight-ordered carryover across the launched ranks."""
+    _check_sbd_carryover_is_weight_ordered(
+        data_dir, device_config, tmp_path, carryover_type
+    )
