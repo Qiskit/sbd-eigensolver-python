@@ -5,7 +5,7 @@ features:
     ``carryover_type`` is non-zero in ``sbd_config``,
     :func:`sbd.sbd_solver.solve_sci` and :func:`sbd.sbd_solver.solve_sci_batch`
     return SBD's selection in ``SCIResult.carryover``, which ``qiskit-addon-sqd``
-    0.15.0 and later uses as given in place of its own amplitude threshold. With
+    0.14.0 and later uses as given in place of its own amplitude threshold. With
     an older ``qiskit-addon-sqd`` the selection is not reported and the default
     behavior is unchanged.
 

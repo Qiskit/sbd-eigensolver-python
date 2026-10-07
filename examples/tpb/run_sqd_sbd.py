@@ -52,14 +52,14 @@ from pyscf import ao2mo, tools
 from qiskit.primitives import BitArray
 from qiskit_addon_sqd.fermion import SCIResult, diagonalize_fermionic_hamiltonian
 
-# Subspace policies arrived in qiskit-addon-sqd 0.15.0 (#369). On an older addon the
+# Subspace policies arrived in qiskit-addon-sqd 0.14.0 (#369). On an older addon the
 # loop's own default schedule is the only one, selected by passing
 # carryover_threshold= directly, so keep that path working rather than raising.
 # Other policies (e.g. Trim SQD) are not exposed as flags; examples/tpb/README.md
 # shows how to pass one from Python.
 try:
     from qiskit_addon_sqd.fermion import StandardPolicy
-except ImportError:  # qiskit-addon-sqd < 0.15.0
+except ImportError:  # qiskit-addon-sqd < 0.14.0
     StandardPolicy = None
 
 
@@ -228,7 +228,7 @@ def parse_args():
                           "singles-extend and SBD re-sorts the result into canonical "
                           "order, so the amplitudes are needed to restore the "
                           "descending-weight order that SCIResult.carryover requires. "
-                          "Needs qiskit-addon-sqd >= 0.15.0 for SCIResult.carryover "
+                          "Needs qiskit-addon-sqd >= 0.14.0 for SCIResult.carryover "
                           "(added in #369); on an older addon the carryover is "
                           "ignored and the dump always happens.")
     sbd.add_argument("--sbd_carryover_ratio", type=float, default=None,
@@ -305,7 +305,7 @@ def build_policy(args, rank):
     """Build the SQD subspace policy, and warn when its threshold cannot take effect.
 
     Returns ``(policy, kwargs)``, where ``kwargs`` is what to pass to
-    ``diagonalize_fermionic_hamiltonian``. Since qiskit-addon-sqd 0.15.0 the loop
+    ``diagonalize_fermionic_hamiltonian``. Since qiskit-addon-sqd 0.14.0 the loop
     raises if given both ``policy=`` and ``carryover_threshold=``, so the threshold
     travels inside the policy; that keeps this driver usable as a template for a
     different policy (see examples/tpb/README.md). On an older addon there are no
@@ -607,7 +607,7 @@ def main():
             symmetrize_spin=bool(args.symmetrize_spin),
             callback=callback,
             seed=rand_seed,
-            # Either policy= or, on an addon older than 0.15.0, carryover_threshold=
+            # Either policy= or, on an addon older than 0.14.0, carryover_threshold=
             # -- never both, which the loop rejects. See build_policy.
             **policy_kwargs,
         )

@@ -119,7 +119,7 @@ carries into the next iteration instead of SQD; see
 [SBD-selected carryover](#sbd-selected-carryover). Run
 `python run_sqd_sbd.py --help` for the full list, which is grouped by layer.
 
-**Requirements:** see [Integration with qiskit-addon-sqd](../../README.md#integration-with-qiskit-addon-sqd) in the Python Bindings README (`pyscf`, `qiskit`, `qiskit-addon-sqd`). `--sbd_carryover_type` needs `qiskit-addon-sqd >= 0.15.0`; everything else works from `0.13.1`.
+**Requirements:** see [Integration with qiskit-addon-sqd](../../README.md#integration-with-qiskit-addon-sqd) in the Python Bindings README (`pyscf`, `qiskit`, `qiskit-addon-sqd`). `--sbd_carryover_type` needs `qiskit-addon-sqd >= 0.14.0`; everything else works from `0.13.1`.
 
 See [SQD Parameters](#sqd-parameters) below for the full reference, grouped by SQD loop / SBD solver / MPI grid / checkpointing.
 
@@ -291,7 +291,7 @@ For reference, upstream's own `TPB_SBD` struct defaults are looser still (`max_i
 
 By default SQD picks the next iteration's carryover by thresholding the amplitudes
 SBD returns. These flags let SBD pick it instead, using its own carryover rules, and
-report the result through `SCIResult.carryover` (`qiskit-addon-sqd >= 0.15.0`). SQD
+report the result through `SCIResult.carryover` (`qiskit-addon-sqd >= 0.14.0`). SQD
 then uses SBD's selection as given: `--sqd_carryover_threshold` stops applying, and the
 order SBD's carryover comes in is the order a `--max_dim` truncation keeps.
 
@@ -319,7 +319,7 @@ the whole solved subspace, so `--resume_from` seeds from that smaller set.
 
 ### Using a different subspace policy (Trim SQD)
 
-`qiskit-addon-sqd >= 0.15.0` lets the loop run a different per-iteration schedule,
+`qiskit-addon-sqd >= 0.14.0` lets the loop run a different per-iteration schedule,
 passed as a `policy`. The driver always uses the default, `StandardPolicy`, and does
 not expose others as flags. To try **Trim SQD** (`qiskit_addon_sqd.trim.TrimPolicy`),
 pass it from Python, with SBD as the solver as usual:
