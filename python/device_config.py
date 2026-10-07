@@ -25,16 +25,17 @@ class DeviceConfig:
     """
     Helper class to configure CPU vs GPU execution for SBD calculations.
     
-    Usage:
+    Usage::
+
         # Auto-detect (uses GPU if available)
         config = DeviceConfig.auto()
-        
+
         # Force CPU
         config = DeviceConfig.cpu()
-        
+
         # Force GPU with specific settings
         config = DeviceConfig.gpu(max_memory_gb=16)
-        
+
         # Apply to SBD configuration
         sbd_config = sbd.TPB_SBD()
         config.apply(sbd_config)

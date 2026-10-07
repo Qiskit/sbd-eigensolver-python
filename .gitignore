@@ -10,6 +10,10 @@ build/
 dist/
 *.egg-info/
 
+# Sphinx documentation
+docs/_build/
+docs/stubs/
+
 # editor / OS noise
 .DS_Store
 *.swp
