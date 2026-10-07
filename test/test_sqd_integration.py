@@ -329,7 +329,8 @@ def _check_diagonalize_fermionic_hamiltonian(
                 np.testing.assert_array_equal(carryover_a, carryover_b)
             else:
                 assert r.sci_state is not None
-                assert r.carryover is None
+                # SCIResult has no carryover field before qiskit-addon-sqd 0.14.0.
+                assert getattr(r, "carryover", None) is None
 
     # A bracket rather than an equality: the subspace comes out of upstream's sampling.
     # The lower bound is the FCI energy, which no subspace of it can beat; the upper is
