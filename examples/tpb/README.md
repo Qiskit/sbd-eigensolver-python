@@ -342,8 +342,10 @@ result = diagonalize_fermionic_hamiltonian(
     samples_per_batch=3000, num_batches=num_batches,
     norb=norb, nelec=nelec, symmetrize_spin=True,
     sci_solver=partial(solve_sci_batch, sbd_config={"eps": 1e-5, "max_it": 10}),
-    policy=policy,                # do not ALSO pass carryover_threshold=: it raises
+    policy=policy,
 )
+# Pass the threshold to the policy only. Also passing carryover_threshold= here
+# raises a ValueError.
 ```
 
 What changes compared to the default:
@@ -368,9 +370,7 @@ What changes compared to the default:
   instead.
 
 Trim SQD pays off when the samples far outnumber the subspace you can afford to
-diagonalize. On the bundled 275-bitstring h2o pool it doesn't: the merged subspace is
-much smaller than one batch and the energy comes out higher. Compare it with the
-default at the same subspace **dimension**, not the same settings.
+diagonalize.
 
 ### MPI grid parameters
 
