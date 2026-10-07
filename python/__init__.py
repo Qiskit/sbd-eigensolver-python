@@ -15,14 +15,16 @@ SBD (Selected Basis Diagonalization) Python Bindings
 
 This package provides Python bindings for the SBD library.
 
-Usage:
+Usage::
+
     import sbd
     results = sbd.tpb_diag_from_files(fcidump, adets, config)
 
     # Explicit init is optional — auto-initialized on first use
     sbd.init(device='gpu')              # set default device explicitly
 
-Device switching (CPU/GPU) within the same process:
+Device switching (CPU/GPU) within the same process::
+
     result_cpu = sbd.tpb_diag(..., device='cpu')
     result_gpu = sbd.tpb_diag(..., device='gpu')
 """
