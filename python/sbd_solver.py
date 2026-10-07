@@ -462,9 +462,11 @@ def assemble_rdms(results: dict, norb: int) -> tuple[np.ndarray | None, np.ndarr
     qiskit-addon-sqd (e.g. ``fermion.py``'s own ``solve_fermion``).
 
     SBD's documented layout (sbd-ext docs/user-guide.md, matching the C++
-    reference in apps/chemistry_tpb_selected_basis_diagonalization/main.cc):
+    reference in apps/chemistry_tpb_selected_basis_diagonalization/main.cc)::
+
         one_p_rdm[s][i + L*j]                 = <c+_{i,s} c_{j,s}>
         two_p_rdm[s+2t][i + L*j + L^2*k + L^3*l] = <c+_{i,s} c+_{j,t} c_{l,t} c_{k,s}>
+
     A Fortran-order reshape implements those flat-index formulas directly
     (arr_F[i, j] / arr_F[i, j, k, l]); rdm1 needs no further transpose
     (it is symmetric here regardless), and rdm2's spin-summed block sum
