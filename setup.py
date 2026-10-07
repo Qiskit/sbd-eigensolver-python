@@ -473,19 +473,42 @@ def _homebrew_prefix():
         return None
 
 
+# Where nvc++ sits relative to whichever directory the environment points at.
+# NVHPC installs the compiler in <version root>/compilers/bin, so probing only
+# <root>/bin misses the value NVIDIA itself hands out -- see NVHPC_VARS below.
+_NVHPC_BIN_RELATIVE = ('bin', os.path.join('compilers', 'bin'))
+
+# NVHPC_HOME is this package's own variable and is documented in INSTALL.md as
+# the compilers directory. NVHPC_ROOT is set by NVIDIA's shipped modulefile, to
+# the version root .../Linux_x86_64/<version> -- that file does
+#     setenv NVHPC_ROOT $nvhome/$target/$version
+#     prepend-path PATH $nvcompdir/bin
+# so the compiler is one level down from NVHPC_ROOT. Accept both variables, and
+# under each accept both layouts, so that the compilers directory, the version
+# root, and a copy of $NVHPC_ROOT all work rather than silently yielding a
+# CPU-only build.
+_NVHPC_VARS = ('NVHPC_HOME', 'NVHPC_ROOT')
+
+
 def find_nvidia_hpc_sdk():
-    nvhpc_home = os.environ.get('NVHPC_HOME', None)
-    if nvhpc_home:
-        nvcxx_path = os.path.join(nvhpc_home, 'bin', 'nvc++')
-        if os.path.exists(nvcxx_path):
-            print(f"Found NVIDIA HPC SDK at: {nvhpc_home}")
-            nvhpc_bin = os.path.join(nvhpc_home, 'bin')
-            current_path = os.environ.get('PATH', '')
-            if nvhpc_bin not in current_path:
-                os.environ['PATH'] = f"{nvhpc_bin}:{current_path}"
-            return nvcxx_path, True
-        else:
-            print(f"Warning: NVHPC_HOME set to {nvhpc_home} but nvc++ not found")
+    """Locate nvc++: the NVHPC_* variables first, then PATH."""
+    for var in _NVHPC_VARS:
+        root = os.environ.get(var)
+        if not root:
+            continue
+        for relative in _NVHPC_BIN_RELATIVE:
+            nvcxx_path = os.path.join(root, relative, 'nvc++')
+            if os.path.exists(nvcxx_path):
+                print(f"Found NVIDIA HPC SDK at: {nvcxx_path} (via {var})")
+                nvhpc_bin = os.path.dirname(nvcxx_path)
+                current_path = os.environ.get('PATH', '')
+                # Compare path entries, not substrings: a directory whose name
+                # happens to be contained in some other entry is not on PATH.
+                if nvhpc_bin not in current_path.split(os.pathsep):
+                    os.environ['PATH'] = f"{nvhpc_bin}{os.pathsep}{current_path}"
+                return nvcxx_path, True
+        tried = ', '.join(os.path.join(root, r, 'nvc++') for r in _NVHPC_BIN_RELATIVE)
+        print(f"Warning: {var} is set but no nvc++ found. Tried: {tried}")
     import shutil
     nvcxx_path = shutil.which('nvc++')
     if nvcxx_path:

@@ -15,11 +15,14 @@ diagonalization (SQD) workflow. See :mod:`sbd.sbd_solver`.
 Getting started
 ---------------
 
-Installation, the environment variables that control which backends are compiled, and
-runnable examples are documented in the `README
-<https://github.com/Qiskit/sbd-eigensolver-python/blob/main/README.md>`__ in the root
-of this project's repository. Example scripts and a notebook live in `python/examples
-<https://github.com/Qiskit/sbd-eigensolver-python/tree/main/python/examples>`__.
+The `README <https://github.com/Qiskit/sbd-eigensolver-python/blob/main/README.md>`__
+in the root of this project's repository introduces the package and its
+``qiskit-addon-sqd`` integration. `INSTALL.md
+<https://github.com/Qiskit/sbd-eigensolver-python/blob/main/INSTALL.md>`__ covers
+installation in full, including the environment variables that control which backends
+are compiled. Example scripts and a notebook live in `examples
+<https://github.com/Qiskit/sbd-eigensolver-python/tree/main/examples>`__, organized by
+basis type, with a README in each folder.
 
 A minimal diagonalization looks like this::
 
