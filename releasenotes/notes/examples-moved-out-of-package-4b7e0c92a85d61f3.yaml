@@ -1,0 +1,14 @@
+---
+upgrade:
+  - |
+    The example scripts and notebook have moved from ``python/examples`` to
+    ``examples/tpb``, placing them beside the package rather than inside it. They
+    were never importable from the installed ``sbd`` package in either layout,
+    but they were included in the source distribution under the old path, so a
+    reference to ``python/examples`` -- in a checkout, an unpacked sdist, or a
+    bookmark -- needs updating.
+
+    Installation instructions have moved out of ``README.md`` into a separate
+    ``INSTALL.md``, which is also shipped in the source distribution. The
+    examples have gained their own ``examples/tpb/README.md`` describing the
+    drivers and their options.

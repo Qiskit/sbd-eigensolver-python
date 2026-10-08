@@ -1,0 +1,14 @@
+---
+upgrade:
+  - |
+    The ``SBD_BUILD_BACKEND=both`` build option has been replaced by
+    ``SBD_BUILD_BACKEND=all``; the old spelling is now rejected with an error
+    rather than silently misinterpreted. The accepted values are ``auto`` (the
+    default), ``all``, ``cpu``, ``gpu`` (alias ``gpu_thrust``) and
+    ``gpu_omp_offload``.
+
+    ``auto`` now builds every backend the detected toolchain supports, which on
+    NVHPC means all three rather than just CPU and Thrust, so one installation can
+    serve CPU and both GPU paths. Since Thrust is NVIDIA-only,
+    ``SBD_BUILD_BACKEND=gpu`` now fails on an AMD host instead of quietly building
+    the CPU backend alone; use ``gpu_omp_offload`` or ``auto`` there.

@@ -1,0 +1,10 @@
+---
+features:
+  - |
+    macOS is now a supported platform, declared in the trove classifiers and
+    covered by CI on both Linux and macOS. Building on macOS requires an OpenMP
+    runtime, which Apple's clang does not ship -- install one first, for example
+    with ``brew install libomp``. Homebrew's prefix is discovered by asking
+    ``brew --prefix`` rather than assuming ``/opt/homebrew``, so Intel and Apple
+    silicon Macs are both handled, and the built extensions carry the rpath
+    entries needed to resolve keg-only libraries at import time.

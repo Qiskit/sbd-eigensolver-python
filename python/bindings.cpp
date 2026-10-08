@@ -304,6 +304,8 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                       "Maximum time in seconds")
         .def_readwrite("init", &sbd::tpb::SBD::init,
                       "Initialization method")
+        .def_readwrite("seed", &sbd::tpb::SBD::seed,
+                      "Seed for the random initial vector (init = 1)")
         .def_readwrite("do_shuffle", &sbd::tpb::SBD::do_shuffle,
                       "Shuffle determinants flag")
         .def_readwrite("do_rdm", &sbd::tpb::SBD::do_rdm,

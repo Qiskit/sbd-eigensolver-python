@@ -1,0 +1,11 @@
+---
+fixes:
+  - |
+    A ``temp_dir`` that does not yet exist is now created, along with any missing
+    parents, instead of hanging a multi-rank run. Handing such a path to
+    :func:`sbd.sbd_solver.solve_sci` raised ``FileNotFoundError`` on rank 0, and it
+    did so before the broadcast that hands the created directory to the other
+    ranks -- so the remaining ranks waited in that broadcast forever and the job
+    hung with no output rather than reporting the error. Directory setup is now
+    wrapped so that its outcome is broadcast: on failure every rank raises
+    together.

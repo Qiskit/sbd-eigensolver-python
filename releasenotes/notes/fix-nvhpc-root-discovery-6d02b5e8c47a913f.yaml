@@ -1,0 +1,16 @@
+---
+fixes:
+  - |
+    The build now finds ``nvc++`` from ``NVHPC_ROOT`` as well as ``NVHPC_HOME``,
+    and under either variable accepts both the compilers directory and the
+    version root above it. NVIDIA's own modulefile sets ``NVHPC_ROOT`` to the
+    version root, where the compiler sits one level down in ``compilers/bin``;
+    previously only ``NVHPC_HOME`` was read and only ``<root>/bin`` was probed,
+    so a value handed out by NVIDIA matched neither. Where that left ``nvc++``
+    off ``PATH`` as well, the GPU backends were skipped and
+    ``SBD_BUILD_BACKEND=gpu_omp_offload`` failed reporting that NVHPC was
+    missing, on a host where it was installed and the environment was pointing
+    at it.
+
+    A variable that is set but yields no compiler now names the paths it tried,
+    rather than reporting only that ``nvc++`` was not found.

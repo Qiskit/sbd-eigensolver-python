@@ -1,0 +1,15 @@
+---
+fixes:
+  - |
+    AMD GPU detection and reporting have been corrected. The ``rocm-smi`` probe ran
+    with a two-second timeout, which is shorter than the tool takes to answer on a
+    populated node -- so device detection flaked and could resolve to the CPU on a
+    machine with eight GPUs. The probe now allows enough time, and requires a
+    per-device line in the output rather than treating a successful exit as proof
+    that a GPU is present, since ``rocm-smi`` exits successfully with none.
+  - |
+    ``get_device_info()`` no longer overcounts AMD GPUs. It counted every output
+    line mentioning a GPU, reporting 40 devices on a node with eight, and now
+    counts distinct device indices. Relatedly, ``print_device_info()`` no longer
+    reports the CPU as available while :func:`sbd.available_backends` reports that
+    nothing was compiled; it now leads with the backends that were actually built.

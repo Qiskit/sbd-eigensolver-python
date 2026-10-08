@@ -1,0 +1,14 @@
+---
+features:
+  - |
+    AMD GPUs are now supported through the OpenMP target-offload backend. The same
+    extension source builds under either vendor -- ``nvc++ -mp=gpu`` for NVIDIA,
+    ``amdclang++ --offload-arch=gfx*`` for AMD -- so the ``'gpu-omp'`` device is
+    vendor-neutral. The aliases ``'gpu-amd-omp'``, ``'gpu-rocm-omp'`` and
+    ``'rocm'`` resolve to it, alongside the existing ``'gpu-omp-offload'``,
+    ``'gpu-nvhpc-omp'`` and ``'gpu-nvidia-omp'``, and
+    ``sbd.get_backend('gpu-omp').__sbd_offload_target__`` reports the target a
+    given installation was actually built for.
+
+    The Thrust backend (``'gpu'``) remains NVIDIA-only, since upstream wires it to
+    ``nvc++ -cuda`` and there is no rocThrust configuration to build.
