@@ -1,0 +1,18 @@
+---
+fixes:
+  - |
+    The determinant word size used by :func:`sbd.sbd_solver.solve_sci` and
+    :func:`sbd.sbd_solver.solve_sci_batch` no longer defaults to 64, which was
+    undefined behavior. SBD packs determinant bitstrings into words of
+    ``bit_length`` bits and builds its masks by shifting a 64-bit word left by
+    that amount; a shift of 64 is undefined, and in practice the shift count is
+    masked to zero, collapsing the mask. The affected routine is reached from the
+    multi-rank determinant redistribution and sorting paths. The default is now
+    20, matching upstream's documented default, and the maximum usable value is
+    63.
+  - |
+    A caller-supplied ``bit_length`` in ``sbd_config`` is now honored end to end.
+    The value previously reached the C++ engine but not the code that packs the
+    determinants, which kept using 64, so the two disagreed about how to interpret
+    the same words and the determinants were silently corrupted. The configuration
+    is now built before packing, so one value is used throughout.

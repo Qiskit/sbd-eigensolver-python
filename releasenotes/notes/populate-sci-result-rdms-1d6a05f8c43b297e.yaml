@@ -1,0 +1,17 @@
+---
+features:
+  - |
+    :func:`sbd.sbd_solver.solve_sci` and
+    :func:`sbd.sbd_solver.solve_sci_batch` now populate the ``rdm1`` and ``rdm2``
+    fields of the returned ``SCIResult`` when RDMs were requested with
+    ``sbd_config={"do_rdm": 1}``. SBD computed these all along and the bindings
+    returned them, but the solver never read the keys, so the fields were left at
+    their ``None`` default even for a caller who had asked for them. The
+    spin-summed tensors use the index convention that ``SCIResult.rdm1`` and
+    ``rdm2`` are contracted with elsewhere in ``qiskit-addon-sqd``, verified
+    against PySCF's own ``make_rdm1``/``make_rdm2`` on all three backends.
+
+    ``do_rdm = 0`` remains the default, and in that case both fields stay ``None``
+    exactly as before. The conversion is also available on its own as
+    :func:`sbd.sbd_solver.assemble_rdms`, for callers working with the raw result
+    dictionary returned by :func:`sbd.tpb_diag` and :func:`sbd.gdb_diag`.
