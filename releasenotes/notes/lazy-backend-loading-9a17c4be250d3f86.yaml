@@ -1,0 +1,23 @@
+---
+upgrade:
+  - |
+    Compiled backends are now imported lazily, one per process: only the backend
+    for the device actually in use is loaded. This is what makes it safe for all
+    three backends to be installed side by side, and it is not merely an
+    optimization. When the CPU extension and the OpenMP target-offload extension
+    are both loaded into one process, the OpenMP runtime is left initialized
+    host-only, after which offload regions run on the host while device queries
+    still report a GPU -- so the run looks accelerated, returns the correct
+    energy, and exits successfully. Code that imports the ``_core_*`` extension
+    modules directly should import only one; :func:`sbd.has_backend_conflict`
+    reports the bad combination.
+  - |
+    ``OMP_TARGET_OFFLOAD`` is now set to ``MANDATORY`` before the OpenMP
+    target-offload backend is imported, unless it is already set to something
+    non-empty. Under the OpenMP default of ``DEFAULT``, a rank with no visible
+    device falls back to the host and returns a plausible answer with no
+    indication that nothing was offloaded -- reachable from an empty
+    ``CUDA_VISIBLE_DEVICES``, a mispinning launcher, or a GPU-less node.
+    ``MANDATORY`` turns each of those into an immediate error. Set
+    ``OMP_TARGET_OFFLOAD=DEFAULT`` explicitly to restore host fallback, for
+    example to smoke-test on a machine with no GPU.
