@@ -1,0 +1,8 @@
+---
+upgrade:
+  - |
+    The declared minimum versions of several dependencies have been raised to
+    the oldest ones this package actually builds and runs against:
+    ``numpy>=1.26.0`` (was 1.19.0), ``mpi4py>=4.0.0`` (was 3.0.0),
+    ``pybind11>=2.12.0`` (was 2.6.0), and ``setuptools>=77.0.1`` (was 77).
+    The previous floors were aspirational rather than tested.
