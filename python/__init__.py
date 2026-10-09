@@ -526,13 +526,23 @@ def LoadAlphaDets(filename, bit_length, total_bit_length, device=None):
 
 
 def makestring(config, bit_length, total_bit_length, device=None):
-    """Convert determinant to string representation."""
+    """Render a packed determinant as a ``total_bit_length``-character string.
+
+    The inverse of :func:`from_string`, and subject to the same right-to-left
+    word packing, which :func:`from_strings` describes.
+    """
     _ensure_initialized()
     return get_backend(device).makestring(config, bit_length, total_bit_length)
 
 
 def from_string(s, bit_length, total_bit_length, device=None):
-    """Convert binary string to determinant format."""
+    """Convert a binary string to SBD's packed determinant format.
+
+    Returns a list of ``size_t`` words, e.g. ``from_string("0011", 20, 4)`` is
+    ``[3]``. :func:`makestring` is the inverse. See :func:`from_strings`, the
+    bulk form, for the word-packing convention and for why it is worth
+    preferring that form outside of one-off calls.
+    """
     _ensure_initialized()
     return get_backend(device).from_string(s, bit_length, total_bit_length)
 
@@ -544,6 +554,25 @@ def from_strings(strings, bit_length, total_bit_length, device=None):
     determinant across the Python boundary. Prefer it for anything larger than a
     handful: the per-call form costs tens of thousands of round trips on the
     vendored inputs alone.
+
+    Each row holds ``total_bit_length`` bits packed ``bit_length`` to a word, so
+    a bitstring longer than ``bit_length`` occupies more than one word. The
+    packing runs from the **right end** of the string: its trailing
+    ``bit_length`` characters become word 0, the next ``bit_length`` to the left
+    become word 1, and so on, so the leading characters of a multi-word string
+    land in the *last* word rather than the first::
+
+        from_strings(["0011"], 20, 4)           # -> array([[3]], dtype=uint64)
+        from_strings(["1" + "0" * 69], 63, 70)  # -> array([[ 0, 64]], ...)
+        from_strings(["0" * 69 + "1"], 63, 70)  # -> array([[1, 0]], ...)
+
+    Within a word the rightmost character is the least significant bit, which is
+    why ``"0011"`` packs to ``3`` rather than ``12``. Getting this backwards
+    produces a valid-looking but wrong subspace rather than an error, so check
+    round trips with :func:`makestring` when building determinants by hand.
+
+    ``bit_length`` must match the ``bit_length`` of the config passed to the
+    diagonalizers, since it sets how many words each determinant occupies.
     """
     _ensure_initialized()
     return get_backend(device).from_strings(list(strings), bit_length, total_bit_length)
@@ -579,13 +608,17 @@ def tpb_diag_from_files(fcidumpfile, adetfile, sbd_data,
         fcidumpfile: Path to FCIDUMP file.
         adetfile: Path to alpha determinants file.
         sbd_data: TPB_SBD configuration object.
-        loadname: Path to load initial wavefunction (optional).
-        savename: Path to save final wavefunction (optional).
+        loadname: Path prefix to load an initial wavefunction from (optional).
+        savename: Path prefix to save the final wavefunction to (optional).
         device: Override device ('cpu', 'gpu', or None for default).
 
     Returns:
         dict with keys: energy, density, carryover_adet, carryover_bdet,
         one_p_rdm, two_p_rdm.
+
+    Note:
+        As with :func:`tpb_diag`, no amplitudes are returned in the dict; see
+        that function for the two ways of writing them to disk.
     """
     _ensure_initialized()
     backend = get_backend(device)
@@ -604,13 +637,42 @@ def tpb_diag(fcidump, adet, bdet, sbd_data,
         adet: Alpha determinants.
         bdet: Beta determinants.
         sbd_data: TPB_SBD configuration object.
-        loadname: Path to load initial wavefunction (optional).
-        savename: Path to save final wavefunction (optional).
+        loadname: Path prefix to load an initial wavefunction from (optional).
+        savename: Path prefix to save the final wavefunction to (optional). See
+            the note below: for reading amplitudes back,
+            ``sbd_data.dump_matrix_form_wf`` is usually the one you want.
         device: Override device ('cpu', 'gpu', or None for default).
 
     Returns:
         dict with keys: energy, density, carryover_adet, carryover_bdet,
         one_p_rdm, two_p_rdm.
+
+    Note:
+        The returned dict holds no wavefunction amplitudes. There are two ways
+        to get them, and they write *different* formats -- do not mix them up:
+
+        ``sbd_data.dump_matrix_form_wf = "wf.bin"`` writes the full
+        ``len(adet) x len(bdet)`` subspace, gathered onto one rank, as a bare
+        row-major array of ``float64`` with **no header** -- so
+        ``np.fromfile(path).reshape(len(adet), len(bdet))`` reads it. Naming it
+        ``.dat`` or ``.txt`` instead writes a text table in which every
+        amplitude is labelled with its own alpha and beta bitstring, which is
+        the easiest form to inspect by hand. This is the mechanism this
+        package's own SQD integration uses.
+
+        ``savename`` instead writes one file per b_comm position,
+        ``f"{savename}{rank_b:06d}.bin"``, each holding only **that rank's
+        block** of the subspace: three ``size_t`` headers
+        (``adet_range``, ``bdet_range``, ``det_length``), then that block's
+        alpha and then beta determinant words, then
+        ``adet_range x bdet_range`` ``float64`` amplitudes. It pairs with
+        ``loadname`` for restarting a run, so it is the better choice for
+        checkpointing and the worse one for analysis.
+
+        Amplitudes are ordered by ``adet``/``bdet`` as the diagonalizer saw
+        them. ``sort_bitarray`` removes duplicates as well as sorting, so pass
+        lists already in that form if you need to label the rows and columns
+        yourself.
     """
     _ensure_initialized()
     backend = get_backend(device)
