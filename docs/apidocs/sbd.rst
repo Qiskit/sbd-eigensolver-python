@@ -66,7 +66,11 @@ Fields shared by ``TPB_SBD`` and ``GDB_SBD``:
      - Carryover selection parameters. Which of the two a given ``carryover_type``
        reads differs, and SBD silently ignores the other.
    * - ``bit_length``
-     - Bits per word when packing determinants. At most 63.
+     - Bits per word when packing determinants. At most 63; 64 is undefined
+       behavior in SBD's multi-rank redistribution. For GDB's heatbath expansion
+       (``carryover_type`` 2 or 3) it must also be even whenever a determinant spans
+       more than one word, or the expansion crashes or returns a wrong energy. The
+       ``examples/gdb`` drivers require an even value of at most 62.
 
 Fields of ``TPB_SBD`` only:
 
@@ -110,7 +114,9 @@ Fields of ``GDB_SBD`` only:
        that divides memory. With more than 1, each rank passes only its own shard to
        :func:`gdb_diag`.
    * - ``t_comm_size``
-     - MPI ranks spanning tasks. Must not exceed ``b_comm_size``.
+     - MPI ranks spanning tasks. Must not exceed ``b_comm_size``. The rank count must
+       be a multiple of ``t_comm_size * b_comm_size``; on the Thrust backend it must
+       equal it, since GDB on Thrust has no helper dimension.
    * - ``carryover_type``
      - ``1`` truncates by weight; ``2`` and ``3`` expand by heatbath selection.
    * - ``heatbath_cutoff``
