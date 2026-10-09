@@ -224,6 +224,7 @@ config = sbd.TPB_SBD()
 | `adet_comm_size` | 1 | Alpha determinant communicator size |
 | `bdet_comm_size` | 1 | Beta determinant communicator size |
 | `task_comm_size` | 1 | Task communicator size |
+| `dump_matrix_form_wf` | `""` | Write the wavefunction amplitudes to this path — see [Getting the TPB amplitudes](#getting-the-tpb-amplitudes) |
 
 Total MPI ranks = `task_comm_size × adet_comm_size × bdet_comm_size`.
 
@@ -266,6 +267,37 @@ results = sbd.tpb_diag(fcidump, adet, bdet, sbd_data,
 ```
 
 **Returns:** `dict` with keys `energy`, `density`, `carryover_adet`, `carryover_bdet`, `one_p_rdm`, `two_p_rdm`.
+
+#### Getting the TPB amplitudes
+
+Neither return dict holds the wavefunction amplitudes. Two separate mechanisms write them, in **different formats**, and the one named in the function signature is not the one most callers want:
+
+| | `sbd_data.dump_matrix_form_wf` | `savename` argument |
+|---|---|---|
+| Writes | the full `len(adet) × len(bdet)` subspace, gathered onto one rank | one file per b_comm position, each holding **only that rank's block** |
+| Path | exactly what you set | `f"{savename}{rank_b:06d}.bin"` |
+| Header | **none** | three `size_t` (`adet_range`, `bdet_range`, `det_length`), then that block's alpha and beta determinant words |
+| Payload | `float64`, row-major over α×β | `adet_range × bdet_range` `float64` |
+| Intended for | analysis | checkpoint/restart, paired with `loadname` |
+
+So the whole-subspace read is just:
+
+```python
+config.dump_matrix_form_wf = "wf.bin"
+results = sbd.tpb_diag(fcidump, adet, bdet, config)
+
+amplitudes = np.fromfile("wf.bin").reshape(len(adet), len(bdet))
+```
+
+Naming that file `.dat` or `.txt` instead writes a text table labelling every amplitude with its own alpha and beta bitstring — the easiest form to inspect by hand, and it sidesteps having to reconstruct the ordering yourself:
+
+```
+<amplitude> # <alpha index>: <alpha bitstring> <beta index>: <beta bitstring>
+```
+
+Be aware that this text form is written with the stream's default formatting, so amplitudes land with only ~6 significant digits; use the binary form when you need full `float64` precision.
+
+Rows and columns follow `adet`/`bdet` as the diagonalizer saw them. `sort_bitarray` removes duplicates as well as sorting, so pass lists already in that form if you intend to label the axes yourself. This is the mechanism [`sbd_solver.py`](python/sbd_solver.py) uses to populate `SCIState.amplitudes`.
 
 ```python
 # GDB: over an explicit list of full determinants rather than a product space
