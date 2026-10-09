@@ -13,4 +13,5 @@ upgrade:
     accepted by :func:`sbd.sbd_solver.solve_sci` is now skipped without warning,
     since unknown keys are ignored. To change the helper dimension of the MPI
     grid, change the number of ranks or one of ``adet_comm_size``,
-    ``bdet_comm_size`` and ``task_comm_size``.
+    ``bdet_comm_size`` and ``task_comm_size`` (``b_comm_size`` and
+    ``t_comm_size`` for ``GDB_SBD``).

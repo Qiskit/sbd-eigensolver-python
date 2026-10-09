@@ -11,7 +11,6 @@ fixes:
     that it removes. A caller who passed them got a ``RuntimeError`` complaining
     that the amplitude count did not match the subspace size, rejecting a run that
     had in fact succeeded; such a call now completes, returning the amplitudes for
-    the distinct determinants. Ordering was not observably wrong before, since the
-    canonical order happens to coincide with ascending integer order, but nothing
-    upstream guarantees that -- and if it ever stopped holding, the result would
-    have been correct amplitudes against the wrong labels, with no error raised.
+    the distinct determinants. Ordering was not wrong before: SBD's canonical
+    order is ascending integer order by construction, so only duplicates were
+    affected.

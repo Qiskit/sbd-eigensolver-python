@@ -4,8 +4,11 @@ features:
     Two build options have been exposed for running the Thrust backend on an MPI
     that cannot address device memory: ``SBD_NON_CUDA_AWARE_MPI=1`` stages every
     transfer through host memory, and ``SBD_THRUST_SAFE_MPI_ALLREDUCE=1`` stages
-    only the allreduce, which is the cheaper of the two. Without one of these, a
-    GPU-aware MPI is a hard requirement of that backend.
+    only the allreduce. The second is cheaper but may not be enough on its own,
+    since it leaves the point-to-point transfers of device buffers unstaged; on an
+    MPI whose UCX has no CUDA support, only ``SBD_NON_CUDA_AWARE_MPI=1`` gave
+    correct energies. Without one of these, a GPU-aware MPI is a hard requirement
+    of that backend.
 
     Both are compile-time defines, so they must be set before installing, and
     changing one means rebuilding. Setting them in the environment of an existing
