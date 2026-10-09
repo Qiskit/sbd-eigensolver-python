@@ -25,3 +25,11 @@ upgrade:
     :func:`sbd.gdb_diag` now rejects ``GDB_SBD.method`` values 2 and 3. GDB
     implements only Davidson (methods 0 and 1); the Lanczos methods exist for
     TPB alone, so these values previously did not select Lanczos for GDB.
+  - |
+    With ``GDB_SBD.b_comm_size`` greater than 1, the ``savename`` argument of
+    :func:`sbd.gdb_diag` writes one file per basis shard,
+    ``f"{savename}{rank_b:06d}.bin"``, each holding only that shard's
+    determinants and amplitudes. Previously ``b_comm_size`` had to be 1, so there
+    was always a single ``f"{savename}000000.bin"`` holding the whole
+    wavefunction. Code that reads only that file now sees just the first shard,
+    and must read all ``b_comm_size`` files instead.

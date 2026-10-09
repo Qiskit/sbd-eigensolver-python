@@ -143,8 +143,8 @@ def parse_args():
                        dest='max_it', help='Maximum Davidson iterations per round')
     parser.add_argument('--block', '--max_nb', type=int, default=10,
                        dest='max_nb', help='Maximum number of basis vectors')
-    parser.add_argument('--bit_length', type=int, default=64,
-                       help='Bits per packed word')
+    parser.add_argument('--bit_length', type=int, default=62,
+                       help='Bits per packed word: even, at most 62')
     parser.add_argument('--carryover_type', type=int, default=2, choices=[2, 3],
                        help='Heatbath variant: 2 or 3. Types 0 and 1 do not expand, '
                             'so they cannot drive this loop')
@@ -163,6 +163,15 @@ def parse_args():
                        help='Write the per-round (dimension, energy) series as JSON')
 
     args = parser.parse_args()
+    # Even, and at most 62. 64 overflows the shift in SBD's bitadvance(), reached
+    # whenever a placement scheme redistributes determinants. SBD's alpha/beta
+    # conversions assume an even word size once a determinant spans two words:
+    # getHalfDets (chemistry/gdb/helper.h) in every build, and DetFromAlphaBeta
+    # under SBD_TRADMODE. The heatbath expansion then crashes or, with
+    # SBD_TRADMODE off, returns a wrong energy (h2o at 25, 31, 33 and 47).
+    if args.bit_length % 2 or not 2 <= args.bit_length <= 62:
+        parser.error(f"--bit_length must be even and between 2 and 62, "
+                     f"got {args.bit_length}")
 
     # One determinant cannot be sharded: rank 0 owns it, the rest get empty shards,
     # and a single parent gives OpenMP nothing to divide either.
@@ -201,9 +210,22 @@ def interleave(alpha, beta):
 # already a ~6% addition to the read-and-pack this replaces nothing of.
 _POPCOUNT = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
 
-# Interleaved layout: alpha sits on the even bit positions, beta on the odd ones.
-_ALPHA_MASK = np.uint64(0x5555555555555555)
-_BETA_MASK = np.uint64(0xAAAAAAAAAAAAAAAA)
+# Interleaved layout: alpha sits on the even global bit positions, beta on the odd
+# ones. Word j holds global bits j*bit_length upward, so its alpha bits are the
+# even positions within it when j*bit_length is even and the odd ones when it is
+# odd. That makes the masks per word, and lets them handle any bit_length.
+_EVEN_BITS = 0x5555555555555555
+_ODD_BITS = 0xAAAAAAAAAAAAAAAA
+
+
+def _spin_masks(n_words, bit_length):
+    """Per-word (alpha, beta) masks for an interleaved determinant."""
+    used = (1 << bit_length) - 1
+    even, odd = _EVEN_BITS & used, _ODD_BITS & used
+    starts_even = [(j * bit_length) % 2 == 0 for j in range(n_words)]
+    alpha = np.array([even if s else odd for s in starts_even], dtype=np.uint64)
+    beta = np.array([odd if s else even for s in starts_even], dtype=np.uint64)
+    return alpha, beta
 
 
 def _popcount_rows(words):
@@ -212,15 +234,16 @@ def _popcount_rows(words):
         axis=1, dtype=np.int64)
 
 
-def spin_weights(det):
+def spin_weights(det, bit_length):
     """Per-determinant (n_alpha, n_beta) for a packed interleaved determinant array."""
     words = np.ascontiguousarray(det, dtype=np.uint64)
     if words.ndim == 1:
         words = words.reshape(1, -1)
-    return _popcount_rows(words & _ALPHA_MASK), _popcount_rows(words & _BETA_MASK)
+    alpha, beta = _spin_masks(words.shape[1], bit_length)
+    return _popcount_rows(words & alpha), _popcount_rows(words & beta)
 
 
-def check_spin_weights(det, nelec, ms2, bit_length=64):
+def check_spin_weights(det, nelec, ms2, bit_length):
     """Refuse a determinant list whose electron counts per spin are not uniform.
 
     A wrong bit order is the failure this catches, and it is worth catching here
@@ -233,11 +256,9 @@ def check_spin_weights(det, nelec, ms2, bit_length=64):
     Costs about 0.018 s per million determinants -- a few percent of the read and
     pack that precede it.
     """
-    if bit_length != 64:
-        return  # the masks above assume 64-bit words
     want_a = (nelec + ms2) // 2
     want_b = nelec - want_a
-    got_a, got_b = spin_weights(det)
+    got_a, got_b = spin_weights(det, bit_length)
     bad = (got_a != want_a) | (got_b != want_b)
     n_bad = int(bad.sum())
     if not n_bad:

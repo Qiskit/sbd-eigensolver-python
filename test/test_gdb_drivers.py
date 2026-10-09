@@ -320,6 +320,42 @@ def test_concatenated_counts_are_refused_with_a_diagnosis(tmp_path):
     assert "INTERLEAVED" in combined, "the message should name the likely cause"
 
 
+@pytest.mark.parametrize("bit_length", [20, 30])
+def test_the_weight_check_does_not_opt_out_of_other_bit_lengths(tmp_path, bit_length):
+    """The refusal holds at every accepted word size, not only the default.
+
+    The check used to return silently unless ``bit_length == 64``, which dropped the
+    one validation that nothing downstream replaces. Both values here split h2o's
+    48 bits over several words, so the masks are applied per word.
+    """
+    _require(COUNTS_FILE)
+    _require(H2O_DIR / "fcidump.txt")
+    _, bad = _counts_as_files(tmp_path)
+    completed = _heatbath_on(bad, tmp_path, extra=("--bit_length", str(bit_length)))
+    assert completed.returncode != 0, (
+        f"mis-ordered determinants were accepted at --bit_length {bit_length}"
+    )
+    combined = completed.stdout + completed.stderr
+    assert "do not have 5 alpha and 5 beta electrons" in combined, combined[-2000:]
+
+
+def test_interleaved_counts_are_accepted_over_several_words(tmp_path):
+    """Per-word masks must not turn a correct file into a false refusal."""
+    _require(COUNTS_FILE)
+    _require(H2O_DIR / "fcidump.txt")
+    good, _ = _counts_as_files(tmp_path)
+    _assert_ok(_heatbath_on(good, tmp_path, extra=("--bit_length", "20")))
+
+
+@pytest.mark.parametrize("script", ["run_gdb_diag.py", "run_gdb_heatbath.py"])
+@pytest.mark.parametrize("bit_length", ["64", "31"])
+def test_drivers_refuse_an_unsafe_word_size(script, bit_length):
+    """64 overflows a shift in SBD; odd sizes break its alpha/beta conversion."""
+    completed = _run(script, ["--bit_length", bit_length])
+    assert completed.returncode != 0
+    assert "--bit_length must be even and between 2 and 62" in completed.stderr
+
+
 def test_skip_weight_check_bypasses_the_validation(tmp_path):
     """The escape hatch must skip the check, not merely survive it.
 

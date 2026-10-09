@@ -137,7 +137,7 @@ Solver, MPI and output — the same meanings as in `run_gdb_diag.py`:
 | `--device` | `cpu` or `gpu` (Thrust) are the two real choices; `gpu-omp` and `auto` run GDB on the host, see [Choosing a backend](#choosing-a-backend) | `cpu` |
 | `--method` | 0=Davidson, 1=Davidson storing the Hamiltonian. GDB has no Lanczos | `0` |
 | `--tolerance` / `--iteration` / `--block` | Davidson residual tolerance, iteration cap, and basis-vector count. Also accepted as `--eps` / `--max_it` / `--max_nb`, matching SBD's own names | `1e-6` / `30` / `10` |
-| `--bit_length` | Bits per packed word | `64` |
+| `--bit_length` | Bits per packed word: even, at most 62. 64 is undefined behavior in SBD's redistribution. An odd value breaks SBD's alpha/beta conversion once a determinant spans two words, so the heatbath expansion crashes or returns a wrong energy | `62` |
 | `--b_comm_size` | Basis shards — the only dimension that divides memory | `1` |
 | `--t_comm_size` | Tasks per ring station; must not exceed `--b_comm_size` | `1` |
 | `--determinant_distribution` | Placement across `b_comm`; see [Placement across `b_comm`](#placement-across-b_comm) | `equal-bra-a` |

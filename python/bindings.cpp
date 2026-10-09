@@ -907,9 +907,9 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                 MPI_Sendrecv(&send_n, 1, MPI_INT, dst, 91,
                              &recv_n, 1, MPI_INT, srcr, 91, b_comm, MPI_STATUS_IGNORE);
                 MPI_Sendrecv(my_last.data(), static_cast<int>(words),
-                             MPI_UNSIGNED_LONG, dst, 92,
+                             SBD_MPI_SIZE_T, dst, 92,
                              prev_last.data(), static_cast<int>(words),
-                             MPI_UNSIGNED_LONG, srcr, 92, b_comm, MPI_STATUS_IGNORE);
+                             SBD_MPI_SIZE_T, srcr, 92, b_comm, MPI_STATUS_IGNORE);
                 // Only comparable when both sides hold something; an empty shard
                 // in between is skipped rather than treated as a failure.
                 bool ordered = true;

@@ -270,11 +270,15 @@ results = sbd.tpb_diag(fcidump, adet, bdet, sbd_data,
 ```python
 # GDB: over an explicit list of full determinants rather than a product space
 results = sbd.gdb_diag(fcidump, det, sbd_data,
-                       loadname="", savename="", device=None)
+                       loadname="", savename="", device=None,
+                       determinant_distribution="", determinant_grid_a=0,
+                       determinant_grid_b=0)
 ```
 
 **Returns:** `dict` with keys `energy`, `density`, `carryover_det`, `one_p_rdm`,
-`two_p_rdm`. Each determinant is a `2 * norb`-bit configuration in which bit
+`two_p_rdm`, `local_dim`, `global_dim` and `determinant_distribution`; the last three
+are this rank's determinant count, the whole basis's, and the placement scheme that
+ran. Each determinant is a `2 * norb`-bit configuration in which bit
 `2 * i` is the occupation of spin-alpha orbital `i` and bit `2 * i + 1` that of
 spin-beta orbital `i`. The determinants must be distinct; they are sorted into
 SBD's canonical order internally, which `sort_bitarray` reproduces.
@@ -284,6 +288,8 @@ SBD's canonical order internally, which `sort_bitarray` reproduces.
 `1` every rank passes its own shard, the union over b_comm positions being the basis.
 Sharded input must be globally sorted and disjoint; that and the rank-layout constraints
 are checked, and raise rather than silently diagonalizing the wrong subspace.
+`determinant_distribution` chooses how determinants are placed across ranks (default
+`equal-bra-a`), and the two grid arguments size the grid for the grid-cyclic schemes.
 [`examples/gdb/README.md`](examples/gdb/README.md) has the shard contract, the
 placement schemes, and which returned values are replicated versus sharded.
 

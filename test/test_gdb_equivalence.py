@@ -44,10 +44,15 @@ import sbd
 
 # One word per determinant for h2o either way: 24 orbitals is 24 bits of alpha
 # (TPB's half determinants) and 48 bits of alpha+beta (GDB's full ones), both
-# under 64. ``det_vector::init_elem_size`` fixes the word count process-wide on
+# within 62. ``det_vector::init_elem_size`` fixes the word count process-wide on
 # first use, so every case in this file -- and in test_reference_energies.py,
 # which shares the process -- must agree on it.
-BIT_LENGTH = 64
+#
+# 62 rather than 64: SBD's bitadvance() (framework/bit_manipulation.h:373) shifts by
+# bit_length, which is undefined behavior at 64, and the count placement schemes
+# reach it through mpi_redistribution whenever shards are uneven (see
+# test_gdb_count_schemes_rebalance_uneven_shards).
+BIT_LENGTH = 62
 
 # Enough alpha strings to make a non-trivial subspace, few enough that the
 # product stays small: the |A|^2 scaling is the reason this is 24 and not 275.
@@ -132,6 +137,30 @@ def _shard(full, b_comm_size, rank):
     quotient, remainder = divmod(len(full), b_comm_size)
     begin = index * quotient + min(index, remainder)
     end = begin + quotient + (1 if index < remainder else 0)
+    return full[begin:end]
+
+
+def _is_thrust(backend):
+    """Whether ``backend`` is the Thrust build, which allows no helper dimension."""
+    return "thrust" in getattr(backend, "__name__", "")
+
+
+_THRUST_HELPER = "requires h_comm_size == 1"
+
+
+def _uneven_shard(full, b_comm_size, rank):
+    """This rank's slice under a deliberately lopsided split.
+
+    Position ``i`` gets weight ``b_comm_size - i``, so the low positions are
+    overloaded. That defeats redistribution's fast path (caop/basic/basis.h:54-75),
+    which returns early when every rank already holds ``_shard``'s count, and so
+    makes the count schemes really move determinants.
+    """
+    index = rank % b_comm_size
+    weights = [b_comm_size - i for i in range(b_comm_size)]
+    total = sum(weights)
+    begin = len(full) * sum(weights[:index]) // total
+    end = len(full) * sum(weights[:index + 1]) // total
     return full[begin:end]
 
 
@@ -245,6 +274,10 @@ def test_gdb_under_mpi_matches_tpb_on_the_same_subspace(backend, h2o):
     which reaches the same Hilbert space through an independent decomposition
     (``adet_comm_size``). No pinned reference value is needed, and a broken helper
     distribution shows up as disagreement.
+
+    MPI-only: at one rank this is ``test_gdb_matches_tpb_on_the_same_subspace``.
+    On Thrust every rank must go to ``t_comm_size * b_comm_size``, so there the
+    helper dimension is refused instead, which is what is checked.
     """
     from mpi4py import MPI
 
@@ -253,6 +286,10 @@ def test_gdb_under_mpi_matches_tpb_on_the_same_subspace(backend, h2o):
     fcidump, norb, _, alpha = h2o
     product = [_interleave(a, b) for a, b in itertools.product(alpha, alpha)]
 
+    if _is_thrust(backend) and size > 1:
+        with pytest.raises(ValueError, match=_THRUST_HELPER):
+            _gdb_energy(backend, fcidump, product, norb)
+        return
     gdb = _gdb_energy(backend, fcidump, product, norb)
     tpb = _tpb_energy(backend, fcidump, alpha, norb, adet_comm_size=size)
 
@@ -346,8 +383,7 @@ def test_gdb_reports_the_dimensions_it_diagonalized(backend, h2o, h2o_product):
     assert result["determinant_distribution"] == "equal-bra-a"
 
 
-@pytest.mark.mpi
-def test_gdb_sharded_basis_matches_the_whole_basis(backend, h2o, h2o_product):
+def _check_sharded_basis_matches_the_whole_basis(backend, h2o, h2o_product):
     """Splitting the basis across b_comm does not change the energy.
 
     The core claim of the distributed path: each rank passes only its slice, and
@@ -368,6 +404,17 @@ def test_gdb_sharded_basis_matches_the_whole_basis(backend, h2o, h2o_product):
         assert gdb == pytest.approx(tpb, abs=1e-9)
 
 
+def test_gdb_sharded_basis_matches_the_whole_basis_standalone(backend, h2o, h2o_product):
+    """One process: the packed whole basis, passed as a single b_comm block."""
+    _check_sharded_basis_matches_the_whole_basis(backend, h2o, h2o_product)
+
+
+@pytest.mark.mpi
+def test_gdb_sharded_basis_matches_the_whole_basis_mpi(backend, h2o, h2o_product):
+    """One shard per launched rank."""
+    _check_sharded_basis_matches_the_whole_basis(backend, h2o, h2o_product)
+
+
 @pytest.mark.mpi
 def test_gdb_task_dimension_works_once_the_ring_has_stations(backend, h2o, h2o_product):
     """t_comm_size > 1 becomes usable exactly when b_comm_size allows it.
@@ -384,6 +431,12 @@ def test_gdb_task_dimension_works_once_the_ring_has_stations(backend, h2o, h2o_p
         pytest.skip(f"needs a rank count divisible by 4 for t=2 x b=2, got {size}")
     fcidump, norb, _, alpha = h2o
 
+    if _is_thrust(backend) and size > 4:
+        # The ranks beyond t*b would form a helper dimension, which Thrust refuses.
+        with pytest.raises(ValueError, match=_THRUST_HELPER):
+            _gdb_energy(backend, fcidump, _shard(h2o_product, 2, comm.Get_rank()),
+                        norb, b_comm_size=2, t_comm_size=2)
+        return
     gdb = _gdb_energy(backend, fcidump, _shard(h2o_product, 2, comm.Get_rank()),
                       norb, b_comm_size=2, t_comm_size=2)
     tpb = _tpb_energy(backend, fcidump, alpha, norb, adet_comm_size=size)
@@ -391,13 +444,11 @@ def test_gdb_task_dimension_works_once_the_ring_has_stations(backend, h2o, h2o_p
         assert gdb == pytest.approx(tpb, abs=1e-9)
 
 
-@pytest.mark.mpi
-@pytest.mark.parametrize(
-    "scheme",
-    ["input", "equal-bra-a", "count", "count-sorted",
-     "grid-cyclic", "grid-cyclic-balanced"],
-)
-def test_gdb_placement_does_not_change_the_energy(backend, h2o, h2o_product, scheme):
+_SCHEMES = ["input", "equal-bra-a", "count", "count-sorted",
+            "grid-cyclic", "grid-cyclic-balanced"]
+
+
+def _check_placement_does_not_change_the_energy(backend, h2o, h2o_product, scheme):
     """All six placement schemes agree.
 
     Placement is a load-balancing decision -- which rank owns which determinants,
@@ -420,6 +471,52 @@ def test_gdb_placement_does_not_change_the_energy(backend, h2o, h2o_product, sch
         assert gdb == pytest.approx(tpb, abs=1e-9)
 
 
+@pytest.mark.parametrize("scheme", _SCHEMES)
+def test_gdb_placement_does_not_change_the_energy_standalone(backend, h2o, h2o_product,
+                                                             scheme):
+    """One process: the scheme is parsed and dispatched, with a single basis block."""
+    _check_placement_does_not_change_the_energy(backend, h2o, h2o_product, scheme)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("scheme", _SCHEMES)
+def test_gdb_placement_does_not_change_the_energy_mpi(backend, h2o, h2o_product, scheme):
+    """One shard per launched rank, placed by each scheme."""
+    _check_placement_does_not_change_the_energy(backend, h2o, h2o_product, scheme)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("scheme", ["count", "count-sorted"])
+def test_gdb_count_schemes_rebalance_uneven_shards(backend, h2o, h2o_product, scheme):
+    """The count schemes move determinants when the input is not already balanced.
+
+    With ``_shard``'s split, which mirrors SBD's own, redistribution returns early on
+    every rank, so the code these schemes exist for never runs. A lopsided split
+    sends it down the real path, through mpi_redistribution and bitadvance(). The
+    counts each rank ends with must then be the balanced ones, which proves the
+    move happened, and the energy must not change.
+    """
+    from mpi4py import MPI
+
+    comm = MPI.COMM_WORLD
+    size, rank = comm.Get_size(), comm.Get_rank()
+    if size < 2:
+        pytest.skip("needs at least 2 ranks for an uneven split")
+    fcidump, norb, _, alpha = h2o
+    n = h2o_product.shape[0]
+    given = comm.allgather(len(_uneven_shard(range(n), size, rank)))
+    balanced = [len(_shard(range(n), size, r)) for r in range(size)]
+    assert given != balanced, "the split must differ from the balanced one"
+
+    result = _gdb_result(backend, fcidump, _uneven_shard(h2o_product, size, rank),
+                         norb, b_comm_size=size, determinant_distribution=scheme)
+    held = comm.allgather(result["local_dim"])
+    tpb = _tpb_energy(backend, fcidump, alpha, norb, adet_comm_size=size)
+    if rank == 0:
+        assert held == balanced, f"{scheme} left {held} after being given {given}"
+        assert result["energy"] == pytest.approx(tpb, abs=1e-9)
+
+
 @pytest.mark.mpi
 def test_gdb_rejects_shards_that_are_not_disjoint(backend, h2o, h2o_product):
     """Overlapping shards are refused, not silently diagonalized.
@@ -439,8 +536,7 @@ def test_gdb_rejects_shards_that_are_not_disjoint(backend, h2o, h2o_product):
         _gdb_energy(backend, fcidump, h2o_product, norb, b_comm_size=size)
 
 
-@pytest.mark.mpi
-def test_gdb_rejects_a_rank_count_the_grid_does_not_tile(backend, h2o, h2o_product):
+def _check_rejects_a_rank_count_the_grid_does_not_tile(backend, h2o, h2o_product):
     """t * b must divide the rank count exactly.
 
     Upstream derives the helper dimension by integer division and never checks the
@@ -456,6 +552,18 @@ def test_gdb_rejects_a_rank_count_the_grid_does_not_tile(backend, h2o, h2o_produ
     with pytest.raises(ValueError, match="divide the rank count"):
         _gdb_energy(backend, fcidump, _shard(h2o_product, bad, comm.Get_rank()),
                     norb, b_comm_size=bad)
+
+
+def test_gdb_rejects_a_rank_count_the_grid_does_not_tile_standalone(backend, h2o,
+                                                                    h2o_product):
+    """One process cannot host two basis shards."""
+    _check_rejects_a_rank_count_the_grid_does_not_tile(backend, h2o, h2o_product)
+
+
+@pytest.mark.mpi
+def test_gdb_rejects_a_rank_count_the_grid_does_not_tile_mpi(backend, h2o, h2o_product):
+    """One more shard than there are launched ranks."""
+    _check_rejects_a_rank_count_the_grid_does_not_tile(backend, h2o, h2o_product)
 
 
 def test_gdb_rejects_an_unknown_placement_scheme(backend, h2o, h2o_product):
