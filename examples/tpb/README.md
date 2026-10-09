@@ -114,10 +114,12 @@ determinant list, giving a 275 × 275 = 75,625-determinant subspace at
 MPI decomposition flags, and the SQD tolerances `--energy_tol` /
 `--occupancies_tol` / `--sqd_carryover_threshold`. Inner-solver flags are prefixed
 (`--sbd_eps`, `--sbd_max_it`, `--sbd_method`, ...) and have sensible defaults; the
-old unprefixed spellings still work. Run `python run_sqd_sbd.py --help` for the
-full list, which is grouped by layer.
+old unprefixed spellings still work. `--sbd_carryover_type` lets SBD choose what
+carries into the next iteration instead of SQD; see
+[SBD-selected carryover](#sbd-selected-carryover). Run
+`python run_sqd_sbd.py --help` for the full list, which is grouped by layer.
 
-**Requirements:** see [Integration with qiskit-addon-sqd](../../README.md#integration-with-qiskit-addon-sqd) in the Python Bindings README (`pyscf`, `qiskit`, `qiskit-addon-sqd`).
+**Requirements:** see [Integration with qiskit-addon-sqd](../../README.md#integration-with-qiskit-addon-sqd) in the Python Bindings README (`pyscf`, `qiskit`, `qiskit-addon-sqd`). `--sbd_carryover_type` needs `qiskit-addon-sqd >= 0.14.0`; everything else works from `0.13.1`.
 
 See [SQD Parameters](#sqd-parameters) below for the full reference, grouped by SQD loop / SBD solver / MPI grid / checkpointing.
 
@@ -202,10 +204,13 @@ strs_a = include_a  ++  carryover_strings_a  ++  samples_a    then dedupe, trunc
 
 1. **`include_a`** — configurations passed as `include_configurations`. Static:
    fixed before the loop, present every iteration, never updated.
-2. **`carryover_strings_a`** — from the *previous* iteration's wavefunction. Every
-   determinant whose `|coefficient|` is at least `--sqd_carryover_threshold`
-   survives, ranked by `|c|^2`.
-3. **`samples_a`** — drawn fresh this iteration, sorted by marginal probability.
+2. **`carryover_strings_a`** — from the *previous* iteration's result, in descending
+   order of marginal weight (a string's `|c|^2` summed over the other spin sector). By
+   default SQD selects them: every determinant whose `|coefficient|` is at least
+   `--sqd_carryover_threshold` survives. With `--sbd_carryover_type` set, SBD selects
+   them instead and SQD takes that selection as given; see
+   [SBD-selected carryover](#sbd-selected-carryover).
+3. **`samples_a`** — drawn fresh this iteration, sorted by how often each was sampled.
 
 The order matters when `max_dim` is set: `include` and `carryover` are kept ahead of
 fresh samples, so if those two already fill the cap, this iteration's new samples are
@@ -221,7 +226,9 @@ raw samples are only filtered by electron count (Hamming-weight postselection).
 
 So exactly two things flow from iteration N to N+1, and neither is a tolerance:
 the **average orbital occupancies** (into recovery, source 3) and the
-**wavefunction amplitudes** (into carryover, source 2).
+**carryover** (source 2). By default the carryover is derived from the wavefunction
+amplitudes; with `--sbd_carryover_type 1` SBD hands it over directly and the
+amplitudes never leave SBD.
 
 ### SQD loop parameters
 
@@ -241,7 +248,7 @@ prints an OOM warning when it detects this.
 | `--samples_per_batch` | Dominant control on subspace dimension. With `--symmetrize_spin 1` the alpha and beta string sets are merged, so the subspace is up to `(2N)^2`, not `N^2` | `3000` |
 | `--symmetrize_spin` | `1` (default): merge the alpha and beta string pools every iteration, forcing `ci_strs_a == ci_strs_b`. SBD itself supports distinct alpha/beta determinant sets — this is purely a qiskit-addon-sqd loop-layer setting. `0`: sample and carry over alpha and beta independently, allowing them to differ | `1` |
 | `--num_batches` | Independent subsamples per iteration; occupancies are averaged across them | `1` (`run_sqd_enlarge_subspace_sbd.py`) / `3` (`run_sqd_sbd.py`) |
-| `--sqd_carryover_threshold` | `run_sqd_sbd.py` only. `\|coefficient\|` cutoff for carrying a determinant into the next iteration's sample pool. **Lower it to carry more** | `1e-4` |
+| `--sqd_carryover_threshold` | `run_sqd_sbd.py` only. `\|coefficient\|` cutoff for carrying a determinant into the next iteration's sample pool. **Lower it to carry more.** Has no effect when `--sbd_carryover_type` is non-zero (the driver warns) | `1e-4` |
 | `--enlarge_threshold` | `run_sqd_enlarge_subspace_sbd.py` only — the analogous "carry more" knob for that driver, but structurally different: it gates which *pairs* get expanded into single excitations via `enlarge_batch_from_transitions`, not which determinants survive into resampling. **Lower it to expand more pairs per round** | `1e-4` |
 | `--max_dim` | **Critical.** Cap on strings per spin sector, so the subspace cannot exceed `max_dim^2`. The main brake on runaway cost — no fixed value is safe for every system, since the right cap depends on available memory and orbital count. Start from a value known to work at a similar orbital count (e.g. `15000` was used for a 45-orbital system) and adjust down if you see an OOM | unset (no cap) |
 | `--include_hf` | Force the single Slater determinant with the lowest `num_elec_a`/`num_elec_b` orbital indices occupied into `include_configurations`, every iteration. Cheap correctness check: that determinant's own diagonal energy is an exact lower bound on what a subspace containing it can do — if forcing it in moves the result, the sampled pool was missing it (and probably its low-excitation neighbors too) | off |
@@ -279,6 +286,91 @@ Per diagonalization, not per loop:
 For reference, upstream's own `TPB_SBD` struct defaults are looser still (`max_it=1`,
 `eps=1e-4`), and `run_sbd_diag.py` uses `eps=1e-3`. On the h2o counts case,
 `eps=1e-5` and `eps=1e-8` give the same energy to ten decimal places.
+
+### SBD-selected carryover
+
+By default SQD picks the next iteration's carryover by thresholding the amplitudes
+SBD returns. These flags let SBD pick it instead, using its own carryover rules, and
+report the result through `SCIResult.carryover` (`qiskit-addon-sqd >= 0.14.0`). SQD
+then uses SBD's selection as given: `--sqd_carryover_threshold` stops applying, and the
+order SBD's carryover comes in is the order a `--max_dim` truncation keeps.
+
+| Parameter | What it controls | Default |
+|-----------|-----------------|---------|
+| `--sbd_carryover_type` | `0`: off, SQD selects. `1`: rank half-determinants by marginal weight. `2`: type 1 plus all single excitations of what it selected. `3`: rank whole determinants by amplitude, then single-excite | `0` |
+| `--sbd_carryover_ratio` | Types 1 and 2: fraction of half-determinants to keep, **used only when non-zero**. Ignored by type 3 | `0.1` (upstream SBD's own default is `0.0`) |
+| `--sbd_carryover_threshold` | Types 1 and 2: cumulative-weight cutoff, **used only when the ratio is 0**. Type 3: a direct cutoff on determinant weight | `1e-4` |
+
+SBD reads exactly one of ratio and threshold for each type and silently ignores the
+other, so with the defaults, `--sbd_carryover_threshold` does nothing for types 1 and 2.
+The driver warns when you pass a setting that cannot take effect.
+
+**What each type costs.** Type 1 is the one that saves work. Its ranking is exactly the
+marginal weight SQD orders carryover by, so nothing else needs the eigenvector, and the
+driver skips the `|adet| × |bdet|` wavefunction dump entirely. At large subspace size
+that dump is a multi-GB write-then-read every iteration. Types 2 and 3 still write the
+dump. They add determinants by single excitation, and SBD re-sorts the result into its
+canonical order (which it needs for binary search), so the driver re-ranks their
+carryover from the amplitudes: strings that were in the subspace come first, by weight,
+and the generated ones, which have no weight yet, come after.
+
+A checkpoint written with `--sbd_carryover_type` set holds SBD's carryover strings, not
+the whole solved subspace, so `--resume_from` seeds from that smaller set.
+
+### Using a different subspace policy (Trim SQD)
+
+`qiskit-addon-sqd >= 0.14.0` lets the loop run a different per-iteration schedule,
+passed as a `policy`. The driver always uses the default, `StandardPolicy`, and does
+not expose others as flags. To try **Trim SQD** (`qiskit_addon_sqd.trim.TrimPolicy`),
+pass it from Python, with SBD as the solver as usual:
+
+```python
+from functools import partial
+
+from qiskit_addon_sqd.fermion import diagonalize_fermionic_hamiltonian
+from qiskit_addon_sqd.trim import TrimPolicy
+from sbd.sbd_solver import solve_sci_batch
+
+num_batches = 4
+policy = TrimPolicy(
+    trim_ratio=1 / num_batches,   # see the note on trim_ratio below
+    carryover_threshold=1e-4,     # the threshold goes INSIDE the policy
+)
+
+result = diagonalize_fermionic_hamiltonian(
+    hcore, eri, bit_array,
+    samples_per_batch=3000, num_batches=num_batches,
+    norb=norb, nelec=nelec, symmetrize_spin=True,
+    sci_solver=partial(solve_sci_batch, sbd_config={"eps": 1e-5, "max_it": 10}),
+    policy=policy,
+)
+# Pass the threshold to the policy only. Also passing carryover_threshold= here
+# raises a ValueError.
+```
+
+What changes compared to the default:
+
+- **The batches are disjoint.** One pool of `samples_per_batch × num_batches`
+  bitstrings is divided among them, instead of each batch being subsampled
+  independently.
+- **Each iteration costs `num_batches + 1` SBD calls**, not `num_batches`. Every
+  batch is diagonalized, its highest-weight strings are kept, the survivors of all
+  batches are merged, and the merged subspace is diagonalized once more. That last
+  diagonalization's energy is what the iteration reports.
+- **`trim_ratio` sets how big the merged subspace is.** It holds roughly
+  `trim_ratio × num_batches` of one batch's strings per spin sector (less where
+  batches share strings). TrimPolicy's default of `0.1` suits about 10 batches; with
+  fewer, the merged subspace comes out much smaller than a batch. `1 / num_batches`
+  keeps it about one batch in size, which is the regime Trim SQD is designed for.
+  That is our rule of thumb, not a tuned value. The addon's defaults are not tuned
+  either.
+- **With `carryover_type != 0` in `sbd_config`, the policy's carryover settings do
+  nothing.** The trim schedule still runs, but each batch is screened by SBD's own
+  selection rather than by `trim_ratio`, so tune `ratio` / `threshold` in `sbd_config`
+  instead.
+
+Trim SQD pays off when the samples far outnumber the subspace you can afford to
+diagonalize.
 
 ### MPI grid parameters
 
@@ -411,3 +503,5 @@ phases, not a fault.
 - [`../gdb/README.md`](../gdb/README.md) — the general determinant basis, which
   decomposes over MPI differently
 - [Repository README](../../README.md) — Installation, API reference
+- [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) — the SQD loop,
+  `SubspacePolicy`, `StandardPolicy` and `TrimPolicy`

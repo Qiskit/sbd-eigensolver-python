@@ -52,6 +52,16 @@ from pyscf import ao2mo, tools
 from qiskit.primitives import BitArray
 from qiskit_addon_sqd.fermion import SCIResult, diagonalize_fermionic_hamiltonian
 
+# Subspace policies arrived in qiskit-addon-sqd 0.14.0 (#369). On an older addon the
+# loop's own default schedule is the only one, selected by passing
+# carryover_threshold= directly, so keep that path working rather than raising.
+# Other policies (e.g. Trim SQD) are not exposed as flags; examples/tpb/README.md
+# shows how to pass one from Python.
+try:
+    from qiskit_addon_sqd.fermion import StandardPolicy
+except ImportError:  # qiskit-addon-sqd < 0.14.0
+    StandardPolicy = None
+
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -107,11 +117,14 @@ def parse_args():
                           "host-side and superlinear in determinants per spin, and "
                           "grows between iterations as carryover accumulates. "
                           "Unset means no cap.")
-    sqd.add_argument("--sqd_carryover_threshold", type=float, default=1e-4,
+    sqd.add_argument("--sqd_carryover_threshold", type=float, default=None,
+                     metavar="FLOAT",
                      help="SQD keeps every determinant whose |coefficient| is at "
                           "least this, and carries it into the next iteration's "
-                          "subspace. Lower it to carry more. Distinct from "
-                          "--sbd_carryover_threshold, which SQD does not use.")
+                          "subspace. Lower it to carry more. Default 1e-4. Distinct from "
+                          "--sbd_carryover_threshold, which SQD does not use. Has "
+                          "NO effect when --sbd_carryover_type is non-zero: the "
+                          "loop then takes SBD's selection as given.")
     sqd.add_argument("--include_hf", action="store_true",
                      help="Force the single Slater determinant with the lowest "
                           "num_elec_a/num_elec_b orbital indices occupied into "
@@ -201,6 +214,39 @@ def parse_args():
                           "representation (RIKEN default 20). Must be <= 63: "
                           "bitadvance() shifts a 64-bit size_t by this amount, "
                           "so 64 is undefined behavior.")
+    sbd.add_argument("--sbd_carryover_type", type=int, default=0,
+                     choices=[0, 1, 2, 3],
+                     help="Let SBD pick the next iteration's determinants instead "
+                          "of SQD thresholding the amplitudes. 0 (default): off. "
+                          "1: rank half-determinants by marginal weight. 2: type 1 "
+                          "plus all single excitations of what it selected. 3: rank "
+                          "whole determinants by amplitude, then singles-extend. "
+                          "Type 1 ALSO skips the wavefunction dump, because its "
+                          "ranking already is the marginal weight the loop wants and "
+                          "nothing else reads the eigenvector -- that is the win at "
+                          "large subspace size. Types 2 and 3 keep the dump: they "
+                          "singles-extend and SBD re-sorts the result into canonical "
+                          "order, so the amplitudes are needed to restore the "
+                          "descending-weight order that SCIResult.carryover requires. "
+                          "Needs qiskit-addon-sqd >= 0.14.0 for SCIResult.carryover "
+                          "(added in #369); on an older addon the carryover is "
+                          "ignored and the dump always happens.")
+    sbd.add_argument("--sbd_carryover_ratio", type=float, default=None,
+                     metavar="FLOAT",
+                     help="Fraction of half-determinants to keep, ranked by "
+                          "weight. Applies to --sbd_carryover_type 1 and 2 only, "
+                          "and ONLY when non-zero: set it to 0 to select by "
+                          "--sbd_carryover_threshold instead. Ignored outright by "
+                          "type 3. Default 0.1 (note upstream SBD's own default is "
+                          "0.0).")
+    sbd.add_argument("--sbd_carryover_threshold", type=float, default=None,
+                     metavar="FLOAT",
+                     help="Meaning depends on the type. Types 1 and 2: truncate "
+                          "once cumulative weight reaches 1 - this, used ONLY when "
+                          "--sbd_carryover_ratio is 0. Type 3: a direct cutoff -- "
+                          "drop determinants with weight below this. Default 1e-4. "
+                          "Distinct from --sqd_carryover_threshold, which is the "
+                          "SQD layer's own knob.")
 
     # ---- MPI decomposition: hardware shape, not physics ----------------------
     mpi = p.add_argument_group(
@@ -255,11 +301,67 @@ def load_counts_as_bitarray(counts_path, num_bits):
     return BitArray.from_bool_array(bool_matrix)
 
 
+def build_policy(args, rank):
+    """Build the SQD subspace policy, and warn when its threshold cannot take effect.
+
+    Returns ``(policy, kwargs)``, where ``kwargs`` is what to pass to
+    ``diagonalize_fermionic_hamiltonian``. Since qiskit-addon-sqd 0.14.0 the loop
+    raises if given both ``policy=`` and ``carryover_threshold=``, so the threshold
+    travels inside the policy; that keeps this driver usable as a template for a
+    different policy (see examples/tpb/README.md). On an older addon there are no
+    policies and the threshold is passed directly, which selects the same schedule.
+    """
+    threshold_given = args.sqd_carryover_threshold is not None
+    threshold = 1e-4 if args.sqd_carryover_threshold is None else args.sqd_carryover_threshold
+    args.sqd_carryover_threshold = threshold
+
+    # A solver that reports its own carryover bypasses the policy's carryover
+    # selection: _select_carryover returns it before thresholding anything.
+    if rank == 0 and args.sbd_carryover_type != 0 and threshold_given:
+        print(f"WARNING: --sqd_carryover_threshold {threshold:g}: no effect with "
+              f"--sbd_carryover_type {args.sbd_carryover_type}: SBD then selects "
+              "the carryover itself and the loop takes that selection as given. "
+              "Tune the selection with --sbd_carryover_ratio / "
+              "--sbd_carryover_threshold instead.\n")
+
+    if StandardPolicy is None:
+        return None, {"carryover_threshold": threshold}
+    policy = StandardPolicy(carryover_threshold=threshold)
+    return policy, {"policy": policy}
+
+
 def main():
     args = parse_args()
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
+
+    # SBD reads exactly one of ratio/threshold per carryover type and silently
+    # ignores the other (sbdiag.h, the carryover_type branch), so a setting that
+    # cannot take effect is worth saying out loud rather than leaving the user to
+    # wonder why tuning it changed nothing. Defaults are filled in after this so
+    # "was it passed?" is answerable at all.
+    ratio_given = args.sbd_carryover_ratio is not None
+    threshold_given = args.sbd_carryover_threshold is not None
+    if not ratio_given:
+        args.sbd_carryover_ratio = 0.1
+    if not threshold_given:
+        args.sbd_carryover_threshold = 1e-4
+    if rank == 0 and args.sbd_carryover_type != 0:
+        if (threshold_given and args.sbd_carryover_type in (1, 2)
+                and args.sbd_carryover_ratio != 0):
+            print(f"WARNING: --sbd_carryover_threshold "
+                  f"{args.sbd_carryover_threshold:g} has no effect with "
+                  f"--sbd_carryover_type {args.sbd_carryover_type} while "
+                  f"--sbd_carryover_ratio is {args.sbd_carryover_ratio:g}. Types 1 "
+                  "and 2 read the threshold only when the ratio is 0. Pass "
+                  "--sbd_carryover_ratio 0 to select by threshold.\n")
+        if ratio_given and args.sbd_carryover_type == 3:
+            print(f"WARNING: --sbd_carryover_ratio {args.sbd_carryover_ratio:g} has "
+                  "no effect with --sbd_carryover_type 3, which selects by "
+                  "--sbd_carryover_threshold alone.\n")
+
+    _, policy_kwargs = build_policy(args, rank)
 
     norb, nelec_total, ms2 = parse_fcidump_header(args.fcidump)
     num_elec_a = (nelec_total + ms2) // 2
@@ -344,7 +446,9 @@ def main():
         if rank == 0:
             print(f"Resuming from {args.resume_from}: iteration {last['iteration']}, "
                   f"{len(last['ci_strs_a'])} alpha / {len(last['ci_strs_b'])} beta "
-                  "strings carried in as include_configurations")
+                  "strings carried in as include_configurations "
+                  "(a checkpoint written under --sbd_carryover_type != 0 holds "
+                  "SBD's carryover, not the whole solved subspace)")
     include_configurations = (include_a, include_b) if (include_a or include_b) else None
 
     if args.counts:
@@ -384,6 +488,9 @@ def main():
         "adet_comm_size": args.adet_comm_size,
         "bdet_comm_size": args.bdet_comm_size,
         "task_comm_size": args.task_comm_size,
+        "carryover_type": args.sbd_carryover_type,
+        "ratio": args.sbd_carryover_ratio,
+        "threshold": args.sbd_carryover_threshold,
     }
 
     sbd_solver = partial(
@@ -409,8 +516,14 @@ def main():
             print(f"Iteration {iteration}")
             for i, r in enumerate(results):
                 total_e = r.energy + nuclear_repulsion_energy
-                dim = np.prod(r.sci_state.amplitudes.shape)
-                print(f"  Batch {i}: E={total_e:.10f}, dim={dim:_}")
+                if r.sci_state is None:
+                    # SBD selected the carryover itself, so no eigenvector came
+                    # back. The solved dimension is printed by the wrapper.
+                    co_a, co_b = r.carryover
+                    extent = f"carryover {len(co_a):_}a/{len(co_b):_}b"
+                else:
+                    extent = f"dim={np.prod(r.sci_state.amplitudes.shape):_}"
+                print(f"  Batch {i}: E={total_e:.10f}, {extent}")
             due = (iteration % args.checkpoint_frequency == 0
                    or iteration == args.max_iterations)
             if args.checkpoint_path and due:
@@ -423,13 +536,21 @@ def main():
                 # final state rather than whatever iteration happened to land on
                 # a multiple of --checkpoint_frequency.
                 r = results[0]
+                # With no eigenvector, checkpoint SBD's carryover instead of the
+                # solved subspace: same JSON keys, so --resume_from is unchanged,
+                # but a resume then seeds from what the loop itself carries
+                # forward rather than from everything that was diagonalized.
+                strs_a, strs_b = (
+                    r.carryover if r.sci_state is None
+                    else (r.sci_state.ci_strs_a, r.sci_state.ci_strs_b)
+                )
                 entry = {
                     "iteration": iteration,
                     "energy": r.energy + nuclear_repulsion_energy,
                     "occupancies_a": r.orbital_occupancies[0].tolist(),
                     "occupancies_b": r.orbital_occupancies[1].tolist(),
-                    "ci_strs_a": [int(x) for x in r.sci_state.ci_strs_a],
-                    "ci_strs_b": [int(x) for x in r.sci_state.ci_strs_b],
+                    "ci_strs_a": [int(x) for x in strs_a],
+                    "ci_strs_b": [int(x) for x in strs_b],
                 }
                 checkpoint_history.append(entry)
                 tmp = Path(args.checkpoint_path).with_suffix(".tmp")
@@ -456,6 +577,10 @@ def main():
               f"--sbd_method {args.method} --sbd_eps {args.eps:g} "
               f"--sbd_max_it {args.max_it} --sbd_max_nb {args.max_nb} "
               f"--sbd_bit_length {args.bit_length}")
+        print("               "
+              f"--sbd_carryover_type {args.sbd_carryover_type} "
+              f"--sbd_carryover_ratio {args.sbd_carryover_ratio:g} "
+              f"--sbd_carryover_threshold {args.sbd_carryover_threshold:g}")
         print("MPI grid     : "
               f"--task_comm_size {args.task_comm_size} "
               f"--adet_comm_size {args.adet_comm_size} "
@@ -475,7 +600,6 @@ def main():
             max_iterations=args.max_iterations,
             energy_tol=args.energy_tol,
             occupancies_tol=args.occupancies_tol,
-            carryover_threshold=args.sqd_carryover_threshold,
             max_dim=args.max_dim,
             include_configurations=include_configurations,
             initial_occupancies=initial_occupancies,
@@ -483,6 +607,9 @@ def main():
             symmetrize_spin=bool(args.symmetrize_spin),
             callback=callback,
             seed=rand_seed,
+            # Either policy= or, on an addon older than 0.14.0, carryover_threshold=
+            # -- never both, which the loop rejects. See build_policy.
+            **policy_kwargs,
         )
     except RuntimeError as e:
         if "Failed to open FCIDUMP" in str(e):

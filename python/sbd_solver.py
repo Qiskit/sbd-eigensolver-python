@@ -171,13 +171,31 @@ def _solve_sci_core(
     # same value the C++ engine will use to interpret them.
     sbd_data = _create_sbd_config(sbd_config, backend, device_config)
 
+    # ``SCIResult.carryover`` must be ordered by DESCENDING MARGINAL WEIGHT: the loop
+    # takes a solver's carryover as given (fermion.py, ``_select_carryover`` returns it
+    # before any ranking) and a later truncation to ``max_dim`` keeps the leading
+    # entries, so a wrong order silently drops the strings that mattered.
+    #
+    # Only carryover_type 1 satisfies that by itself. It ranks half-determinants by
+    # p(D^alpha) = sum_beta |c|^2 -- exactly the addon's marginal weight -- and writes
+    # them out in that order, so its eigenvector has no remaining consumer and the
+    # |adet| x |bdet| dump can be skipped entirely.
+    #
+    # Types 2 and 3 singles-extend their selection, and SinglesExtendHalfdets ends in
+    # sort_bitarray (upstream extend.h), which re-sorts into CANONICAL order because
+    # SBD indexes subspaces by binary search. That destroys the weight order, and the
+    # generated determinants never had a weight at all. So those types keep the dump
+    # and we re-rank their carryover from the amplitudes below.
+    skip_wf = sbd_data.carryover_type == 1 and _addon_accepts_carryover()
+
     adet = _ci_strings_to_sbd_dets(strings_a, norb, backend, sbd_data.bit_length)
     bdet = _ci_strings_to_sbd_dets(strings_b, norb, backend, sbd_data.bit_length)
 
     # Use .bin extension to trigger SBD's fast binary write path
     # (SaveMatrixFormWF in restart.h checks extension: .bin -> raw doubles)
     wf_dump_file = sbd_dir / "wavefunction.bin"
-    sbd_data.dump_matrix_form_wf = str(wf_dump_file)
+    if not skip_wf:
+        sbd_data.dump_matrix_form_wf = str(wf_dump_file)
 
     results = backend.tpb_diag(
         mpi_comm, sbd_data, fcidump, adet, bdet, loadname="", savename=""
@@ -187,9 +205,20 @@ def _solve_sci_core(
     mpi_comm.Barrier()
 
     if mpi_rank != 0:
+        # Placeholder: only rank 0 is given the energy and the wavefunction. With
+        # skip_wf there is no SCIState to stand in, so carry an empty carryover
+        # instead -- a result with neither field satisfies no caller, and
+        # qiskit-addon-sqd rejects it outright.
+        placeholder = (
+            {"carryover": (np.array([], dtype=np.int64), np.array([], dtype=np.int64))}
+            if skip_wf
+            else {}
+        )
         return SCIResult(
             0.0,
-            SCIState(
+            None
+            if skip_wf
+            else SCIState(
                 amplitudes=np.empty((0, 0), dtype=np.float64),
                 ci_strs_a=np.array([], dtype=np.int64),
                 ci_strs_b=np.array([], dtype=np.int64),
@@ -200,6 +229,7 @@ def _solve_sci_core(
                 np.zeros(norb, dtype=np.float64),
                 np.zeros(norb, dtype=np.float64),
             ),
+            **placeholder,
         )
 
     # --- rank 0 only ---
@@ -227,45 +257,209 @@ def _solve_sci_core(
     # amplitude magnitude (fermion.py, _carryover_* / weights_a / weights_b), so
     # every iteration after the first was seeded from uniform weights. See #19.
     #
-    # The dump is requested unconditionally above, so neither a missing file nor a
-    # size mismatch is a situation to paper over: both mean the run did not do what
-    # was asked, and a loud failure is the only honest response.
+    # The dump is requested above whenever these amplitudes are needed at all, so
+    # neither a missing file nor a size mismatch is a situation to paper over: both
+    # mean the run did not do what was asked, and a loud failure is the only honest
+    # response.
     # Label the amplitudes with the lists that were actually diagonalized, not with
     # the inputs. _ci_strings_to_sbd_dets ends in sort_bitarray, which sorts into
     # SBD's canonical order AND removes duplicates, so adet/bdet can differ from
     # strings_a/strings_b -- and the dump is written in adet/bdet order. Deriving the
     # labels from adet/bdet makes the amplitudes and their labels come from one list
     # by construction, instead of relying on the two orders agreeing.
-    solved_strings_a = _sbd_dets_to_ci_strings(adet, norb, backend, sbd_data.bit_length)
-    solved_strings_b = _sbd_dets_to_ci_strings(bdet, norb, backend, sbd_data.bit_length)
-    n_a = len(solved_strings_a)
-    n_b = len(solved_strings_b)
-    if not wf_dump_file.exists():
-        raise RuntimeError(
-            f"SBD wrote no wavefunction dump at {wf_dump_file}. It is requested on "
-            "every call, so a missing file means the diagonalization did not "
-            "complete as expected."
+    if skip_wf:
+        # Report the dimension sci_state would otherwise have carried, so the
+        # per-iteration series survives without the eigenvector.
+        n_a, n_b = len(adet), len(bdet)
+        print(f"  [sbd] solved subspace {n_a:_} x {n_b:_} = {n_a * n_b:_}")
+        sci_state = None
+    else:
+        solved_strings_a = _sbd_dets_to_ci_strings(
+            adet, norb, backend, sbd_data.bit_length
         )
-    flat = np.fromfile(str(wf_dump_file), dtype=np.float64)
-    if flat.size != n_a * n_b:
-        raise RuntimeError(
-            f"wavefunction dump at {wf_dump_file} holds {flat.size} amplitudes, "
-            f"expected {n_a * n_b} ({n_a} alpha x {n_b} beta over the "
-            "diagonalized subspace). SaveMatrixFormWF writes the full subspace; a "
-            "different size means the dump and the subspace have diverged."
+        solved_strings_b = _sbd_dets_to_ci_strings(
+            bdet, norb, backend, sbd_data.bit_length
         )
+        n_a = len(solved_strings_a)
+        n_b = len(solved_strings_b)
+        if not wf_dump_file.exists():
+            raise RuntimeError(
+                f"SBD wrote no wavefunction dump at {wf_dump_file}. It is requested "
+                "whenever the amplitudes are needed, so a missing file means the "
+                "diagonalization did not complete as expected."
+            )
+        flat = np.fromfile(str(wf_dump_file), dtype=np.float64)
+        if flat.size != n_a * n_b:
+            raise RuntimeError(
+                f"wavefunction dump at {wf_dump_file} holds {flat.size} amplitudes, "
+                f"expected {n_a * n_b} ({n_a} alpha x {n_b} beta over the "
+                "diagonalized subspace). SaveMatrixFormWF writes the full subspace; "
+                "a different size means the dump and the subspace have diverged."
+            )
 
-    sci_state = SCIState(
-        amplitudes=flat.reshape(n_a, n_b),
-        ci_strs_a=solved_strings_a,
-        ci_strs_b=solved_strings_b,
-        norb=norb,
-        nelec=nelec,
-    )
+        sci_state = SCIState(
+            amplitudes=flat.reshape(n_a, n_b),
+            ci_strs_a=solved_strings_a,
+            ci_strs_b=solved_strings_b,
+            norb=norb,
+            nelec=nelec,
+        )
 
     rdm1, rdm2 = assemble_rdms(results, norb)
 
-    return SCIResult(energy, sci_state, orbital_occupancies=occupancies, rdm1=rdm1, rdm2=rdm2)
+    # When SBD selected its own carryover, hand it to the loop rather than letting it
+    # re-derive the same choice by thresholding our amplitudes. qiskit-addon-sqd takes
+    # a solver's carryover as given -- ``_select_carryover`` returns it before applying
+    # any threshold, ratio or ranking -- so ``carryover_threshold`` does not apply AND
+    # the order we hand over is the order a ``max_dim`` truncation will keep.
+    carryover_a, carryover_b = _extract_carryover(
+        results, norb, backend, sbd_data.bit_length
+    )
+    if carryover_a is not None and sci_state is not None:
+        # Types 2/3 come back in canonical order (see the skip_wf comment); rank them
+        # the way the addon would have. Type 1 never reaches here with a sci_state.
+        carryover_a, carryover_b = _rank_carryover_from_amplitudes(
+            carryover_a, carryover_b, sci_state
+        )
+    extra = {}
+    if carryover_a is not None and _addon_accepts_carryover():
+        extra["carryover"] = (carryover_a, carryover_b)
+
+    if skip_wf and "carryover" not in extra:
+        raise RuntimeError(
+            f"carryover_type={sbd_data.carryover_type} was requested, so the "
+            "wavefunction was not dumped, but SBD selected no carryover "
+            "determinants -- leaving nothing to build the next subspace from. "
+            f"Either the selection was too aggressive (ratio={sbd_data.ratio}, "
+            f"threshold={sbd_data.threshold}) or this SBD build does not implement "
+            f"carryover_type={sbd_data.carryover_type}. Set carryover_type=0 to go "
+            "back to selecting from the amplitudes."
+        )
+
+    return SCIResult(
+        energy, sci_state, orbital_occupancies=occupancies, rdm1=rdm1, rdm2=rdm2, **extra
+    )
+
+
+def _addon_accepts_carryover() -> bool:
+    """True when the installed qiskit-addon-sqd has ``SCIResult.carryover``.
+
+    The field arrived with qiskit-addon-sqd#369. On an older addon, passing it
+    would be a TypeError, so the carryover is simply not reported and the loop
+    falls back to thresholding the amplitudes as it always has.
+    """
+    if SCIResult is None:
+        return False
+    import dataclasses
+
+    return any(f.name == "carryover" for f in dataclasses.fields(SCIResult))
+
+
+def _rank_by_marginal_weight(
+    carryover: np.ndarray, solved: np.ndarray, weights: np.ndarray
+) -> np.ndarray:
+    """Order one spin sector's carryover by descending marginal weight.
+
+    ``SCIResult.carryover`` is required to be in that order, and the loop applies no
+    ranking of its own. Carryover strings that were in the diagonalized subspace get
+    their weight from the amplitudes; the rest -- the ones carryover_type 2/3 generate
+    by single excitation -- were never in the subspace and so have no weight at all.
+    Those go last, which is the right priority: a truncation to ``max_dim`` then sheds
+    weightless additions before it sheds a ranked parent.
+
+    Mirrors the addon's own ordering (``_rank_carryover``, a stable argsort of negated
+    marginal weights) so the two agree on ties.
+
+    Raises if none of the carryover is in the subspace, since the returned order
+    would then be SBD's canonical order rather than a ranking. That should not
+    happen: types 2/3 extend from the determinants SBD selected out of the
+    subspace, and those parents are part of the carryover.
+    """
+    if carryover.size == 0:
+        return carryover
+    if solved.size:
+        # Look each carryover string up in the solved list. searchsorted needs a
+        # sorted haystack, so sort once and carry the permutation to recover
+        # weight positions.
+        order = np.argsort(solved, kind="stable")
+        sorted_solved = solved[order]
+        pos = np.minimum(np.searchsorted(sorted_solved, carryover), sorted_solved.size - 1)
+        found = sorted_solved[pos] == carryover
+    else:
+        found = np.zeros(carryover.size, dtype=bool)
+    if not found.any():
+        raise RuntimeError(
+            f"none of the {carryover.size} carryover determinants were in the "
+            "diagonalized subspace, so none of them has a marginal weight and the "
+            "order returned here would be SBD's canonical order, not a weight "
+            "ranking. qiskit-addon-sqd truncates the carryover to max_dim by keeping "
+            "the leading entries, so it would keep an arbitrary subset."
+        )
+
+    ranked = carryover[found]
+    ranked_weights = weights[order[pos[found]]]
+    # Stable argsort of the negated weights, matching the addon exactly.
+    ranked = ranked[np.argsort(-ranked_weights, kind="stable")]
+    return np.concatenate([ranked, carryover[~found]])
+
+
+def _rank_carryover_from_amplitudes(
+    carryover_a: np.ndarray,
+    carryover_b: np.ndarray,
+    sci_state,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Re-rank a carryover SBD returned in canonical order, using the amplitudes.
+
+    Needed for carryover_type 2/3 only; type 1 already comes out weight-ordered.
+
+    The ranking is PER SECTOR, where the loop would rank the two sectors jointly under
+    ``symmetrize_spin``. That is safe here, and not by luck. ``symmetrize_spin`` hands
+    the solver the SAME array for both sectors, so the subspace is symmetric and the
+    amplitude matrix is symmetric (or antisymmetric, for a triplet at Ms=0); marginal
+    weights square the amplitudes, so the two sectors' weights are equal either way
+    and the per-sector rankings coincide. Singles extension is spin-agnostic, so types
+    2/3 inherit it. Measured on h2o: for a symmetric subspace the two carryover lists
+    come out bit-identical for types 1, 2 and 3.
+
+    That matters because ``batch_to_ci_strings`` IGNORES ``carryover_strings_b`` under
+    ``symmetrize_spin`` -- it assumes the two are equal -- so a solver whose lists
+    differed there would silently lose its beta selection. Ours do not differ. When
+    ``symmetrize_spin`` is off, both lists are used and may legitimately differ.
+    """
+    probabilities = np.abs(sci_state.amplitudes) ** 2
+    weights_a = probabilities.sum(axis=1)
+    weights_b = probabilities.sum(axis=0)
+    return (
+        _rank_by_marginal_weight(carryover_a, sci_state.ci_strs_a, weights_a),
+        _rank_by_marginal_weight(carryover_b, sci_state.ci_strs_b, weights_b),
+    )
+
+
+def _extract_carryover(results: dict, norb: int, backend, bit_length: int):
+    """Convert SBD's carryover determinant lists to CI strings.
+
+    ``tpb_diag`` always returns ``carryover_adet``/``carryover_bdet`` in its results
+    dict, but they are empty unless the caller asked for a carryover type --
+    ``_create_sbd_config`` leaves ``carryover_type`` at 0, so the common path pays
+    nothing here and gets ``(None, None)``.
+
+    SBD hands these back as packed half-determinants, the same representation
+    ``_ci_strings_to_sbd_dets`` produces going in, so converting back with
+    ``_sbd_dets_to_ci_strings`` yields plain CI-string ints -- the shape
+    ``SCIResult.carryover`` wants.
+    """
+    co_a = results.get("carryover_adet")
+    co_b = results.get("carryover_bdet")
+    if not co_a and not co_b:
+        return None, None
+    empty = np.array([], dtype=np.int64)
+    carryover_a = (
+        _sbd_dets_to_ci_strings(co_a, norb, backend, bit_length) if co_a else empty
+    )
+    carryover_b = (
+        _sbd_dets_to_ci_strings(co_b, norb, backend, bit_length) if co_b else empty
+    )
+    return carryover_a, carryover_b
 
 
 def assemble_rdms(results: dict, norb: int) -> tuple[np.ndarray | None, np.ndarray | None]:
@@ -528,13 +722,13 @@ def _create_sbd_config(config_dict: dict | None = None, backend=None, device_con
     sbd_data.init = 0
     sbd_data.do_shuffle = 0
     sbd_data.do_rdm = 0
-    # SBD's carryover is NOT consumed on this path: it is SBD's own iterative
-    # mechanism (its CLI writes it out with --carryover_adetfile and you re-run),
-    # whereas the SQD loop selects its own determinants from the amplitudes we
-    # return. Since _solve_sci_core discards results["carryover_*"], asking SBD to
-    # compute it is pure work -- for carryover_type=2 that includes building
-    # singles-extended determinant lists. Default it off; a caller who wants it
-    # can still set carryover_type through sbd_config.
+    # Off by default, but no longer discarded: since qiskit-addon-sqd#369 the loop
+    # accepts a solver's own carryover (SCIResult.carryover) instead of thresholding
+    # the amplitudes, and _solve_sci_core reports it when SBD computed one. Default
+    # stays 0 because computing it is real work -- carryover_type=2 builds
+    # singles-extended determinant lists -- and because the amplitude-threshold path
+    # remains the behaviour callers expect. Set carryover_type through sbd_config to
+    # let SBD choose the next iteration's determinants instead.
     sbd_data.carryover_type = 0
     sbd_data.ratio = 0.1
     sbd_data.threshold = 1e-4
