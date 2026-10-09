@@ -1,0 +1,12 @@
+---
+fixes:
+  - |
+    Building on macOS inside a conda-build or ``rattler-build`` recipe no longer
+    fails with ``no OpenMP runtime found on this macOS host`` when the recipe
+    provides ``llvm-openmp``. The build located ``libomp`` by probing
+    ``$CONDA_PREFIX``, which under those tools names the base installation
+    rather than the environment being built into, so the ``omp.h`` installed in
+    the build prefix went unexamined and the build fell through to Homebrew.
+    ``sys.prefix`` and ``sys.base_prefix`` are now consulted as well, after
+    ``CONDA_PREFIX`` and before Homebrew, so an ordinary activated environment
+    behaves as before.
