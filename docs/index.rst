@@ -88,7 +88,11 @@ call, with ``device=`` or a :class:`~sbd.device_config.DeviceConfig`:
        executes on the host, so use ``gpu`` for GDB on GPUs
      - ``nvc++`` on NVIDIA, ``amdclang++`` on AMD
 
-The GPU backends hand device memory to MPI, so they need a GPU-aware MPI.
+The GPU backends pass device memory to MPI, so they expect a GPU-aware MPI. The
+Thrust backend can instead be built to stage transfers through host memory; see
+`Backend Architecture
+<https://github.com/Qiskit/sbd-eigensolver-python/blob/main/README.md#backend-architecture>`__
+in the README.
 
 TPB or GDB
 ----------
