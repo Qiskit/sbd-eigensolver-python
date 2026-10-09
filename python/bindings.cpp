@@ -319,7 +319,12 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
         .def_readwrite("bit_length", &sbd::tpb::SBD::bit_length,
                       "Bit length for determinant representation")
         .def_readwrite("dump_matrix_form_wf", &sbd::tpb::SBD::dump_matrix_form_wf,
-                      "Filename to dump wavefunction in matrix form")
+                      "Path to write the full adet x bdet amplitude matrix to, "
+                      "gathered onto one rank. A .bin path writes a bare "
+                      "row-major float64 array with no header; .dat/.txt write "
+                      "a labelled text table. Distinct from tpb_diag's "
+                      "savename, which writes per-rank blocks with a header "
+                      "for restart -- see the tpb_diag docstring.")
 #ifdef SBD_THRUST
         .def_readwrite("use_precalculated_dets", &sbd::tpb::SBD::use_precalculated_dets,
                       "Use precalculated determinants (THRUST)")
