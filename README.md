@@ -4,19 +4,37 @@ Python bindings for the Selected Basis Diagonalization (SBD) library, with CPU a
 
 ## Overview
 
-SBD (Selected Basis Diagonalization) is a high-performance library for quantum chemistry calculations. The Python bindings provide access to SBD's **Tensor-Product Basis (TPB)** diagonalization method on CPU and GPU.
+SBD (Selected Basis Diagonalization) is a high-performance library for quantum
+chemistry calculations. These bindings expose two of its diagonalization methods on CPU
+and GPU. They differ in the shape of the subspace they span, which is what decides
+which one you want:
+
+- **Tensor-Product Basis (TPB)** — the subspace is the Cartesian product of an alpha
+  and a beta determinant list, so its dimension is `|adet| × |bdet|`. The mature path,
+  and the one the qiskit-addon-sqd integration uses.
+- **General-Determinant Basis (GDB)** — the subspace is the explicit determinant list
+  you pass, so it can be an arbitrary *sparse* set rather than a product. Experimental:
+  newer, a smaller tested surface, and still evolving as upstream SBD does.
+
+If your subspace is a product, prefer TPB — it represents that case with two
+half-determinant lists instead of every product element, and needs no extra
+constraints. Reach for GDB when the subspace is not a product.
 
 **Key Features:**
-- **TPB diagonalization** for quantum chemistry Hamiltonians
+- **TPB and GDB diagonalization** for quantum chemistry Hamiltonians
 - Three backends, selected per call at runtime via `device=`:
   `'cpu'` (host OpenMP), `'gpu'` (NVHPC Thrust/CUDA, NVIDIA only) and
   `'gpu-omp'` (OpenMP target offload, **NVIDIA or AMD**). All the backends your
   toolchain supports can be built into one install; each is imported only when
-  first used
+  first used. **TPB runs on all three; GDB has Thrust kernels only**, so GDB on a
+  GPU is NVIDIA-only and under `'gpu-omp'` it falls back to the host — see
+  [`examples/gdb/README.md`](examples/gdb/README.md)
 - MPI parallelization
 - Integration with [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) for SQD workflows
 
-In addition to TPB, this package also contains experimental support for SBD's **General-Determinant Basis (GDB)** method. However, SBD's **Creation/Annihilation operator (CAOP)** method is currently not supported by this wrapper; users who need it should reference and use the C++ CLI apps in the upstream submodule (`vendor/sbd-upstream/apps/`).
+SBD's **Creation/Annihilation operator (CAOP)** method is not supported by this
+wrapper; users who need it should reference and use the C++ CLI apps in the upstream
+submodule (`vendor/sbd-upstream/apps/`).
 
 > [!NOTE]
 > This package is newly open-sourced. The Python API follows semantic versioning, but the build configuration and GPU backends have been exercised on a limited set of platforms — please report issues.
@@ -58,10 +76,22 @@ matter for it.
 
 - [`examples/tpb/`](examples/tpb/README.md) — tensor-product basis: standalone TPB
   diagonalization, the SQD loops, and the subspace-enlargement driver.
+- [`examples/gdb/`](examples/gdb/README.md) — general determinant basis: standalone
+  GDB diagonalization over an explicit determinant list, and an iterative
+  heatbath-expansion driver.
 
 ## Integration with qiskit-addon-sqd
 
 SBD can serve as the eigensolver backend for qiskit-addon-sqd's SQD workflow.
+
+> [!NOTE]
+> This integration is **TPB-only**, and not merely for want of plumbing.
+> `solve_sci`/`solve_sci_batch` call `tpb_diag`, and the addon's interface describes a
+> product subspace by construction: `ci_strings` is a `(strings_a, strings_b)` pair and
+> `SCIState.amplitudes` is an `|a| × |b|` matrix. A sparse determinant list cannot be
+> expressed that way without padding back up to the full product, which discards the
+> reason to use GDB. For GDB, call `gdb_diag` directly or use the drivers in
+> [`examples/gdb/`](examples/gdb/README.md).
 
 **Note:** Requires [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) with distributed (SPMD) support — `diagonalize_fermionic_hamiltonian` calling `sci_solver` on every MPI rank. This is available in `qiskit-addon-sqd` version `0.13.1` or higher. SBD-selected carryover and subspace policies need `0.14.0` or higher.
 
@@ -201,37 +231,27 @@ Total MPI ranks = `task_comm_size × adet_comm_size × bdet_comm_size`.
 config = sbd.GDB_SBD()
 ```
 
-Shares `method`, `max_it`, `max_nb`, `eps`, `max_time`, `init`, `do_shuffle`,
-`do_rdm`, `carryover_type`, `ratio`, `threshold` and `bit_length` with `TPB_SBD`,
-and replaces the determinant communicators with a single basis communicator:
+Shares `max_it`, `max_nb`, `eps`, `max_time`, `init`, `do_rdm`, `carryover_type`,
+`ratio`, `threshold` and `bit_length` with `TPB_SBD`, and replaces the determinant
+communicators with a single basis communicator:
 
 | Attribute | Default | Description |
 |-----------|---------|-------------|
-| `b_comm_size` | 1 | Basis communicator size — must be 1 for `gdb_diag`, see below |
-| `t_comm_size` | 1 | Task communicator size — must be 1 while `b_comm_size` is, see below |
+| `method` | 0 | 0=Davidson, 1=Davidson+Ham. GDB has no Lanczos, so TPB's 2 and 3 are rejected |
+| `b_comm_size` | 1 | Basis communicator size — how many shards the determinant list is split into |
+| `t_comm_size` | 1 | Task communicator size — must not exceed `b_comm_size` |
 | `seed` | 1729 | Seed for the initial vector |
 | `heatbath_cutoff` | 1e-4 | Heatbath expansion cutoff |
 | `heatbath_truncation` | 0.0 | Weight truncation applied before heatbath expansion |
 | `heatbath_batch_size` | 200000000 | Heatbath expansion batch size |
 
-**Why both must be 1**, since the two constraints have different owners:
+Total MPI ranks = `t_comm_size × b_comm_size × helper`, where the helper dimension is
+the derived quotient and is not settable. With `b_comm_size > 1` each rank passes its
+own shard of the determinant list rather than the whole list.
 
-`b_comm_size == 1` is a limitation of *this wrapper*, not of SBD. Upstream's in-memory
-`gdb::diag` expects each rank to pass **its own shard** of the determinant list — that
-is what upstream's file-based entry point hands it, after distributing determinant
-files across `b_comm`. This wrapper passes the whole list from every rank, which is
-only consistent with a single basis block, so it rejects anything else rather than
-have each rank diagonalize the full subspace while believing it held a shard. Upstream
-itself runs with a split basis: its own `run.sh` for the GDB app passes
-`--b_comm_size 2`.
-
-`t_comm_size == 1` then follows from *upstream's* algorithm rather than from us. GDB's
-matrix-vector product rotates the ket around `b_comm` as a ring, so there are exactly
-`b_comm_size` ring stations and one "task" is one station — meaning `t_comm_size`
-cannot exceed `b_comm_size`. With the basis in a single block there is a single task.
-
-Ranks are not wasted in the meantime: the derived helper dimension,
-`ranks / (t_comm_size × b_comm_size)`, absorbs them and does not change the energy.
+See [`examples/gdb/README.md`](examples/gdb/README.md) for the decomposition, the shard
+contract, the six determinant-placement schemes, and why the helper dimension must be 1
+on the Thrust backend.
 
 ### Diagonalization
 
@@ -250,20 +270,34 @@ results = sbd.tpb_diag(fcidump, adet, bdet, sbd_data,
 ```python
 # GDB: over an explicit list of full determinants rather than a product space
 results = sbd.gdb_diag(fcidump, det, sbd_data,
-                       loadname="", savename="", device=None)
+                       loadname="", savename="", device=None,
+                       determinant_distribution="", determinant_grid_a=0,
+                       determinant_grid_b=0)
 ```
 
 **Returns:** `dict` with keys `energy`, `density`, `carryover_det`, `one_p_rdm`,
-`two_p_rdm`. Each determinant is a `2 * norb`-bit configuration in which bit
+`two_p_rdm`, `local_dim`, `global_dim` and `determinant_distribution`; the last three
+are this rank's determinant count, the whole basis's, and the placement scheme that
+ran. Each determinant is a `2 * norb`-bit configuration in which bit
 `2 * i` is the occupation of spin-alpha orbital `i` and bit `2 * i + 1` that of
 spin-beta orbital `i`. The determinants must be distinct; they are sorted into
 SBD's canonical order internally, which `sort_bitarray` reproduces.
 
-`gdb_diag` does not return the wavefunction amplitudes, because SBD's `gdb::diag`
-has no in-memory output for them. Passing `savename` makes SBD write them to
-`f"{savename}000000.bin"` instead: two `size_t` headers
-(`n_dets`, `words_per_det`), then `n_dets × words_per_det` `size_t` determinant
-words in canonical order, then `n_dets` `float64` amplitudes.
+`det` may be a single `(ndets, words)` array or **this rank's shard of one**:
+`sbd_data.b_comm_size` decides which. At `1` every rank passes the whole basis; above
+`1` every rank passes its own shard, the union over b_comm positions being the basis.
+Sharded input must be globally sorted and disjoint; that and the rank-layout constraints
+are checked, and raise rather than silently diagonalizing the wrong subspace.
+`determinant_distribution` chooses how determinants are placed across ranks (default
+`equal-bra-a`), and the two grid arguments size the grid for the grid-cyclic schemes.
+[`examples/gdb/README.md`](examples/gdb/README.md) has the shard contract, the
+placement schemes, and which returned values are replicated versus sharded.
+
+`gdb_diag` returns no wavefunction amplitudes — `gdb::diag` has no in-memory output for
+them — and for most uses none are needed: the energy, density and RDMs come back
+directly, and an iterative heatbath run gets its next subspace from `carryover_det`. If
+you do want the amplitudes, `savename` writes them to disk; the file layout is in
+[`examples/gdb/README.md`](examples/gdb/README.md).
 
 The optional `device` parameter overrides the default set by `init()`.
 
@@ -303,13 +337,13 @@ prefer it. Tracked as
 
 **Ranks die with `Bus error` or `SIGSEGV` inside the MPI's own copy path** (`MPIR_Localcopy`, `ucp_worker_progress`, ...) **on a GPU backend:** the MPI is not GPU-aware and was handed a device pointer. Rebuild UCX `--with-cuda` / `--with-rocm`, and confirm with `ucx_info -d | grep -i 'Transport: cuda'` (or `rocm`). Two things mislead here. A partly GPU-aware stack fails in only one place: an MPICH with GPU support *disabled* over a CUDA-aware UCX ran OMP-offload fine and crashed only in Thrust, because the inter-rank path went through UCX while the local-copy path did not. And on AMD a non-ROCm-aware MPI does not crash at all — ROCm maps device memory into the process address space, so the host copy succeeds and merely stages everything through the host aperture (measured on MI250X, XNACK off, 8 ranks) — so a working AMD run is not evidence that the MPI is ROCm-aware.
 
-**`GDB Thrust mult does not support h_comm_size > 1` from `gdb_diag` on more than one
-rank:** GDB's Thrust kernels never implemented the helper dimension, and the helper
-dimension is `ranks / (t_comm_size × b_comm_size)`. Since `gdb_diag` requires
-`b_comm_size == 1` (see [Configuration](#configuration)), which forces `t_comm_size` to
-1, every rank you add lands in the helper dimension — so GPU GDB is limited to a single
-rank in this release. Run GDB on one GPU, or on the CPU backend, where the helper
-dimension is unconstrained. TPB is unaffected and shards over `adet_comm_size` /
-`bdet_comm_size` as usual.
+**GDB on more than one GPU refuses to start, naming the helper dimension:** GDB's Thrust
+kernels never implemented that dimension, and it is the quotient
+`ranks / (t_comm_size × b_comm_size)` — so any rank you do not assign to `t` or `b` lands
+there. Give every rank to the basis: `-np 4` with `b_comm_size = 4` leaves a helper
+dimension of 1. Leaving `b_comm_size` at 1 puts *all* ranks in the helper dimension,
+which is why multi-GPU GDB requires a split basis. `gdb_diag` checks this before doing
+any work rather than letting the kernel throw mid-launch. The CPU backend has no such
+restriction, and TPB is unaffected.
 
 **Repository:** https://github.com/Qiskit/sbd-eigensolver-python
