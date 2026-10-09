@@ -84,7 +84,8 @@ call, with ``device=`` or a :class:`~sbd.device_config.DeviceConfig`:
      - NVIDIA GPUs, Thrust
      - NVIDIA HPC SDK (``nvc++``)
    * - ``gpu-omp``
-     - NVIDIA or AMD GPUs, OpenMP offload
+     - NVIDIA or AMD GPUs, OpenMP offload. TPB only: a GDB run under ``gpu-omp``
+       executes on the host, so use ``gpu`` for GDB on GPUs
      - ``nvc++`` on NVIDIA, ``amdclang++`` on AMD
 
 The GPU backends hand device memory to MPI, so they need a GPU-aware MPI.
