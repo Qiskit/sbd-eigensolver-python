@@ -15,14 +15,16 @@ SBD (Selected Basis Diagonalization) Python Bindings
 
 This package provides Python bindings for the SBD library.
 
-Usage:
+Usage::
+
     import sbd
     results = sbd.tpb_diag_from_files(fcidump, adets, config)
 
     # Explicit init is optional — auto-initialized on first use
     sbd.init(device='gpu')              # set default device explicitly
 
-Device switching (CPU/GPU) within the same process:
+Device switching (CPU/GPU) within the same process::
+
     result_cpu = sbd.tpb_diag(..., device='cpu')
     result_gpu = sbd.tpb_diag(..., device='gpu')
 """
@@ -321,11 +323,11 @@ def init(device='cpu', comm_backend='mpi'):
 
     Args:
         device: Default compute device — 'cpu', 'gpu', 'gpu-omp', or 'auto'.
-                'gpu' is the NVIDIA-only Thrust backend; 'gpu-omp' is OpenMP
-                target offload and serves NVIDIA and AMD alike.
-                Aliases: 'gpu-thrust' / 'gpu-nvidia' / 'cuda' (= 'gpu');
-                         'gpu-omp-offload' / 'gpu-nvhpc-omp' / 'gpu-nvidia-omp' /
-                         'gpu-amd-omp' / 'gpu-rocm-omp' / 'rocm' (= 'gpu-omp').
+            'gpu' is the NVIDIA-only Thrust backend; 'gpu-omp' is OpenMP
+            target offload and serves NVIDIA and AMD alike.
+            Aliases for 'gpu': 'gpu-thrust', 'gpu-nvidia', 'cuda'.
+            Aliases for 'gpu-omp': 'gpu-omp-offload', 'gpu-nvhpc-omp',
+            'gpu-nvidia-omp', 'gpu-amd-omp', 'gpu-rocm-omp', 'rocm'.
         comm_backend: Communication backend — 'mpi'.
 
     Raises:
@@ -465,7 +467,7 @@ def get_device_id(device=None):
 
     Uses the communicator rank, i.e. the same ``gpu_id = rank % num_gpus``
     convention SBD's own diagonalization applies, documented in
-    ``python/examples/README.md``.
+    ``examples/tpb/README.md``.
     """
     _ensure_initialized()
     return get_backend(device).planned_device_id(get_comm())

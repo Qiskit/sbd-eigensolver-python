@@ -1,0 +1,8 @@
+---
+upgrade:
+  - |
+    ``pybind11`` is no longer a runtime dependency. It is needed only to compile
+    the extension modules and remains declared under ``[build-system] requires``,
+    but nothing in the installed package imports it, so every installation had
+    been pulling it in for nothing. The runtime dependencies are now ``mpi4py``
+    and ``numpy``.

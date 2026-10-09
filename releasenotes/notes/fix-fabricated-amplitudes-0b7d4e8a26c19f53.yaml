@@ -1,0 +1,20 @@
+---
+fixes:
+  - |
+    The wavefunction amplitudes returned by :func:`sbd.sbd_solver.solve_sci` and
+    :func:`sbd.sbd_solver.solve_sci_batch` are no longer replaced by a uniform
+    array. SBD writes the amplitudes for the full input subspace -- the product of
+    the alpha and beta determinant lists -- regardless of its carryover settings,
+    but the solver sized its read against the carryover counts instead. Under the
+    former default those sizes never matched, and the mismatch was answered by
+    substituting a uniform array: correctly shaped, correctly normalized, and
+    carrying no information at all.
+
+    This was silent and load-bearing. ``qiskit-addon-sqd`` selects each
+    iteration's determinants by amplitude magnitude and weights them by the
+    squared magnitude, so every iteration after the first was seeded from uniform
+    weights over an already-truncated list of determinants. The amplitudes are now
+    read over the full subspace and paired with the determinants that span it, and
+    a missing dump or a size mismatch raises rather than being papered over, since
+    either means the run did not do what was asked. Energies and orbital
+    occupancies were never affected; they come from SBD directly.

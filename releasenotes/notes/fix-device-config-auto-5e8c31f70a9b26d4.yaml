@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    ``DeviceConfig.auto()`` now accounts for which backends were actually built,
+    not only for what hardware is present. It previously returned the Thrust GPU
+    device whenever any GPU was detected, which selected a backend that cannot
+    exist on an AMD host, and on a CPU-only build running on a machine with a GPU
+    it selected a backend that had not been compiled. The available devices are
+    now intersected with the backends present, so a CPU-only installation resolves
+    to the CPU and an AMD host resolves to the OpenMP target-offload backend.

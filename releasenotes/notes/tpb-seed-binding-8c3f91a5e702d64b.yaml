@@ -1,0 +1,16 @@
+---
+features:
+  - |
+    ``TPB_SBD`` now exposes a ``seed`` attribute, so the random initial vector
+    selected by ``init = 1`` can be chosen rather than fixed. The field only
+    applies at ``init = 1``, which the name does not convey on its own; at the
+    default ``init = 0`` the start vector is deterministic and ``seed`` is
+    ignored. ``GDB_SBD`` has exposed ``seed`` all along, so this removes an
+    asymmetry between the two configuration structs.
+
+    Previously ``init = 1`` was reachable but every random-start run began from
+    the same upstream default seed, with no way to vary it -- which defeats the
+    purpose of a random start, since you could not check whether a result
+    depended on where the solver began. Set it through ``sbd_config``, for
+    example ``sbd_config={"init": 1, "seed": 987654321}``. The attribute is a new
+    binding, so the extension must be rebuilt for it to appear.

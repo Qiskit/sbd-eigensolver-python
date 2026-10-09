@@ -1,0 +1,18 @@
+---
+features:
+  - |
+    Three functions have been added for inspecting how the compiled backends are
+    behaving in a given process: :func:`sbd.loaded_backends` lists the backends
+    actually imported so far, :func:`sbd.backend_load_errors` maps each unusable
+    backend to the reason it is unusable -- distinguishing "not built" from a
+    missing shared library, an architecture mismatch or a failed import -- and
+    :func:`sbd.has_backend_conflict` reports whether this process has loaded a
+    combination of backends that silently disables GPU offload.
+
+    :func:`sbd.available_backends` now judges each candidate extension statically,
+    by checking that it is present with no unresolved shared-library dependencies
+    and a matching architecture. It deliberately does not import it: importing a
+    backend runs ``MPI_Init``, which on an MPI without PMIx support hangs when the
+    process was not started under a launcher. A listed backend is therefore
+    present and structurally sound rather than guaranteed to load, since an
+    ABI mismatch only surfaces on a real import.
