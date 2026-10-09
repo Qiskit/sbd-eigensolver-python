@@ -529,7 +529,7 @@ def makestring(config, bit_length, total_bit_length, device=None):
     """Render a packed determinant as a ``total_bit_length``-character string.
 
     The inverse of :func:`from_string`, and subject to the same right-to-left
-    word packing described there.
+    word packing, which :func:`from_strings` describes.
     """
     _ensure_initialized()
     return get_backend(device).makestring(config, bit_length, total_bit_length)
@@ -538,26 +538,10 @@ def makestring(config, bit_length, total_bit_length, device=None):
 def from_string(s, bit_length, total_bit_length, device=None):
     """Convert a binary string to SBD's packed determinant format.
 
-    Returns a list of ``size_t`` words holding ``total_bit_length`` bits packed
-    ``bit_length`` to a word, so a string longer than ``bit_length`` needs more
-    than one word::
-
-        from_string("0011", 20, 4)   # -> [3]
-
-    The string is packed from its **right end**: its trailing ``bit_length``
-    characters become word 0, the next ``bit_length`` to the left become word 1,
-    and so on. The leading characters of a string therefore land in the *last*
-    word, not the first::
-
-        from_string("1" + "0" * 69, 63, 70)   # -> [0, 64]
-        from_string("0" * 69 + "1", 63, 70)   # -> [1, 0]
-
-    Within a word the rightmost character is the least significant bit, which is
-    why ``"0011"`` is ``3`` rather than ``12``.
-
-    :func:`makestring` is the inverse. Note that ``bit_length`` must match the
-    ``bit_length`` of the config passed to the diagonalizers, since it sets how
-    many words each determinant occupies.
+    Returns a list of ``size_t`` words, e.g. ``from_string("0011", 20, 4)`` is
+    ``[3]``. :func:`makestring` is the inverse. See :func:`from_strings`, the
+    bulk form, for the word-packing convention and for why it is worth
+    preferring that form outside of one-off calls.
     """
     _ensure_initialized()
     return get_backend(device).from_string(s, bit_length, total_bit_length)
@@ -570,6 +554,25 @@ def from_strings(strings, bit_length, total_bit_length, device=None):
     determinant across the Python boundary. Prefer it for anything larger than a
     handful: the per-call form costs tens of thousands of round trips on the
     vendored inputs alone.
+
+    Each row holds ``total_bit_length`` bits packed ``bit_length`` to a word, so
+    a bitstring longer than ``bit_length`` occupies more than one word. The
+    packing runs from the **right end** of the string: its trailing
+    ``bit_length`` characters become word 0, the next ``bit_length`` to the left
+    become word 1, and so on, so the leading characters of a multi-word string
+    land in the *last* word rather than the first::
+
+        from_strings(["0011"], 20, 4)           # -> array([[3]], dtype=uint64)
+        from_strings(["1" + "0" * 69], 63, 70)  # -> array([[ 0, 64]], ...)
+        from_strings(["0" * 69 + "1"], 63, 70)  # -> array([[1, 0]], ...)
+
+    Within a word the rightmost character is the least significant bit, which is
+    why ``"0011"`` packs to ``3`` rather than ``12``. Getting this backwards
+    produces a valid-looking but wrong subspace rather than an error, so check
+    round trips with :func:`makestring` when building determinants by hand.
+
+    ``bit_length`` must match the ``bit_length`` of the config passed to the
+    diagonalizers, since it sets how many words each determinant occupies.
     """
     _ensure_initialized()
     return get_backend(device).from_strings(list(strings), bit_length, total_bit_length)
