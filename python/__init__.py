@@ -537,6 +537,28 @@ def from_string(s, bit_length, total_bit_length, device=None):
     return get_backend(device).from_string(s, bit_length, total_bit_length)
 
 
+def from_strings(strings, bit_length, total_bit_length, device=None):
+    """Pack many bitstrings into one ``(n, words)`` array.
+
+    The bulk form of :func:`from_string`, looping in C++ instead of once per
+    determinant across the Python boundary. Prefer it for anything larger than a
+    handful: the per-call form costs tens of thousands of round trips on the
+    vendored inputs alone.
+    """
+    _ensure_initialized()
+    return get_backend(device).from_strings(list(strings), bit_length, total_bit_length)
+
+
+def sort_bitarray_array(dets, device=None):
+    """Sort packed determinants into canonical order, array in and array out.
+
+    The array form of :func:`sort_bitarray`, for a determinant list held as an
+    ``(n, words)`` array. Deduplicates, like the list form.
+    """
+    _ensure_initialized()
+    return get_backend(device).sort_bitarray_array(dets)
+
+
 def sort_bitarray(dets, device=None):
     """Sort determinants into canonical order, removing duplicates.
 
@@ -598,7 +620,9 @@ def tpb_diag(fcidump, adet, bdet, sbd_data,
 
 
 def gdb_diag(fcidump, det, sbd_data,
-             loadname="", savename="", device=None):
+             loadname="", savename="", device=None,
+             determinant_distribution="", determinant_grid_a=0,
+             determinant_grid_b=0):
     """
     Perform GDB diagonalization over an explicit list of determinants.
 
@@ -607,29 +631,79 @@ def gdb_diag(fcidump, det, sbd_data,
     themselves, so an arbitrary sparse subspace can be diagonalized.
 
     Each determinant is a ``2 * norb``-bit configuration packed into words of
-    ``sbd_data.bit_length`` bits, as returned by :func:`from_string`. Bit ``2 * i``
-    is the occupation of spin-alpha orbital ``i`` and bit ``2 * i + 1`` that of
-    spin-beta orbital ``i``.
+    ``sbd_data.bit_length`` bits. Bit ``2 * i`` is the occupation of spin-alpha
+    orbital ``i`` and bit ``2 * i + 1`` that of spin-beta orbital ``i``.
+    :func:`from_strings` packs a list of bitstrings into the expected
+    ``(ndets, words)`` array; a nested list is accepted and converted.
+
+    **The shard contract.** ``sbd_data.b_comm_size`` decides what ``det`` means:
+
+    - ``1`` — every rank passes the whole basis.
+    - ``> 1`` — every rank passes **its own shard**, and the union over b_comm
+      positions is the basis. This is the only way GDB's memory scales, because
+      b_comm is the only dimension that divides the basis (and with it the
+      excitation lookup); the derived helper dimension divides work but not
+      storage.
+
+    The shard index is ``rank % b_comm_size``, and ranks sharing one must pass
+    identical determinants — the in-memory path does not broadcast the list.
+    Shards must be globally sorted and disjoint: shard ``i`` strictly below shard
+    ``i + 1``. All of this is checked, and a violation raises rather than
+    silently diagonalizing the wrong subspace. What cannot be checked is
+    *completeness* — that the union is the basis you meant — so compare the
+    returned ``global_dim`` against what you expect.
+
+    ``t_comm_size`` must not exceed ``b_comm_size``: GDB runs one task per
+    basis-ring station and there are exactly ``b_comm_size`` of them.
+    ``t_comm_size * b_comm_size`` must divide the rank count exactly. On the
+    Thrust backend the helper dimension must be 1, i.e. every rank goes to
+    ``t_comm_size * b_comm_size``.
 
     Args:
         fcidump: FCIDump object.
-        det: Determinants spanning the subspace. Must be distinct; they are
-            sorted into SBD's canonical order internally, which
-            :func:`sort_bitarray` reproduces.
-        sbd_data: GDB_SBD configuration object. ``b_comm_size`` must be 1.
-        loadname: Path to load initial wavefunction (optional).
+        det: Determinants spanning the subspace, or this rank's shard of them, as
+            an ``(ndets, words)`` array. Must be distinct.
+        sbd_data: GDB_SBD configuration object. ``method`` must be 0 or 1 — GDB
+            implements Davidson only, so TPB's Lanczos methods 2 and 3 do not
+            exist here and are rejected.
+        loadname: Path to load an initial wavefunction (optional).
         savename: Path prefix to save the final wavefunction to (optional). SBD
-            writes ``f"{savename}000000.bin"``, holding the determinants in
-            canonical order and their amplitudes.
+            writes one file per b_comm position, ``f"{savename}{rank_b:06d}.bin"``,
+            each holding only that shard; rank 0's file is not the whole
+            wavefunction. GDB has no combined matrix-form dump.
         device: Override device ('cpu', 'gpu', or None for default).
+        determinant_distribution: How to place determinants across b_comm — one
+            of ``input`` (keep the shards as given), ``equal-bra-a`` (default;
+            equal distinct-alpha count per rank, which is what balances the
+            matvec), ``count``, ``count-sorted``, ``grid-cyclic`` or
+            ``grid-cyclic-balanced``. Ignored when ``b_comm_size`` is 1.
+        determinant_grid_a: Grid rows for the grid-cyclic schemes. With
+            ``determinant_grid_b``, must multiply to ``b_comm_size``; give both or
+            neither, and the default is the factor pair nearest square.
+        determinant_grid_b: Grid columns; see ``determinant_grid_a``.
 
     Returns:
-        dict with keys: energy, density, carryover_det, one_p_rdm, two_p_rdm.
+        dict with keys ``energy``, ``density``, ``carryover_det``, ``one_p_rdm``,
+        ``two_p_rdm``, ``local_dim``, ``global_dim`` and
+        ``determinant_distribution``. What is replicated and what is sharded:
+
+        - ``energy`` — replicated, bit-identical on every rank.
+        - ``density``, ``one_p_rdm``, ``two_p_rdm`` — replicated on every rank.
+        - ``carryover_det`` — **this rank's shard**, as an ``(n, words)`` array,
+          not the whole list. For ``carryover_type`` 1 it is split over b_comm and
+          *duplicated* across the helper dimension, so gathering means taking one
+          representative per ``rank % b_comm_size``. For types 2 and 3 it is split
+          over the world communicator with no duplication, so a plain allgather is
+          correct; those types return the parents together with the new
+          candidates, i.e. the next subspace rather than only the additions.
+        - ``local_dim`` / ``global_dim`` — determinants on this rank, and summed
+          over b_comm.
     """
     _ensure_initialized()
     backend = get_backend(device)
     return backend.gdb_diag(
-        _global_comm, sbd_data, fcidump, det, loadname, savename
+        _global_comm, sbd_data, fcidump, det, loadname, savename,
+        determinant_distribution, determinant_grid_a, determinant_grid_b,
     )
 
 
@@ -740,7 +814,9 @@ __all__ = [
     'LoadAlphaDets',
     'makestring',
     'from_string',
+    'from_strings',
     'sort_bitarray',
+    'sort_bitarray_array',
     'tpb_diag_from_files',
     'tpb_diag',
     'gdb_diag',
