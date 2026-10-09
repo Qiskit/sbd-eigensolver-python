@@ -17,4 +17,7 @@ fixes:
     read over the full subspace and paired with the determinants that span it, and
     a missing dump or a size mismatch raises rather than being papered over, since
     either means the run did not do what was asked. Energies and orbital
-    occupancies were never affected; they come from SBD directly.
+    occupancies were never affected; they come from SBD directly. With
+    ``carryover_type = 1``, no wavefunction is requested at all and
+    ``SCIResult.sci_state`` is ``None``; see the SBD-selected carryover entry
+    under New Features.

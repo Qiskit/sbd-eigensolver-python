@@ -1,7 +1,7 @@
 ---
 features:
   - |
-    SBD can now choose the carryover for the next SQD iteration. When
+    When used together with `qiskit-addon-sqd`, SBD can now choose the carryover for the next SQD iteration. When
     ``carryover_type`` is non-zero in ``sbd_config``,
     :func:`sbd.sbd_solver.solve_sci` and :func:`sbd.sbd_solver.solve_sci_batch`
     return SBD's selection in ``SCIResult.carryover``, which ``qiskit-addon-sqd``

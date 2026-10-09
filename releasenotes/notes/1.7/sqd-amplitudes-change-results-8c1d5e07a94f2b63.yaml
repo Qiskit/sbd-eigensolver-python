@@ -1,0 +1,9 @@
+---
+upgrade:
+  - |
+    Multi-iteration SQD results computed through :func:`sbd.sbd_solver.solve_sci`
+    or :func:`sbd.sbd_solver.solve_sci_batch` will differ from those of earlier
+    releases, because the amplitudes returned to the SQD loop are now correct
+    (see Bug Fixes) and ``qiskit-addon-sqd`` selects each iteration's
+    determinants from them. Single-iteration energies and orbital occupancies are
+    unaffected.
