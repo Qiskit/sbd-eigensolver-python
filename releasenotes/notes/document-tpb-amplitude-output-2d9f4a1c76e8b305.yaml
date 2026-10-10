@@ -1,0 +1,20 @@
+---
+other:
+  - |
+    TPB's two wavefunction output paths are now documented, including the fact
+    that they write different formats. ``sbd_data.dump_matrix_form_wf`` writes
+    the full ``len(adet) x len(bdet)`` subspace, gathered onto one rank, as a
+    bare row-major ``float64`` array with no header, so
+    ``np.fromfile(path).reshape(len(adet), len(bdet))`` reads it; naming the
+    file ``.dat`` or ``.txt`` writes a text table labelling each amplitude with
+    its own alpha and beta bitstring, at the stream's default precision rather
+    than full ``float64``. The ``savename`` argument of ``tpb_diag`` instead
+    writes one file per b_comm position holding only that rank's block, behind a
+    three-``size_t`` header and that block's determinant words, and is meant to
+    pair with ``loadname`` for restart. For reading amplitudes back,
+    ``dump_matrix_form_wf`` is normally the one you want.
+
+    The packing convention of ``from_string`` and ``makestring`` is documented
+    as well. Bitstrings are packed from the right: the trailing ``bit_length``
+    characters become word 0, so the leading characters of a string longer than
+    one word land in the last word rather than the first.
