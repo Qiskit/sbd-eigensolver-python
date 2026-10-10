@@ -1,0 +1,31 @@
+---
+features:
+  - |
+    :func:`~sbd.sbd_solver.solve_sci_batch` now divides the processes into one group
+    per subspace and diagonalizes the subspaces concurrently, instead of giving every
+    subspace all of the processes in turn. The division happens when there is more than
+    one subspace and at least as many processes as subspaces; otherwise the previous
+    behavior is unchanged. The returned list is ordered by subspace either way.
+
+    The FCIDUMP is still read once over the whole communicator, before the processes
+    are divided, rather than once per group. Any remainder is left idle instead of
+    making the groups uneven, so that every subspace is diagonalized with the same
+    number of processes: with 10 processes and 3 subspaces, three groups of three are
+    formed and one process takes no part in the diagonalizations.
+
+    This is what a two-round schedule such as ``qiskit_addon_sqd.trim.TrimPolicy``
+    needs, and it requires no configuration. That schedule's screening round hands over
+    every batch in a single call, which is divided here, and its merged round hands over
+    one subspace, which is given every process. Dividing the processes is the solver's
+    concern rather than the schedule's, as described under
+    `diagonalize_fermionic_hamiltonian <https://qiskit.github.io/qiskit-addon-sqd/apidocs/qiskit_addon_sqd.fermion.html>`__.
+
+    One thing to be aware of when setting the process grid. SBD's
+    ``adet_comm_size``, ``bdet_comm_size`` and ``task_comm_size`` describe a single
+    diagonalization, so their product has to divide the communicator that
+    diagonalization is given -- which, once the processes are divided, is a group
+    rather than all of them. An ``sbd_config`` that sizes the grid from
+    ``MPI.COMM_WORLD`` therefore no longer fits: with 6 processes and 3 subspaces each
+    group holds 2, and a grid asking for 6 does not divide it. Leaving the grid at its
+    default works at any size, since the derived helper dimension absorbs whatever the
+    group turns out to be.
