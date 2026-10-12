@@ -774,16 +774,26 @@ if build_cpu:
     print("\nConfiguring CPU backend (_core_cpu)")
     if platform.system() == 'Darwin':
         # macOS has no system OpenMP, so libomp comes from a package manager.
-        # Prefer the conda env when it has one: those are the libraries actually
+        # Prefer an environment that has one: those are the libraries actually
         # LOADED at import time (resolved via the python executable's
         # @loader_path/../lib), so building against Homebrew's copies instead
         # means compiling against different libraries than the process runs on.
-        conda_prefix = os.environ.get('CONDA_PREFIX')
-        if conda_prefix and os.path.exists(
-                os.path.join(conda_prefix, 'include', 'omp.h')):
-            omp_inc = os.path.join(conda_prefix, 'include')
-            omp_lib = openblas_lib = os.path.join(conda_prefix, 'lib')
-            print(f"Darwin: libomp and BLAS from conda env {conda_prefix}")
+        #
+        # CONDA_PREFIX names the *activated* environment, which is not always
+        # the one being built into: conda-build and rattler-build activate their
+        # own base installation and install into $PREFIX, whose python is the
+        # interpreter running this script. So fall back to sys.prefix, which
+        # identifies the environment the extension is actually built for -- the
+        # same convention _mpi_prefix_from_env_prefix() already uses.
+        omp_prefix = next(
+            (p for p in (os.environ.get('CONDA_PREFIX'), sys.prefix,
+                         getattr(sys, 'base_prefix', None))
+             if p and os.path.exists(os.path.join(p, 'include', 'omp.h'))),
+            None)
+        if omp_prefix:
+            omp_inc = os.path.join(omp_prefix, 'include')
+            omp_lib = openblas_lib = os.path.join(omp_prefix, 'lib')
+            print(f"Darwin: libomp and BLAS from env prefix {omp_prefix}")
         else:
             # Ask brew for its prefix rather than assuming: it is /opt/homebrew
             # on Apple silicon and /usr/local on Intel, so either one hardcoded
@@ -797,8 +807,13 @@ if build_cpu:
             if not os.path.exists(os.path.join(omp_inc, 'omp.h')):
                 # Fail here with the fix, rather than 100 lines later with
                 # "'omp.h' file not found" from the middle of a compile.
+                _searched = ', '.join(dict.fromkeys(
+                    [os.path.join(p, 'include')
+                     for p in (os.environ.get('CONDA_PREFIX'), sys.prefix,
+                               getattr(sys, 'base_prefix', None)) if p]
+                    + [omp_inc]))
                 print("Error: no OpenMP runtime found on this macOS host.\n"
-                      f"       Looked in $CONDA_PREFIX/include and {omp_inc}.\n"
+                      f"       Looked in: {_searched}.\n"
                       "       Apple clang ships without OpenMP, so install one:\n"
                       "         conda install -c conda-forge llvm-openmp   (preferred)\n"
                       "         brew install libomp")
