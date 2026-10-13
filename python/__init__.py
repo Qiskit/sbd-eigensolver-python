@@ -78,7 +78,21 @@ _BACKEND_SPECS = (
     ('_core_gpu_omp_offload', 'gpu-omp', ('gpu-omp-offload', 'gpu-nvhpc-omp',
                                           'gpu-nvidia-omp', 'gpu-amd-omp',
                                           'gpu-rocm-omp', 'rocm')),
+    # Unrestricted (UHF) twins: the same backends built with -D_UHF, which makes
+    # SBD read spin-dependent integrals from an FCIDUMP with interleaved
+    # spin-orbital indices. Chosen from the FCIDUMP's format, never by 'auto'.
+    ('_core_cpu_uhf',         'cpu-uhf', ()),
+    ('_core_gpu_thrust_uhf',  'gpu-uhf', ()),
 )
+
+# Restricted device -> its UHF twin. OpenMP offload has none: its device kernels
+# read the restricted integral layout even when built with -D_UHF.
+_UHF_TWIN = {'cpu': 'cpu-uhf', 'gpu': 'gpu-uhf'}
+_UHF_BASE = {v: k for k, v in _UHF_TWIN.items()}
+
+# Header key LoadFCIDump adds to record the format on the object it returns.
+# SBD's integral setup reads only NORB and NELEC from the header.
+_UHF_TAG = 'SBD_SPIN_ORBITAL_INDICES'
 
 _backends = {}          # device -> imported module, populated on first use
 _backend_errors = {}    # device -> why it is unusable
@@ -409,7 +423,7 @@ def is_initialized():
 # Backend access
 # ---------------------------------------------------------------------------
 
-def get_backend(device=None):
+def get_backend(device=None, uhf=False):
     """
     Get the backend module for the given device.
 
@@ -428,6 +442,10 @@ def get_backend(device=None):
             first call of :func:`tpb_diag` or :func:`gdb_diag` initializes with
             'cpu'. Call :func:`init` with the device you want to avoid
             depending on call order.
+        uhf: Return the unrestricted (``-D_UHF``) build of that backend, which
+            reads spin-dependent integrals. Only 'cpu' and 'gpu' have one. The
+            diagonalizers choose this from the FCIDUMP, so it rarely needs
+            setting by hand.
 
     Returns:
         The pybind11 backend module (_core_cpu, _core_gpu_thrust, or
@@ -436,7 +454,72 @@ def get_backend(device=None):
     if device is None:
         device = _default_device or 'auto'
     device = _resolve_device(device)
+    if uhf:
+        device = _uhf_device(device)
     return _load_backend(device)
+
+
+def _uhf_device(device):
+    """The UHF twin of a resolved device, or raise if it has none."""
+    device = _UHF_BASE.get(device, device)
+    if device not in _UHF_TWIN:
+        raise ValueError(
+            f"No UHF build of the '{device}' backend. Unrestricted (spin-orbital) "
+            f"FCIDUMPs run on 'cpu' or 'gpu' (Thrust) only: SBD's OpenMP-offload "
+            f"kernels read the restricted integral layout even when built with "
+            f"-D_UHF.")
+    return _UHF_TWIN[device]
+
+
+def fcidump_format(path):
+    """Report whether an FCIDUMP is restricted or unrestricted, from its indices.
+
+    SBD's unrestricted layout keeps ``NORB`` as the number of spatial orbitals
+    but indexes integrals by interleaved spin orbitals, 1 to ``2 * NORB``
+    (odd for alpha, even for beta). So any index above ``NORB`` marks the file
+    as unrestricted. The file is read once, stopping at the first such index.
+
+    Other programs write unrestricted FCIDUMPs in different layouts, typically
+    flagged in the header. Those are refused rather than guessed at.
+
+    Args:
+        path: Path to the FCIDUMP file.
+
+    Returns:
+        ``'restricted'`` or ``'uhf'``.
+    """
+    import re
+    header = []
+    with open(path) as handle:
+        for line in handle:
+            header.append(line)
+            if re.search(r'&END|^\s*/\s*$', line, re.IGNORECASE):
+                break
+        text = ''.join(header)
+        found = re.search(r'NORB\s*=\s*(\d+)', text, re.IGNORECASE)
+        if found is None:
+            raise ValueError(f"{path}: no NORB in the FCIDUMP header")
+        norb = int(found.group(1))
+        flag = re.search(r'\b(I?UHF)\s*=', text, re.IGNORECASE)
+        if flag is not None:
+            raise ValueError(
+                f"{path}: the header sets {flag.group(1)}, another program's "
+                f"unrestricted layout. SBD reads unrestricted integrals only with "
+                f"interleaved spin-orbital indices and NORB = spatial orbitals.")
+        for line in handle:
+            fields = line.split()
+            if len(fields) == 5 and max(int(x) for x in fields[1:]) > norb:
+                return 'uhf'
+    return 'restricted'
+
+
+def _fcidump_is_uhf(fcidump):
+    """Whether an FCIDump object holds unrestricted integrals."""
+    header = fcidump.header
+    if _UHF_TAG in header:
+        return header[_UHF_TAG] == '1'
+    norb = int(header['NORB'])            # built by hand: look at the indices
+    return any(max(i, j, k, l) > norb for _v, i, j, k, l in fcidump.integrals)
 
 
 def _ensure_initialized():
@@ -532,6 +615,10 @@ def FCIDump(device=None):
 def LoadFCIDump(filename, device=None):
     """Load an FCIDUMP file.
 
+    An unrestricted FCIDUMP, in SBD's spin-orbital layout (see
+    :func:`fcidump_format`), is recognized and recorded on the returned object,
+    so the diagonalizers use the matching (``-D_UHF``) build.
+
     Args:
         filename: Path to the FCIDUMP file.
         device: Backend whose ``FCIDump`` type to build; None uses the default.
@@ -540,7 +627,12 @@ def LoadFCIDump(filename, device=None):
         The ``FCIDump`` object that :func:`tpb_diag` and :func:`gdb_diag` take.
     """
     _ensure_initialized()
-    return get_backend(device).LoadFCIDump(filename)
+    uhf = fcidump_format(filename) == 'uhf'
+    fcidump = get_backend(device, uhf=uhf).LoadFCIDump(filename)
+    header = fcidump.header
+    header[_UHF_TAG] = '1' if uhf else '0'
+    fcidump.header = header
+    return fcidump
 
 
 def LoadAlphaDets(filename, bit_length, total_bit_length, device=None):
@@ -673,7 +765,7 @@ def tpb_diag_from_files(fcidumpfile, adetfile, sbd_data,
         that function for the two ways of writing them to disk.
     """
     _ensure_initialized()
-    backend = get_backend(device)
+    backend = get_backend(device, uhf=fcidump_format(fcidumpfile) == 'uhf')
     return backend.tpb_diag_from_files(
         _global_comm, sbd_data, fcidumpfile, adetfile, loadname, savename
     )
@@ -739,7 +831,7 @@ def tpb_diag(fcidump, adet, bdet, sbd_data,
         ``SCIState`` already.
     """
     _ensure_initialized()
-    backend = get_backend(device)
+    backend = get_backend(device, uhf=_fcidump_is_uhf(fcidump))
     return backend.tpb_diag(
         _global_comm, sbd_data, fcidump, adet, bdet, loadname, savename
     )
@@ -830,7 +922,7 @@ def gdb_diag(fcidump, det, sbd_data,
           over b_comm.
     """
     _ensure_initialized()
-    backend = get_backend(device)
+    backend = get_backend(device, uhf=_fcidump_is_uhf(fcidump))
     return backend.gdb_diag(
         _global_comm, sbd_data, fcidump, det, loadname, savename,
         determinant_distribution, determinant_grid_a, determinant_grid_b,
@@ -884,7 +976,8 @@ def has_backend_conflict():
     run on the host while device queries still report a GPU. Lazy loading
     normally prevents it; this catches a caller that imported both explicitly.
     """
-    return 'cpu' in _backends and 'gpu-omp' in _backends
+    # The CPU backend's UHF twin links the same OpenMP runtime as the CPU one.
+    return ('cpu' in _backends or 'cpu-uhf' in _backends) and 'gpu-omp' in _backends
 
 
 def print_info():
