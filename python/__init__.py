@@ -318,8 +318,9 @@ def init(device='cpu', comm_backend='mpi'):
     first use with ``device='cpu'`` and ``comm_backend='mpi'``.  Call it
     explicitly only when you need GPU or want to control startup timing.
 
-    The device can be overridden per-call via the ``device`` parameter on
-    ``tpb_diag()``, ``tpb_diag_from_files()``, and ``get_backend()``.
+    The device can be overridden per call via the ``device`` parameter of
+    ``tpb_diag()``, ``tpb_diag_from_files()``, ``gdb_diag()`` and
+    ``get_backend()``.
 
     Args:
         device: Default compute device — 'cpu', 'gpu', 'gpu-omp', or 'auto'.
@@ -413,11 +414,20 @@ def get_backend(device=None):
     Get the backend module for the given device.
 
     Auto-initializes SBD if needed. Passing ``device`` overrides the
-    default — this is how you switch between CPU and GPU within the
-    same process.
+    default, which is how you switch backends within one process. The one
+    combination to avoid is the CPU backend together with the OpenMP-offload
+    one ('gpu-omp'): they share an OpenMP runtime, and loading both leaves
+    offload regions running on the host. ``sbd.has_backend_conflict()``
+    reports it.
 
     Args:
-        device: 'cpu', 'gpu', 'auto', or None (use default).
+        device: 'cpu', 'gpu' (Thrust), 'gpu-omp' (OpenMP offload), 'auto', an
+            alias accepted by :func:`init`, or None. None means the device set
+            by :func:`init`. If nothing has initialized yet it means 'auto',
+            which prefers Thrust, then OpenMP offload, then CPU, whereas the
+            first call of :func:`tpb_diag` or :func:`gdb_diag` initializes with
+            'cpu'. Call :func:`init` with the device you want to avoid
+            depending on call order.
 
     Returns:
         The pybind11 backend module (_core_cpu, _core_gpu_thrust, or
@@ -496,13 +506,19 @@ def barrier():
 # ---------------------------------------------------------------------------
 
 def TPB_SBD(device=None):
-    """Create TPB_SBD configuration object."""
+    """Create a TPB_SBD configuration object, for :func:`tpb_diag`.
+
+    Its fields are listed in the tables below.
+    """
     _ensure_initialized()
     return get_backend(device).TPB_SBD()
 
 
 def GDB_SBD(device=None):
-    """Create GDB_SBD configuration object."""
+    """Create a GDB_SBD configuration object, for :func:`gdb_diag`.
+
+    Its fields are listed in the tables below.
+    """
     _ensure_initialized()
     return get_backend(device).GDB_SBD()
 
@@ -514,13 +530,37 @@ def FCIDump(device=None):
 
 
 def LoadFCIDump(filename, device=None):
-    """Load FCIDUMP file."""
+    """Load an FCIDUMP file.
+
+    Args:
+        filename: Path to the FCIDUMP file.
+        device: Backend whose ``FCIDump`` type to build; None uses the default.
+
+    Returns:
+        The ``FCIDump`` object that :func:`tpb_diag` and :func:`gdb_diag` take.
+    """
     _ensure_initialized()
     return get_backend(device).LoadFCIDump(filename)
 
 
 def LoadAlphaDets(filename, bit_length, total_bit_length, device=None):
-    """Load alpha determinants from file."""
+    """Load determinants from a file of bitstrings, one per line.
+
+    Each line is packed as :func:`from_strings` does, in file order, without
+    sorting or removing duplicates; pass the result through
+    :func:`sort_bitarray` before using it as a TPB determinant list.
+
+    Args:
+        filename: Path to the file.
+        bit_length: Bits per packed word. Must match the config's
+            ``bit_length``.
+        total_bit_length: Length of each bitstring, ``norb`` for the alpha or
+            beta strings of TPB.
+        device: Backend to use; None uses the default.
+
+    Returns:
+        A list of packed determinants, each a list of words.
+    """
     _ensure_initialized()
     return get_backend(device).LoadAlphaDets(filename, bit_length, total_bit_length)
 
@@ -550,7 +590,7 @@ def from_string(s, bit_length, total_bit_length, device=None):
 def from_strings(strings, bit_length, total_bit_length, device=None):
     """Pack many bitstrings into one ``(n, words)`` array.
 
-    The bulk form of :func:`from_string`, looping in C++ instead of once per
+    The bulk form of ``sbd.from_string``, looping in C++ instead of once per
     determinant across the Python boundary. Prefer it for anything larger than a
     handful: the per-call form costs tens of thousands of round trips on the
     vendored inputs alone.
@@ -563,13 +603,13 @@ def from_strings(strings, bit_length, total_bit_length, device=None):
     land in the *last* word rather than the first::
 
         from_strings(["0011"], 20, 4)           # -> array([[3]], dtype=uint64)
-        from_strings(["1" + "0" * 69], 63, 70)  # -> array([[ 0, 64]], ...)
-        from_strings(["0" * 69 + "1"], 63, 70)  # -> array([[1, 0]], ...)
+        from_strings(["1" + "0" * 69], 62, 70)  # -> array([[  0, 128]], ...)
+        from_strings(["0" * 69 + "1"], 62, 70)  # -> array([[1, 0]], ...)
 
     Within a word the rightmost character is the least significant bit, which is
     why ``"0011"`` packs to ``3`` rather than ``12``. Getting this backwards
     produces a valid-looking but wrong subspace rather than an error, so check
-    round trips with :func:`makestring` when building determinants by hand.
+    round trips with ``sbd.makestring`` when building determinants by hand.
 
     ``bit_length`` must match the ``bit_length`` of the config passed to the
     diagonalizers, since it sets how many words each determinant occupies.
@@ -604,13 +644,19 @@ def tpb_diag_from_files(fcidumpfile, adetfile, sbd_data,
     """
     Perform TPB diagonalization from files.
 
+    The one determinant file supplies both the alpha and the beta list, so the
+    subspace is the product of that list with itself. For different alpha and
+    beta lists, as an open-shell case needs, load them and call :func:`tpb_diag`.
+
     Args:
         fcidumpfile: Path to FCIDUMP file.
-        adetfile: Path to alpha determinants file.
+        adetfile: Path to the determinant file, used for both alpha and beta.
         sbd_data: TPB_SBD configuration object.
         loadname: Path prefix to load an initial wavefunction from (optional).
         savename: Path prefix to save the final wavefunction to (optional).
-        device: Override device ('cpu', 'gpu', or None for default).
+        device: Backend to run on: 'cpu', 'gpu' (Thrust), 'gpu-omp' (OpenMP
+            offload), or an alias accepted by :func:`init`. None uses the
+            default; see :func:`get_backend`.
 
     Returns:
         dict with keys: energy, density, carryover_adet, carryover_bdet,
@@ -641,7 +687,9 @@ def tpb_diag(fcidump, adet, bdet, sbd_data,
         savename: Path prefix to save the final wavefunction to (optional). See
             the note below: for reading amplitudes back,
             ``sbd_data.dump_matrix_form_wf`` is usually the one you want.
-        device: Override device ('cpu', 'gpu', or None for default).
+        device: Backend to run on: 'cpu', 'gpu' (Thrust), 'gpu-omp' (OpenMP
+            offload), or an alias accepted by :func:`init`. None uses the
+            default; see :func:`get_backend`.
 
     Returns:
         dict with keys: energy, density, carryover_adet, carryover_bdet,
@@ -733,7 +781,11 @@ def gdb_diag(fcidump, det, sbd_data,
             writes one file per b_comm position, ``f"{savename}{rank_b:06d}.bin"``,
             each holding only that shard; rank 0's file is not the whole
             wavefunction. GDB has no combined matrix-form dump.
-        device: Override device ('cpu', 'gpu', or None for default).
+        device: Backend to run on: 'cpu', 'gpu' (Thrust), 'gpu-omp' (OpenMP
+            offload), or an alias accepted by :func:`init`. None uses the
+            default; see :func:`get_backend`. 'gpu-omp' is accepted, but SBD
+            has no OpenMP-offload GDB code, so the run executes on the host;
+            use 'gpu' for GDB on GPUs.
         determinant_distribution: How to place determinants across b_comm — one
             of ``input`` (keep the shards as given), ``equal-bra-a`` (default;
             equal distinct-alpha count per rank, which is what balances the
