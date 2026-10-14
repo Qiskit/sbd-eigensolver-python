@@ -492,7 +492,7 @@ def has_uhf(device=None):
     return device in _UHF_TWIN and _UHF_TWIN[device] in _scan_backends()
 
 
-def fcidump_format(path, device=None):
+def fcidump_format(fcidump, device=None):
     """Report whether an FCIDUMP is restricted or unrestricted, from its indices.
 
     SBD's unrestricted layout keeps ``NORB`` as the number of spatial orbitals
@@ -506,8 +506,10 @@ def fcidump_format(path, device=None):
     which marks another program's unrestricted layout.
 
     Args:
-        path: Path to the FCIDUMP file.
-        device: Backend to read it with; None uses the default. Auto-initializes
+        fcidump: Path to an FCIDUMP file, or an ``FCIDump`` object such as
+            :func:`LoadFCIDump` returns (classified from its integrals as they
+            are now, so edits after loading are seen).
+        device: Backend to classify with; None uses the default. Auto-initializes
             SBD, like the other API functions.
 
     Returns:
@@ -516,7 +518,12 @@ def fcidump_format(path, device=None):
     Raises:
         ValueError: The file is in neither layout.
     """
-    return 'uhf' if get_backend(device)._fcidump_file_is_uhf(path) else 'restricted'
+    backend = get_backend(device)
+    if isinstance(fcidump, (str, os.PathLike)):
+        uhf = backend._fcidump_file_is_uhf(os.fspath(fcidump))
+    else:
+        uhf = backend._fcidump_is_uhf(fcidump)
+    return 'uhf' if uhf else 'restricted'
 
 
 def _file_is_uhf_on_root(path, device):
@@ -659,6 +666,7 @@ def LoadFCIDump(filename, device=None, uhf=None):
         The ``FCIDump`` object that :func:`tpb_diag` and :func:`gdb_diag` take.
     """
     _ensure_initialized()
+    filename = os.fspath(filename)
     fcidump = get_backend(device).LoadFCIDump(filename)
     detected = _fcidump_is_uhf(fcidump, device)
     if uhf is not None and bool(uhf) != detected:
@@ -802,6 +810,7 @@ def tpb_diag_from_files(fcidumpfile, adetfile, sbd_data,
         that function for the two ways of writing them to disk.
     """
     _ensure_initialized()
+    fcidumpfile, adetfile = os.fspath(fcidumpfile), os.fspath(adetfile)
     backend = get_backend(device, uhf=_file_is_uhf_on_root(fcidumpfile, device))
     return backend.tpb_diag_from_files(
         _global_comm, sbd_data, fcidumpfile, adetfile, loadname, savename

@@ -429,7 +429,11 @@ def main():
                   f"GPUs).", file=sys.stderr)
         return 2
 
-    fcidump = backend.LoadFCIDump(args.fcidump)
+    # sbd.LoadFCIDump, not the backend's own: it classifies the integrals and
+    # refuses, here and now, a file in neither layout or an unrestricted one on a
+    # device without an unrestricted build. sbd.gdb_diag then picks the build.
+    fcidump = sbd.LoadFCIDump(args.fcidump)
+    layout = sbd.fcidump_format(fcidump)
     header = fcidump.header
     norb = int(header["NORB"])
     nelec = int(header["NELEC"])
@@ -487,7 +491,7 @@ def main():
         print(f"  Decomposition: t={args.t_comm_size} b={args.b_comm_size} "
               f"helper={helper}")
         print(f"  System: {norb} orbitals ({2 * norb} spin orbitals), "
-              f"{nelec} electrons")
+              f"{nelec} electrons, MS2={ms2}, {layout} integrals")
         print(f"  Seed: {source}")
         print(f"  Starting dimension: {starting_dim}")
         print(f"  Cutoff ladder: {cutoffs}")

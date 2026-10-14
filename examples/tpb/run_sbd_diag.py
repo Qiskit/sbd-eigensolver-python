@@ -50,6 +50,46 @@ import sys
 
 import numpy as np
 
+
+def electron_count_problem(fcidump_path, adetfile, bdetfile):
+    """Why these determinant files cannot hold this FCIDUMP's electrons, or None.
+
+    SBD diagonalizes whatever subspace it is given, so determinants with the
+    wrong number of electrons give the energy of a different charge state with
+    no error. The case that reaches it in practice is symmetric mode on an
+    open-shell system (MS2 != 0, restricted or unrestricted alike): beta reuses
+    the alpha list, which holds n_alpha electrons, not n_beta.
+    """
+    import re
+    header = []
+    with open(fcidump_path) as handle:
+        for line in handle:
+            header.append(line)
+            if '&END' in line.upper():
+                break
+    text = ''.join(header)
+    nelec = re.search(r'NELEC\s*=\s*(\d+)', text, re.IGNORECASE)
+    if nelec is None:
+        return None                        # nothing to check against
+    ms2 = re.search(r'MS2\s*=\s*(-?\d+)', text, re.IGNORECASE)
+    ms2 = int(ms2.group(1)) if ms2 else 0
+    n_alpha = (int(nelec.group(1)) + ms2) // 2
+    n_beta = int(nelec.group(1)) - n_alpha
+    for spin, path, want in (('alpha', adetfile, n_alpha), ('beta', bdetfile, n_beta)):
+        with open(path) as handle:
+            counts = {line.count('1') for line in handle if line.strip()}
+        if counts != {want}:
+            found = ', '.join(str(c) for c in sorted(counts)) or 'none'
+            hint = ''
+            if spin == 'beta' and path == adetfile:
+                hint = (f' Symmetric mode reuses --adetfile as the beta list, which needs '
+                        f'n_alpha == n_beta; with MS2={ms2} pass --symmetrize_spin 0 and a '
+                        f'--bdetfile of {n_beta}-electron strings.')
+            return (f'the FCIDUMP has NELEC={nelec.group(1)}, MS2={ms2}, i.e. {want} {spin} '
+                    f'electrons, but the {spin} determinants from {path} hold {found}.' + hint)
+    return None
+
+
 def parse_args():
     """Parse command line arguments for all TPB_SBD parameters"""
     parser = argparse.ArgumentParser(
@@ -274,6 +314,21 @@ def main():
 
         if args.dump_matrix_form_wf:
             config.dump_matrix_form_wf = args.dump_matrix_form_wf
+
+        # Rank 0 reads, every rank raises: a rank-0-only error would leave the
+        # others waiting inside the diagonalization's first collective.
+        bdetfile = args.adetfile if args.symmetrize_spin else (args.bdetfile or args.adetfile)
+        problem = None
+        if rank == 0:
+            try:
+                problem = electron_count_problem(args.fcidump, args.adetfile, bdetfile)
+            except OSError as exc:         # a missing file, reported like the rest
+                problem = exc
+        problem = sbd.get_comm().bcast(problem, root=0)
+        if isinstance(problem, OSError):
+            raise problem
+        if problem:
+            raise ValueError(problem)
 
         if args.symmetrize_spin:
             if args.bdetfile and rank == 0:
