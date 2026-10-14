@@ -470,25 +470,20 @@ def assemble_rdms(results: dict, norb: int) -> tuple[np.ndarray | None, np.ndarr
     which only computes the diagonal density, not the correlation
     functions), matching SCIResult's own ``rdm1``/``rdm2`` default.
 
-    The reshape/transpose below is not a guess: it was verified against
-    PySCF's ``make_rdm1``/``make_rdm2`` on a fixed subspace, on all three
-    SBD backends (cpu, gpu-thrust, gpu-omp-offload) -- both element-wise on
-    the full tensors and via the energy identity
+    The layout conversion was verified against PySCF's ``make_rdm1`` and
+    ``make_rdm2`` on all three backends (cpu, gpu, gpu-omp), both element-wise
+    and through the energy identity
     ``E = einsum("pr,pr->",rdm1,hcore) + 0.5*einsum("prqs,prqs->",rdm2,eri)``
-    that ``SCIResult.rdm1``/``rdm2`` are contracted with everywhere else in
-    qiskit-addon-sqd (e.g. ``fermion.py``'s own ``solve_fermion``).
+    with which ``qiskit-addon-sqd`` contracts ``SCIResult.rdm1`` and ``rdm2``.
 
-    SBD's documented layout (sbd-ext docs/user-guide.md, matching the C++
-    reference in apps/chemistry_tpb_selected_basis_diagonalization/main.cc)::
+    SBD's layout, as documented in upstream SBD's ``docs/user-guide.md``::
 
         one_p_rdm[s][i + L*j]                 = <c+_{i,s} c_{j,s}>
         two_p_rdm[s+2t][i + L*j + L^2*k + L^3*l] = <c+_{i,s} c+_{j,t} c_{l,t} c_{k,s}>
 
-    A Fortran-order reshape implements those flat-index formulas directly
-    (arr_F[i, j] / arr_F[i, j, k, l]); rdm1 needs no further transpose
-    (it is symmetric here regardless), and rdm2's spin-summed block sum
-    needs axes (0, 2, 1, 3) to land in the "prqs" slot order SCIResult's
-    contract expects.
+    A Fortran-order reshape implements those flat-index formulas directly.
+    rdm1 needs no further transpose, and the spin-summed rdm2 is transposed
+    with axes ``(0, 2, 1, 3)`` into the "prqs" order ``SCIResult`` expects.
     """
     one_p_rdm = results.get("one_p_rdm")
     two_p_rdm = results.get("two_p_rdm")
