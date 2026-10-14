@@ -1,0 +1,19 @@
+{
+  "system": "nh2",
+  "atom": "N 0 0 0; H 0 0.80 0.60; H 0 -0.80 0.60",
+  "basis": "6-31g",
+  "spin": 1,
+  "norb": 13,
+  "nelec": [
+    5,
+    4
+  ],
+  "ms2": 1,
+  "determinants": 920205,
+  "e_uhf_scf": -55.53249551981272,
+  "uhf_s2": 0.7560774487960806,
+  "e_rohf_scf": -55.530440771697954,
+  "e_fci": -55.6333614962178,
+  "note": "e_fci is PySCF FCI (direct_uhf in the UHF orbitals; direct_spin1 in the ROHF ones agrees) including ecore. Both FCIDUMPs must reproduce it.",
+  "pyscf_version": "2.14.0"
+}
