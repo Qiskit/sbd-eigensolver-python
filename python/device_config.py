@@ -27,18 +27,14 @@ class DeviceConfig:
     
     Usage::
 
-        # Auto-detect (uses GPU if available)
-        config = DeviceConfig.auto()
+        from sbd.device_config import DeviceConfig
+        from sbd.sbd_solver import solve_sci_batch
 
-        # Force CPU
-        config = DeviceConfig.cpu()
+        device = DeviceConfig.auto()               # best backend that is built
+        device = DeviceConfig.cpu()                # or force one
+        device = DeviceConfig.gpu(max_memory_gb=16)
 
-        # Force GPU with specific settings
-        config = DeviceConfig.gpu(max_memory_gb=16)
-
-        # Apply to SBD configuration
-        sbd_config = sbd.TPB_SBD()
-        config.apply(sbd_config)
+        results = solve_sci_batch(..., device_config=device)
     """
     
     def __init__(self, device: str = 'cpu',
@@ -72,17 +68,11 @@ class DeviceConfig:
         """
         Auto-detect the best available backend and use it.
 
-        Resolves against the backends that were actually COMPILED, not just the
-        hardware that is present. Detecting a GPU and returning 'gpu'
-        unconditionally was wrong in two ways: on an AMD host it selected the
-        Thrust/CUDA backend, which cannot exist there (upstream wires Thrust to
-        nvc++ -cuda), so a machine that reported "GPU detected (HIP)" then failed
-        to load a CUDA module; and on a CPU-only build with a GPU present it
-        picked a backend that was never built.
-
-        Preference order matches sbd._resolve_device(): Thrust ('gpu') first
-        where it exists, since it is the long-validated NVIDIA default and keeps
-        more phases on the device, then OpenMP offload ('gpu-omp'), then CPU.
+        Chooses among the backends that were actually built, not merely the
+        hardware present, so an AMD host or a CPU-only build is never handed a
+        backend it lacks. The preference order is Thrust ('gpu') where it exists,
+        then OpenMP offload ('gpu-omp'), then CPU, the same order
+        ``sbd.get_backend('auto')`` uses.
 
         Args:
             max_memory_gb: Maximum GPU memory in GB (-1 = auto)
@@ -158,8 +148,8 @@ class DeviceConfig:
         one combination to avoid in a single process is this backend together
         with the CPU one: they share an OpenMP runtime (``libnvomp`` on NVIDIA,
         ``libomp`` on AMD), and loading ``_core_cpu`` first leaves it initialised
-        host-only, after which offload regions run on the host. See
-        :func:`sbd.has_backend_conflict`.
+        host-only, after which offload regions run on the host.
+        ``sbd.has_backend_conflict()`` reports that combination.
         """
         return cls(device='gpu-omp', max_memory_gb=max_memory_gb)
 
