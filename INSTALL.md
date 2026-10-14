@@ -126,6 +126,13 @@ export SBD_GPU_ARCH=gfx90a              # AMD
 #       gpu_omp_offload   OpenMP target-offload GPU only (either vendor)
 export SBD_BUILD_BACKEND=cpu
 
+#     Unrestricted (UHF) builds: the CPU and Thrust backends are each also built
+#     with upstream's -D_UHF, as a second module chosen automatically when an
+#     FCIDUMP is in SBD's unrestricted layout (see examples/uhf/README.md).
+#     OpenMP-offload has none. Set 0 to skip them, roughly halving CPU build time;
+#     unrestricted files are then refused with an error naming this variable.
+export SBD_BUILD_UHF=0
+
 #     MPI: defaults to whatever mpi4py is linked against. Set this only
 #     for layouts that cannot be inferred.
 #     NOTE: Every GPU backend hands MPI device pointers, so use a GPU-aware MPI:

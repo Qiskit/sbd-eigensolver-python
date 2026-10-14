@@ -167,6 +167,20 @@ Inputs
 .. autofunction:: from_strings
 .. autofunction:: sort_bitarray_array
 
+Unrestricted (UHF) integrals
+============================
+
+An FCIDUMP in SBD's unrestricted layout -- ``NORB`` spatial orbitals, integrals
+indexed by interleaved spin orbitals up to ``2 * NORB`` -- runs through the same
+functions as a restricted one. Each diagonalization reads the layout from the
+integrals and uses the matching build: upstream SBD compiled with ``-D_UHF``, which
+the package builds alongside the ``cpu`` and ``gpu`` backends unless
+``SBD_BUILD_UHF=0``. ``gpu-omp`` has no unrestricted build and refuses such a file.
+``examples/uhf`` has data, a generator, and the drivers run on it.
+
+.. autofunction:: fcidump_format
+.. autofunction:: has_uhf
+
 Backends and devices
 ====================
 
