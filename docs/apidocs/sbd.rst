@@ -67,10 +67,11 @@ Fields shared by ``TPB_SBD`` and ``GDB_SBD``:
        reads differs, and SBD silently ignores the other.
    * - ``bit_length``
      - Bits per word when packing determinants. At most 63; 64 is undefined
-       behavior in SBD's multi-rank redistribution. For GDB's heatbath expansion
-       (``carryover_type`` 2 or 3) it must also be even whenever a determinant spans
-       more than one word, or the expansion crashes or returns a wrong energy. The
-       ``examples/gdb`` drivers require an even value of at most 62.
+       behavior in SBD's multi-rank redistribution. For GDB it must also be even
+       whenever a determinant spans more than one word: an odd value breaks SBD's
+       alpha/beta conversion, which can crash or return a wrong energy, in plain
+       diagonalization as well as in the heatbath expansion. The ``examples/gdb``
+       drivers require an even value of at most 62.
 
 Fields of ``TPB_SBD`` only:
 
