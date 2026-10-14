@@ -279,6 +279,25 @@ def test_every_rank_refuses_together(device, tmp_path_factory):
 
 
 @pytest.mark.mpi
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_sharded_gdb_is_exact(device, layout):
+    """The basis split over b_comm: each rank passes its own contiguous slice.
+
+    b = the rank count keeps the helper dimension at 1, which Thrust requires.
+    """
+    size, rank = sbd.get_world_size(), sbd.get_rank()
+    full = sbd.sort_bitarray_array(_full_space())
+    quotient, remainder = divmod(len(full), size)
+    begin = rank * quotient + min(rank, remainder)
+    shard = full[begin:begin + quotient + (1 if rank < remainder else 0)]
+    config = _gdb()
+    config.b_comm_size = size
+    result = sbd.gdb_diag(sbd.LoadFCIDump(LAYOUTS[layout]), shard, config)
+    assert result["global_dim"] == len(full)
+    assert result["energy"] == pytest.approx(REFERENCE["e_fci"], abs=1e-9)
+
+
+@pytest.mark.mpi
 def test_unrestricted_tpb_is_exact_under_mpi(device):
     fcidump = sbd.LoadFCIDump(UHF)
     energy = sbd.tpb_diag(fcidump, _half(ALPHA), _half(BETA), _tpb())["energy"]
