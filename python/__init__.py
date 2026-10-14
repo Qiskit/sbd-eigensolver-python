@@ -90,10 +90,6 @@ _BACKEND_SPECS = (
 _UHF_TWIN = {'cpu': 'cpu-uhf', 'gpu': 'gpu-uhf'}
 _UHF_BASE = {v: k for k, v in _UHF_TWIN.items()}
 
-# Header key LoadFCIDump adds to record the format on the object it returns.
-# SBD's integral setup reads only NORB and NELEC from the header.
-_UHF_TAG = 'SBD_SPIN_ORBITAL_INDICES'
-
 _backends = {}          # device -> imported module, populated on first use
 _backend_errors = {}    # device -> why it is unusable
 _device_aliases = {a: dev for _m, dev, al in _BACKEND_SPECS for a in al}
@@ -198,6 +194,13 @@ def _load_backend(device):
         raise RuntimeError(f"Unknown backend device '{device}'.")
 
     path = _extension_path(module_name)
+    if path is None and device in _UHF_BASE:
+        raise RuntimeError(
+            f"This FCIDUMP is unrestricted (spin-orbital indices), and the "
+            f"'{_UHF_BASE[device]}' backend has no UHF build.\n"
+            f"  expected: {module_name}.*.so in the sbd package directory\n"
+            f"  fix     : rebuild without SBD_BUILD_UHF=0 (UHF builds are on by default)"
+        )
     if path is None:
         raise RuntimeError(
             f"sbd backend '{device}' is not built.\n"
@@ -321,6 +324,10 @@ def _resolve_device(device):
         if 'gpu-omp' in usable and _gpu_available():
             return 'gpu-omp'
         return 'cpu'
+    if device in _UHF_BASE:
+        raise ValueError(
+            f"'{device}' is not a device name. Pass device='{_UHF_BASE[device]}': the "
+            f"unrestricted build is chosen from the FCIDUMP, or with uhf=True.")
     return _device_aliases.get(device, device)
 
 
@@ -471,55 +478,72 @@ def _uhf_device(device):
     return _UHF_TWIN[device]
 
 
-def fcidump_format(path):
+def has_uhf(device=None):
+    """Whether ``device`` has an unrestricted (``-D_UHF``) build installed.
+
+    Only 'cpu' and 'gpu' (Thrust) can have one; it is built alongside them
+    unless ``SBD_BUILD_UHF=0`` was set at install time.
+
+    Args:
+        device: A device or alias, or None for the default (see
+            :func:`get_backend`).
+    """
+    device = _resolve_device(device if device is not None else (_default_device or 'auto'))
+    return device in _UHF_TWIN and _UHF_TWIN[device] in _scan_backends()
+
+
+def fcidump_format(path, device=None):
     """Report whether an FCIDUMP is restricted or unrestricted, from its indices.
 
     SBD's unrestricted layout keeps ``NORB`` as the number of spatial orbitals
-    but indexes integrals by interleaved spin orbitals, 1 to ``2 * NORB``
-    (odd for alpha, even for beta). So any index above ``NORB`` marks the file
-    as unrestricted. The file is read once, stopping at the first such index.
+    but indexes integrals by interleaved spin orbitals, 1 to ``2 * NORB`` (odd
+    for alpha, even for beta), with each pair (ij) and (kl) of one spin. A
+    restricted file indexes spatial orbitals, 1 to ``NORB``.
 
-    Other programs write unrestricted FCIDUMPs in different layouts, typically
-    flagged in the header. Those are refused rather than guessed at.
+    A file that fits neither -- an index above ``2 * NORB``, or indices above
+    ``NORB`` with a pair mixing spins, both typically a wrong ``NORB`` -- raises
+    rather than being guessed at. So does a header with a ``UHF``/``IUHF`` flag,
+    which marks another program's unrestricted layout.
 
     Args:
         path: Path to the FCIDUMP file.
+        device: Backend to read it with; None uses the default. Auto-initializes
+            SBD, like the other API functions.
 
     Returns:
         ``'restricted'`` or ``'uhf'``.
+
+    Raises:
+        ValueError: The file is in neither layout.
     """
-    import re
-    header = []
-    with open(path) as handle:
-        for line in handle:
-            header.append(line)
-            if re.search(r'&END|^\s*/\s*$', line, re.IGNORECASE):
-                break
-        text = ''.join(header)
-        found = re.search(r'NORB\s*=\s*(\d+)', text, re.IGNORECASE)
-        if found is None:
-            raise ValueError(f"{path}: no NORB in the FCIDUMP header")
-        norb = int(found.group(1))
-        flag = re.search(r'\b(I?UHF)\s*=', text, re.IGNORECASE)
-        if flag is not None:
-            raise ValueError(
-                f"{path}: the header sets {flag.group(1)}, another program's "
-                f"unrestricted layout. SBD reads unrestricted integrals only with "
-                f"interleaved spin-orbital indices and NORB = spatial orbitals.")
-        for line in handle:
-            fields = line.split()
-            if len(fields) == 5 and max(int(x) for x in fields[1:]) > norb:
-                return 'uhf'
-    return 'restricted'
+    return 'uhf' if get_backend(device)._fcidump_file_is_uhf(path) else 'restricted'
 
 
-def _fcidump_is_uhf(fcidump):
-    """Whether an FCIDump object holds unrestricted integrals."""
-    header = fcidump.header
-    if _UHF_TAG in header:
-        return header[_UHF_TAG] == '1'
-    norb = int(header['NORB'])            # built by hand: look at the indices
-    return any(max(i, j, k, l) > norb for _v, i, j, k, l in fcidump.integrals)
+def _file_is_uhf_on_root(path, device):
+    """fcidump_format(path) == 'uhf', read on rank 0 only and shared.
+
+    Upstream's file-based diag reads the FCIDUMP on rank 0 alone; reading it on
+    every rank just to choose a module would multiply the I/O by the rank count.
+    """
+    verdict = None
+    if _global_comm.Get_rank() == 0:
+        try:
+            verdict = get_backend(device)._fcidump_file_is_uhf(path)
+        except Exception as exc:          # every rank must raise, not only rank 0
+            verdict = exc
+    verdict = _global_comm.bcast(verdict, root=0)
+    if isinstance(verdict, Exception):
+        raise verdict
+    return verdict
+
+
+def _fcidump_is_uhf(fcidump, device=None):
+    """Whether an FCIDump object holds unrestricted integrals.
+
+    Classified from the integrals on every call, in C++ and without copying them
+    into Python, so it cannot go stale if they were edited after loading.
+    """
+    return get_backend(device)._fcidump_is_uhf(fcidump)
 
 
 def _ensure_initialized():
@@ -612,26 +636,39 @@ def FCIDump(device=None):
     return get_backend(device).FCIDump()
 
 
-def LoadFCIDump(filename, device=None):
+def LoadFCIDump(filename, device=None, uhf=None):
     """Load an FCIDUMP file.
 
-    An unrestricted FCIDUMP, in SBD's spin-orbital layout (see
-    :func:`fcidump_format`), is recognized and recorded on the returned object,
-    so the diagonalizers use the matching (``-D_UHF``) build.
+    Restricted FCIDUMPs (RHF, ROHF or any single orbital set) and unrestricted
+    ones in SBD's spin-orbital layout (see :func:`fcidump_format`) are both
+    accepted, and the diagonalizers pick the matching build from the integrals
+    themselves each time they run.
 
     Args:
         filename: Path to the FCIDUMP file.
-        device: Backend whose ``FCIDump`` type to build; None uses the default.
+        device: Backend to load with; None uses the default.
+        uhf: None to detect the layout from the file. True or False to state
+            it, in which case a file of the other layout raises rather than
+            being diagonalized with the wrong integrals.
+
+    Raises:
+        ValueError: The file is in neither layout, does not match ``uhf``, or is
+            unrestricted and ``device`` has no unrestricted build.
 
     Returns:
         The ``FCIDump`` object that :func:`tpb_diag` and :func:`gdb_diag` take.
     """
     _ensure_initialized()
-    uhf = fcidump_format(filename) == 'uhf'
-    fcidump = get_backend(device, uhf=uhf).LoadFCIDump(filename)
-    header = fcidump.header
-    header[_UHF_TAG] = '1' if uhf else '0'
-    fcidump.header = header
+    fcidump = get_backend(device).LoadFCIDump(filename)
+    detected = _fcidump_is_uhf(fcidump, device)
+    if uhf is not None and bool(uhf) != detected:
+        raise ValueError(
+            f"{filename} is {'an unrestricted' if detected else 'a restricted'} "
+            f"FCIDUMP, but uhf={uhf} was given. SBD's unrestricted layout indexes "
+            f"integrals by spin orbital (indices up to 2*NORB); a restricted one "
+            f"by spatial orbital (up to NORB).")
+    if detected:
+        get_backend(device, uhf=True)   # refuse gpu-omp, or a missing build, now
     return fcidump
 
 
@@ -765,7 +802,7 @@ def tpb_diag_from_files(fcidumpfile, adetfile, sbd_data,
         that function for the two ways of writing them to disk.
     """
     _ensure_initialized()
-    backend = get_backend(device, uhf=fcidump_format(fcidumpfile) == 'uhf')
+    backend = get_backend(device, uhf=_file_is_uhf_on_root(fcidumpfile, device))
     return backend.tpb_diag_from_files(
         _global_comm, sbd_data, fcidumpfile, adetfile, loadname, savename
     )
@@ -831,7 +868,7 @@ def tpb_diag(fcidump, adet, bdet, sbd_data,
         ``SCIState`` already.
     """
     _ensure_initialized()
-    backend = get_backend(device, uhf=_fcidump_is_uhf(fcidump))
+    backend = get_backend(device, uhf=_fcidump_is_uhf(fcidump, device))
     return backend.tpb_diag(
         _global_comm, sbd_data, fcidump, adet, bdet, loadname, savename
     )
@@ -922,7 +959,7 @@ def gdb_diag(fcidump, det, sbd_data,
           over b_comm.
     """
     _ensure_initialized()
-    backend = get_backend(device, uhf=_fcidump_is_uhf(fcidump))
+    backend = get_backend(device, uhf=_fcidump_is_uhf(fcidump, device))
     return backend.gdb_diag(
         _global_comm, sbd_data, fcidump, det, loadname, savename,
         determinant_distribution, determinant_grid_a, determinant_grid_b,
@@ -947,7 +984,7 @@ def available_backends():
     in backend_load_errors(); a backend that is merely not built is recorded
     there but does not warn, since building a subset is normal.
     """
-    return list(_scan_backends())
+    return [d for d in _scan_backends() if d not in _UHF_BASE]
 
 
 def loaded_backends():
@@ -956,6 +993,10 @@ def loaded_backends():
     Normally one: backends load on first use. More than one means something
     imported them explicitly, which is worth knowing -- co-loading _core_cpu
     with the OMP-offload backend silently demotes offload to the host.
+
+    Unlike :func:`available_backends`, this names the UHF builds too
+    ('cpu-uhf', 'gpu-uhf'), since they are separate modules in the process.
+    Those names are not device names and are not accepted as ``device``.
     """
     return list(_backends.keys())
 
@@ -966,7 +1007,7 @@ def backend_load_errors():
     Maps device -> reason, distinguishing "not built" from a missing shared
     library, an architecture mismatch, or a failed import.
     """
-    return dict(_backend_errors)
+    return {d: r for d, r in _backend_errors.items() if d not in _UHF_BASE}
 
 
 def has_backend_conflict():
@@ -987,6 +1028,7 @@ def print_info():
     print("=" * 60)
     print(f"Version: {__version__}")
     print(f"Compiled backends: {', '.join(available_backends()) or 'none'}")
+    print(f"UHF builds: {', '.join(d for d in available_backends() if has_uhf(d)) or 'none'}")
 
     if _initialized:
         print(f"\nCurrent session:")
@@ -1019,6 +1061,7 @@ __all__ = [
     'loaded_backends',
     'backend_load_errors',
     'has_backend_conflict',
+    'has_uhf',
 
     # Query
     'get_device',
@@ -1034,6 +1077,7 @@ __all__ = [
     'GDB_SBD',
     'FCIDump',
     'LoadFCIDump',
+    'fcidump_format',
     'LoadAlphaDets',
     'makestring',
     'from_string',
