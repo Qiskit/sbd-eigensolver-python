@@ -546,9 +546,14 @@ def LoadFCIDump(filename, device=None):
 def LoadAlphaDets(filename, bit_length, total_bit_length, device=None):
     """Load determinants from a file of bitstrings, one per line.
 
-    Each line is packed as :func:`from_strings` does, in file order, without
-    sorting or removing duplicates; pass the result through
-    :func:`sort_bitarray` before using it as a TPB determinant list.
+    Each line is packed as :func:`from_strings` does. Upstream sorts the
+    determinants and removes duplicates, so the result is ready to use as a
+    TPB determinant list and may hold fewer determinants than the file has
+    lines.
+
+    The format is chosen by extension: ``.txt`` for one bitstring per line,
+    ``.bin`` for upstream's binary format. Any other extension returns an
+    empty list without an error.
 
     Args:
         filename: Path to the file.
@@ -559,7 +564,8 @@ def LoadAlphaDets(filename, bit_length, total_bit_length, device=None):
         device: Backend to use; None uses the default.
 
     Returns:
-        A list of packed determinants, each a list of words.
+        A list of packed determinants, each a list of words, sorted and
+        distinct.
     """
     _ensure_initialized()
     return get_backend(device).LoadAlphaDets(filename, bit_length, total_bit_length)
