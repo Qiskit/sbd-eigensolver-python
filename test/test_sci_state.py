@@ -84,7 +84,7 @@ def _energy_from_rdms(state, h1, eri):
             + 0.5 * np.einsum("prqs,prqs->", state.rdm(rank=2, spin_summed=True), eri))
 
 
-def _check(device_config, name, keep):
+def _check_sci_state_matches_pyscf(device_config, name, keep):
     h1, eri, norb, nelec = _hamiltonian(name)
     strings = (_strings(norb, nelec[0], keep, seed=1), _strings(norb, nelec[1], keep, seed=2))
 
@@ -116,11 +116,11 @@ def _check(device_config, name, keep):
 # One body, two wrappers: pytest-mpi skips unmarked tests under --only-mpi and marked
 # ones without it (see test_sqd_integration.py).
 @pytest.mark.parametrize("name, keep", CASES, ids=[f"{n}-{k or 'full'}" for n, k in CASES])
-def test_sci_state_matches_pyscf(device_config, name, keep):
-    _check(device_config, name, keep)
+def test_sci_state_matches_pyscf_standalone(device_config, name, keep):
+    _check_sci_state_matches_pyscf(device_config, name, keep)
 
 
 @pytest.mark.mpi
 @pytest.mark.parametrize("name, keep", CASES, ids=[f"{n}-{k or 'full'}" for n, k in CASES])
 def test_sci_state_matches_pyscf_mpi(device_config, name, keep):
-    _check(device_config, name, keep)
+    _check_sci_state_matches_pyscf(device_config, name, keep)
