@@ -727,6 +727,16 @@ def tpb_diag(fcidump, adet, bdet, sbd_data,
         them. ``sort_bitarray`` removes duplicates as well as sorting, so pass
         lists already in that form if you need to label the rows and columns
         yourself.
+
+        Both files use SBD's sign convention, which orders a determinant's
+        creation operators orbital by orbital (alpha 0, beta 0, alpha 1, ...).
+        PySCF, and so qiskit-addon-sqd's ``SCIState``, puts all alpha operators
+        before all beta ones, so some determinants differ in sign: multiply each
+        amplitude by ``(-1) ** n``, where ``n`` counts, over the occupied beta
+        orbitals ``p``, the occupied alpha orbitals above ``p``, before handing
+        it to PySCF. Magnitudes, and so selection by weight, are the same either
+        way. :func:`sbd.sbd_solver.solve_sci` converts the amplitudes in its
+        ``SCIState`` already.
     """
     _ensure_initialized()
     backend = get_backend(device)

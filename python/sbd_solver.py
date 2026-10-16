@@ -297,8 +297,10 @@ def _solve_sci_core(
                 "a different size means the dump and the subspace have diverged."
             )
 
+        amplitudes = flat.reshape(n_a, n_b)
+        _to_alpha_first_signs(amplitudes, solved_strings_a, solved_strings_b, norb)
         sci_state = SCIState(
-            amplitudes=flat.reshape(n_a, n_b),
+            amplitudes=amplitudes,
             ci_strs_a=solved_strings_a,
             ci_strs_b=solved_strings_b,
             norb=norb,
@@ -686,6 +688,41 @@ def _ci_strings_to_sbd_dets(
         det = backend.from_string(binary_str, bit_length, norb)
         dets.append(det)
     return backend.sort_bitarray(dets)
+
+
+def _to_alpha_first_signs(amplitudes, strings_a, strings_b, norb, block_elements=1 << 24):
+    """Convert SBD's amplitudes, in place, to the sign convention SCIState assumes.
+
+    The two conventions order the creation operators of a determinant differently.
+    SBD interleaves the spins orbital by orbital (alpha 0, beta 0, alpha 1, ...);
+    PySCF, and so ``SCIState.rdm()`` and ``SCIState.spin_square()``, put every alpha
+    operator before every beta one. Moving each beta operator past the alpha
+    operators of higher orbitals gives the determinant the phase
+
+        (-1) ** sum over occupied beta orbitals p of (occupied alpha orbitals above p)
+
+    The magnitudes are the same, so energies, SBD's own RDMs, occupancies and any
+    selection by amplitude magnitude are unaffected, which is why this went unnoticed:
+    only what PySCF computes *from the amplitudes* was wrong -- e.g. ``spin_square()``
+    of 0.036 for an exact singlet, and an energy from ``rdm()`` 89 mHa off.
+
+    Args:
+        amplitudes: The ``(len(strings_a), len(strings_b))`` matrix, modified in place.
+        strings_a: Alpha CI strings labelling the rows; bit ``p`` is orbital ``p``.
+        strings_b: Beta CI strings labelling the columns.
+        norb: Number of spatial orbitals.
+        block_elements: Rows are converted in blocks of about this many elements, so
+            the temporary sign matrix stays bounded at large subspaces.
+    """
+    orbitals = np.arange(norb, dtype=np.int64)
+    occupied_b = ((np.asarray(strings_b, dtype=np.int64)[:, None] >> orbitals) & 1).astype(np.int32)
+    occupied_a = (np.asarray(strings_a, dtype=np.int64)[:, None] >> orbitals) & 1
+    # alpha electrons in orbitals strictly above p, kept only as a parity
+    above_a = ((np.cumsum(occupied_a[:, ::-1], axis=1)[:, ::-1] - occupied_a) & 1).astype(np.int32)
+    rows = max(1, block_elements // max(1, len(strings_b)))
+    for start in range(0, len(strings_a), rows):
+        parity = (above_a[start:start + rows] @ occupied_b.T) & 1
+        amplitudes[start:start + rows][parity == 1] *= -1.0
 
 
 def _sbd_dets_to_ci_strings(
