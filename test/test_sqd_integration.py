@@ -522,3 +522,334 @@ def test_sbd_carryover_is_weight_ordered_mpi(
     _check_sbd_carryover_is_weight_ordered(
         data_dir, device_config, tmp_path, carryover_type
     )
+
+
+# --- dividing the processes among the batches ----------------------------------------
+#
+# ``_split_for_batches`` decides which batch each process works on, and its decision is
+# arithmetic over ``(size, rank, num_batches)`` alone. Those can be supplied, so the
+# whole decision table is checkable in a single process, for process counts larger than
+# a test run would ever launch. ``MPI.Split`` is what the arithmetic is handed to; the
+# tests below stand in for it so that what is under test is the division rather than
+# mpi4py.
+#
+# The MPI tests further down then run the real thing, which is what confirms the
+# arithmetic was handed to Split correctly.
+
+
+class _FakeComm:
+    """Enough of a communicator to drive ``_split_for_batches`` in one process.
+
+    ``Split`` records the colors it is given rather than forming a communicator, and
+    returns a stand-in whose rank is this process's position among the ranks sharing its
+    color -- which is what ``Split`` guarantees for the ascending keys the caller passes.
+    """
+
+    def __init__(self, size, rank, num_batches=1):
+        self._size = size
+        self._rank = rank
+        self._num_batches = num_batches
+        self.colors = []
+
+    def Get_size(self):
+        return self._size
+
+    def Get_rank(self):
+        return self._rank
+
+    def Split(self, color, key):  # pylint: disable=unused-argument
+        from mpi4py import MPI
+
+        self.colors.append(color)
+        if color == MPI.UNDEFINED:
+            return MPI.COMM_NULL
+        # Split orders a new communicator by ascending key, and the caller passes the
+        # rank as the key, so the lowest-ranked member of a color becomes its rank 0.
+        # The members of this color are known from the division rule itself.
+        group_size = self._size // self._num_batches
+        first = color * group_size
+        return _FakeComm(group_size, self._rank - first, num_batches=self._num_batches)
+
+
+def _divide(size, num_batches):
+    """Run ``_split_for_batches`` for every rank of a ``size``-process communicator.
+
+    Returns a list of ``(divided, group_id, is_leader)``, one entry per rank, with the
+    group membership recovered from the colors passed to ``Split`` rather than from a
+    real communicator.
+    """
+    from mpi4py import MPI
+
+    from sbd.sbd_solver import _split_for_batches
+
+    table = []
+    for rank in range(size):
+        comm = _FakeComm(size, rank, num_batches=num_batches)
+        divided, _, group_id, _ = _split_for_batches(comm, num_batches)
+        if not divided:
+            table.append((False, group_id, None))
+            continue
+        group_color, leader_color = comm.colors
+        in_group = group_color != MPI.UNDEFINED
+        table.append((True, group_id, in_group and leader_color != MPI.UNDEFINED))
+    return table
+
+
+@pytest.mark.parametrize("num_batches", [1, 2, 5])
+def test_single_process_is_never_divided(num_batches):
+    """One process runs the batches in turn, whatever their number."""
+    (entry,) = _divide(1, num_batches)
+    assert entry == (False, 0, None)
+
+
+@pytest.mark.parametrize("size", [1, 2, 8])
+def test_one_batch_is_never_divided(size):
+    """A lone subspace is given every process, which is the merged round of trim SQD."""
+    assert all(divided is False for divided, _, _ in _divide(size, 1))
+
+
+@pytest.mark.parametrize(("size", "num_batches"), [(2, 3), (3, 4), (1, 2)])
+def test_fewer_processes_than_batches_is_not_divided(size, num_batches):
+    """With too few processes to go around, the batches run in turn over all of them."""
+    assert all(divided is False for divided, _, _ in _divide(size, num_batches))
+
+
+@pytest.mark.parametrize(
+    ("size", "num_batches", "expected_group_sizes"),
+    [
+        (4, 2, [2, 2]),
+        (6, 3, [2, 2, 2]),
+        (8, 2, [4, 4]),
+        (3, 3, [1, 1, 1]),
+        (9, 3, [3, 3, 3]),
+    ],
+)
+def test_equal_division_assigns_every_process(size, num_batches, expected_group_sizes):
+    """When the division is exact, every process joins a group and the groups match."""
+    table = _divide(size, num_batches)
+    assert all(divided for divided, _, _ in table)
+    assert [group for _, group, _ in table].count(None) == 0
+    for batch, expected in enumerate(expected_group_sizes):
+        assert sum(1 for _, group, _ in table if group == batch) == expected
+
+
+@pytest.mark.parametrize(
+    ("size", "num_batches", "expected_idle"),
+    [
+        (10, 3, 1),
+        (5, 2, 1),
+        (7, 3, 1),
+        (11, 3, 2),
+        (7, 2, 1),
+    ],
+)
+def test_leftover_processes_are_left_idle(size, num_batches, expected_idle):
+    """A remainder is left out rather than making one group larger than its siblings.
+
+    Equal groups are what makes the batches comparable, which is the point of a
+    screening round: a batch solved over more processes reaches a slightly different
+    floating-point energy, so the ranking would depend on how the processes divided.
+    """
+    table = _divide(size, num_batches)
+    assert all(divided for divided, _, _ in table)
+
+    idle = [rank for rank, (_, group, _) in enumerate(table) if group is None]
+    assert len(idle) == expected_idle
+    # The idle processes are the ones at the end, so a group is always contiguous.
+    assert idle == list(range(size - expected_idle, size))
+
+    group_sizes = [
+        sum(1 for _, group, _ in table if group == batch) for batch in range(num_batches)
+    ]
+    assert group_sizes == [size // num_batches] * num_batches
+
+
+@pytest.mark.parametrize(("size", "num_batches"), [(4, 2), (6, 3), (10, 3), (9, 3)])
+def test_every_group_has_exactly_one_leader(size, num_batches):
+    """Each group contributes one process to the leaders' exchange, and rank 0 is one.
+
+    The results are broadcast from rank 0 of the whole communicator, so it has to be a
+    leader; it is, being the first process of the first group.
+    """
+    table = _divide(size, num_batches)
+    leaders = [rank for rank, (_, _, is_leader) in enumerate(table) if is_leader]
+    assert len(leaders) == num_batches
+    assert 0 in leaders
+    # One leader per group, and each leads a different one.
+    assert sorted(table[rank][1] for rank in leaders) == list(range(num_batches))
+
+
+# --- the grouped path against the sequential one -------------------------------------
+#
+# The division is only correct if it does not change the answer, so the tests below
+# diagonalize the same several subspaces twice over: once letting the processes divide,
+# and once one subspace at a time over every process, which is the path that predates
+# the division. The energies have to agree.
+#
+# They agree to a tolerance rather than exactly. A subspace solved over a group of two
+# processes and the same subspace solved over all four sum their contributions in a
+# different order, so the Davidson iterations differ in the last bits. SOLVER_CONFIG
+# converges to 1e-10, well inside the 1e-8 asserted here.
+#
+# These tests pass SOLVER_CONFIG rather than going through ``_sbd_config``, which sizes
+# the alpha dimension from ``MPI.COMM_WORLD``. That is right for an undivided call, where
+# the world is the set of processes performing the diagonalization, and wrong here, where
+# a group is: SBD's grid describes one diagonalization, so it is relative to whichever
+# communicator that diagonalization is handed.
+#
+# The rule itself is just divisibility. ``diag()`` derives the helper dimension by
+# integer division, ``h_comm_size = mpi_size / (task_comm_size * base_comm_size)``, and
+# ``TaskCommunicator`` then checks that multiplying the four back recovers ``mpi_size``
+# (chemistry/tpb/sbdiag.h and chemistry/tpb/helper.h) -- which fails exactly when the
+# division truncated. So ``adet * bdet * task`` has to divide the communicator evenly.
+# ``adet_comm_size=2`` would be fine on groups of two; it is 6, taken from a world the
+# groups are no longer the same size as, that is not.
+#
+# Leaving the grid at its 1x1x1 default avoids having to know: the helper dimension
+# absorbs however many processes the group turns out to have. A caller cannot size the
+# grid to the group anyway, not knowing how the processes were divided, and one config
+# has to serve both of trim SQD's rounds, whose communicators differ in size by
+# construction.
+
+
+def _subspaces_for_batches(data_dir, num_batches):
+    """``num_batches`` distinct subspaces drawn from the h2o selection.
+
+    Each takes a different slice of the alpha determinants, so the subspaces differ and
+    a result mistakenly carried from the wrong group would show up as a wrong energy.
+    Every slice starts at the Hartree-Fock determinant, the first in the file, so each
+    subspace is a sensible one to diagonalize rather than an arbitrary set.
+    """
+    strings = _read_alpha_determinants(data_dir / "h2o" / "h2o-1em3-alpha.txt")
+    subspaces = []
+    for batch in range(num_batches):
+        taken = np.concatenate([strings[:1], strings[1 + batch : 24 + batch]])
+        subspaces.append((taken, taken))
+    return subspaces
+
+
+def _check_grouped_matches_sequential(data_dir, device_config, num_batches):
+    from mpi4py import MPI
+
+    from sbd.sbd_solver import solve_sci_batch
+
+    comm = MPI.COMM_WORLD
+    hcore, eri, _ = _load_hamiltonian(data_dir)
+    subspaces = _subspaces_for_batches(data_dir, num_batches)
+
+    def diagonalize(batch):
+        return solve_sci_batch(
+            batch,
+            hcore,
+            eri,
+            norb=NORB,
+            nelec=NELEC,
+            sbd_config=SOLVER_CONFIG,
+            device_config=device_config,
+        )
+
+    # All the subspaces in one call: divided into groups when there are enough
+    # processes, and run in turn when there are not.
+    grouped = diagonalize(subspaces)
+    assert len(grouped) == num_batches
+
+    # One subspace per call, so every call is given the whole communicator. This is
+    # what the division has to reproduce.
+    sequential = [diagonalize([subspace])[0] for subspace in subspaces]
+
+    if comm.Get_rank() != 0:
+        return
+
+    # Ordered by subspace, not by whichever group finished first. The subspaces differ,
+    # so a misordered or misattributed result fails here.
+    for from_group, from_sequence in zip(grouped, sequential):
+        assert from_group.energy == pytest.approx(from_sequence.energy, abs=1e-8)
+        _assert_result_is_consistent(from_group)
+
+    # The subspaces are distinct, so their energies should be too -- without this, the
+    # comparison above would also pass if every group had solved the same subspace.
+    energies = [result.energy for result in grouped]
+    assert len(set(energies)) == num_batches
+
+
+@pytest.mark.parametrize("num_batches", [2, 3])
+def test_grouped_matches_sequential_standalone(data_dir, device_config, num_batches):
+    """In one process nothing is divided, and the two paths are the same code."""
+    _check_grouped_matches_sequential(data_dir, device_config, num_batches)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("num_batches", [2, 3])
+def test_grouped_matches_sequential_mpi(data_dir, device_config, num_batches):
+    """Dividing the launched ranks among the subspaces gives the same energies.
+
+    Whether the division actually happens depends on the process count the suite was
+    launched with: at or above ``num_batches`` processes it does, below that the call
+    falls back to running them in turn. Both are worth exercising, and which one runs
+    is reported by ``tox -e mpi``'s header rather than asserted here.
+    """
+    _check_grouped_matches_sequential(data_dir, device_config, num_batches)
+
+
+def _check_two_phase_rounds(data_dir, device_config):
+    """The trim SQD shape: a divided screening round, then an undivided merged one.
+
+    Both rounds happen in one process lifetime, as they do inside
+    ``diagonalize_fermionic_hamiltonian``. That is what makes this more than the sum of
+    the two cases above: the screening round creates communicators and per-group
+    wavefunction dumps, and the merged round that follows must not inherit either. A
+    communicator left unfreed would eventually exhaust the supply over many iterations,
+    and a dump left behind under a name the merged round reuses would be read back as
+    if it were the merged round's own amplitudes.
+    """
+    from mpi4py import MPI
+
+    from sbd.sbd_solver import solve_sci_batch
+
+    comm = MPI.COMM_WORLD
+    hcore, eri, _ = _load_hamiltonian(data_dir)
+
+    def diagonalize(batch):
+        return solve_sci_batch(
+            batch,
+            hcore,
+            eri,
+            norb=NORB,
+            nelec=NELEC,
+            sbd_config=SOLVER_CONFIG,
+            device_config=device_config,
+        )
+
+    # Several iterations, so that a communicator leaked once per round would accumulate
+    # rather than merely occur.
+    for _ in range(3):
+        screened = diagonalize(_subspaces_for_batches(data_dir, 3))
+        assert len(screened) == 3
+
+        # The merged round: one subspace built from the screening round, given every
+        # process. Merging the inputs keeps this independent of what the solver chose
+        # to carry over, which is a separate concern tested above.
+        screened_alpha = [a for a, _ in _subspaces_for_batches(data_dir, 3)]
+        merged_a = np.unique(np.concatenate(screened_alpha))
+        (merged,) = diagonalize([(merged_a, merged_a)])
+
+        if comm.Get_rank() != 0:
+            continue
+
+        _assert_result_is_consistent(merged)
+        # The merged subspace contains each screened subspace, so its energy is at or
+        # below every one of theirs. This would fail if the merged round had read back
+        # a screening round's wavefunction dump instead of its own.
+        for result in screened:
+            assert merged.energy <= result.energy + 1e-8
+
+
+def test_two_phase_rounds_standalone(data_dir, device_config):
+    """The two-round shape runs in a single process."""
+    _check_two_phase_rounds(data_dir, device_config)
+
+
+@pytest.mark.mpi
+def test_two_phase_rounds_mpi(data_dir, device_config):
+    """The screening round divides the launched ranks; the merged round gets them all."""
+    _check_two_phase_rounds(data_dir, device_config)
