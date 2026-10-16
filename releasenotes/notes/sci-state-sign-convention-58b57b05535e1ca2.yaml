@@ -1,0 +1,15 @@
+---
+fixes:
+  - |
+    ``SCIResult.sci_state`` returned by :func:`sbd.sbd_solver.solve_sci` and
+    :func:`sbd.sbd_solver.solve_sci_batch` now holds amplitudes in the sign
+    convention ``qiskit-addon-sqd``'s ``SCIState`` assumes. SBD orders a
+    determinant's creation operators orbital by orbital, PySCF puts all alpha
+    operators before all beta ones, so some determinants carried the opposite
+    sign. Everything ``SCIState`` computes through PySCF from the amplitudes
+    was wrong as a result: ``spin_square()`` returned 0.036 for an exact
+    singlet, and an energy rebuilt from ``rdm()`` was 89 mHa off. Energies,
+    ``SCIResult.rdm1``/``rdm2`` (SBD's own RDMs), orbital occupancies and
+    carryover selection, which uses only amplitude magnitudes, were not
+    affected. The raw wavefunction files SBD writes keep its own convention;
+    the :func:`sbd.tpb_diag` documentation gives the conversion.
