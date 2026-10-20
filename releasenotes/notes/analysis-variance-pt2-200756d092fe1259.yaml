@@ -1,0 +1,28 @@
+---
+features:
+  - |
+    New :mod:`sbd.analysis` module, with :func:`sbd.analysis.variance`: the energy
+    variance and Epstein-Nesbet PT2 correction of a wavefunction saved by
+    :func:`sbd.tpb_diag` or :func:`sbd.gdb_diag` with ``savename``. Two methods:
+
+    - ``"stochastic"`` binds upstream SBD's statistical evaluator (the library behind
+      its ``gdb-stat-evaluator`` app). It returns a mean and standard error over
+      batches, runs over all ranks of the communicator on CPU cores, and accepts any
+      number of ranks, not only the decomposition that saved the state.
+    - ``"exact"`` uses PySCF over the full CI space, in one process, for small
+      systems and for checking.
+
+    :func:`sbd.analysis.state_energy` recomputes a saved state's energy, used as the
+    PT2 reference by default. TPB and GDB states are both read, from their shard files
+    or a single GDB ``.bin`` file.
+  - |
+    New ``examples/analysis/variance.py``, a command-line front end for
+    :func:`sbd.analysis.variance`, run on the ``--savename`` output of
+    ``run_sbd_diag.py`` or ``run_gdb_diag.py``. Its README walks through the workflow
+    and gives measured guidance on the rank/thread layout and the screening cutoff.
+upgrade:
+  - |
+    The evaluator is compiled into the CPU and OpenMP-offload backends but not the
+    Thrust one, matching upstream, which includes it only without ``SBD_THRUST``.
+    :func:`sbd.analysis.variance` uses a backend that has it, loading the CPU one
+    next to Thrust if needed, so it works after a diagonalization on any device.
