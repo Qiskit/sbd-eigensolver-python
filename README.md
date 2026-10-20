@@ -31,6 +31,9 @@ constraints. Reach for GDB when the subspace is not a product.
   [`examples/gdb/README.md`](examples/gdb/README.md)
 - MPI parallelization
 - Integration with [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) for SQD workflows
+- **Energy variance and Epstein–Nesbet PT2** of saved TPB and GDB states
+  (`sbd.analysis`), estimated with **MPI + OpenMP across multiple nodes and cores** —
+  see [Energy variance and PT2](#energy-variance-and-pt2)
 
 SBD's **Creation/Annihilation operator (CAOP)** method is not supported by this
 wrapper; users who need it should reference and use the C++ CLI apps in the upstream
@@ -79,6 +82,8 @@ matter for it.
 - [`examples/gdb/`](examples/gdb/README.md) — general determinant basis: standalone
   GDB diagonalization over an explicit determinant list, and an iterative
   heatbath-expansion driver.
+- [`examples/analysis/`](examples/analysis/README.md) — energy variance and PT2 of a
+  state saved by either solver, as a separate MPI job or at the end of the same run.
 
 ## Integration with qiskit-addon-sqd
 
@@ -157,6 +162,47 @@ On the bundled H2O pool ([`count_dict_h2o.json`](examples/tpb/count_dict_h2o.jso
 275 bitstrings), plain SQD reaches ≈ -76.236 Ha and stops there; this driver
 keeps going past that fixed pool on its own and converges to
 **-76.2421767512 Ha**.
+
+## Energy variance and PT2
+
+A diagonalization gives the best energy *within its subspace*. `sbd.analysis` measures
+how far the state is from the exact one: its **energy variance**, which is zero for an
+exact eigenstate, and its **Epstein–Nesbet PT2** correction, so that $E + E_{\mathrm{PT2}}$
+estimates the exact energy. It works on any state saved with `savename`, from TPB or
+GDB, on any device.
+
+The default method is SBD's statistical evaluator, which **runs on CPU with MPI + OpenMP
+across multiple nodes and cores**: the state and the work are spread over all MPI ranks,
+each using OpenMP threads, and the number of ranks need not match the run that saved the
+state. It samples determinants from the state and repeats the estimate in independent
+batches to give a mean and an error bar. For small systems an exact method (PySCF, single
+process) is also available.
+
+```bash
+# 1. diagonalize, saving the state
+mpirun -np 4 python examples/gdb/run_gdb_diag.py --device gpu --b_comm_size 4 \
+    --bit_length 62 --savename /path/to/run/fe4s4-
+
+# 2. its variance and PT2: a separate CPU job, on as many nodes and cores as you like
+mpirun -np 32 -x OMP_NUM_THREADS=2 python examples/analysis/variance.py \
+    --fcidump vendor/sbd-upstream/apps/chemistry_gdb_selected_basis_diagonalization/fcidump_Fe4S4.txt \
+    --state /path/to/run/fe4s4- --bit_length 62
+```
+
+or from Python, under `mpirun`:
+
+```python
+from sbd import analysis
+
+result = analysis.variance("/path/to/run/fe4s4-", sbd.LoadFCIDump("fcidump.txt"),
+                           bit_length=62)
+print(result.variance, result.variance_error, result.energy_pt2)
+```
+
+The files under one prefix must all come from one run; this is checked, and anything
+else raises rather than being combined. [`examples/analysis/README.md`](examples/analysis/README.md)
+covers how the method works, running it in the same job as the diagonalization, and
+choosing samples, batches and the rank/thread layout.
 
 ## Backend Architecture
 
@@ -275,10 +321,10 @@ Neither return dict holds the wavefunction amplitudes. Two separate mechanisms w
 | | `sbd_data.dump_matrix_form_wf` | `savename` argument |
 |---|---|---|
 | Writes | the full `len(adet) × len(bdet)` subspace, gathered onto one rank | one file per b_comm position, each holding **only that rank's block** |
-| Path | exactly what you set | `f"{savename}{rank_b:06d}.bin"` |
+| Path | exactly what you set | `f"{savename}{rank_b:06d}"` (no extension) |
 | Header | **none** | three `size_t` (`adet_range`, `bdet_range`, `det_length`), then that block's alpha and beta determinant words |
 | Payload | `float64`, row-major over α×β | `adet_range × bdet_range` `float64` |
-| Intended for | analysis | checkpoint/restart, paired with `loadname` |
+| Intended for | reading the amplitudes yourself | checkpoint/restart, paired with `loadname`; the input to [`sbd.analysis`](#energy-variance-and-pt2) |
 
 So the whole-subspace read is just:
 
@@ -331,7 +377,8 @@ placement schemes, and which returned values are replicated versus sharded.
 them — and for most uses none are needed: the energy, density and RDMs come back
 directly, and an iterative heatbath run gets its next subspace from `carryover_det`. If
 you do want the amplitudes, `savename` writes them to disk; the file layout is in
-[`examples/gdb/README.md`](examples/gdb/README.md).
+[`examples/gdb/README.md`](examples/gdb/README.md), and
+[`sbd.analysis`](#energy-variance-and-pt2) reads them for the energy variance and PT2.
 
 The optional `device` parameter overrides the default set by `init()`.
 
