@@ -7,7 +7,7 @@ name = "sbd-eigensolver"
 version = "1.7.0"
 description = "Python bindings for Selected Basis Diagonalization (SBD) library"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE.txt"]
 keywords = ["quantum chemistry", "diagonalization", "tensor product basis", "MPI"]
@@ -19,7 +19,6 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Scientific/Engineering :: Physics",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

@@ -1,0 +1,6 @@
+---
+upgrade:
+  - |
+    Support for Python 3.10 has been dropped.  Python 3.11 or later is now
+    required.  Python 3.10 reached `end of life <https://devguide.python.org/versions/>`__
+    on October 1, 2026.

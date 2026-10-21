@@ -26,7 +26,7 @@ jobs:
           submodules: recursive
       - uses: actions/setup-python@v7
         with:
-          python-version: '3.10'
+          python-version: '3.11'
       - name: Install dependencies
         # autodoc imports the package, so the extension has to compile here -- hence the
         # same MPI and BLAS packages the test workflow installs, rather than the lighter

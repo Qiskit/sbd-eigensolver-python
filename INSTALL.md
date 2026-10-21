@@ -8,7 +8,7 @@ reads, building against a host MPI, and how to verify what you got.
 
 ## Prerequisites
 
-**Required:** Python 3.10+, MPI (OpenMPI/MPICH), BLAS (OpenBLAS/MKL), pybind11, mpi4py, numpy, compiler with OpenMP.
+**Required:** Python 3.11+, MPI (OpenMPI/MPICH), BLAS (OpenBLAS/MKL), pybind11, mpi4py, numpy, compiler with OpenMP.
 
 **On macOS:** Apple clang ships without OpenMP, so add `llvm-openmp` to the conda
 environment. Homebrew's `libomp` is used as a fallback if the env has none. Pin the
