@@ -385,8 +385,8 @@ def main():
     # solve_sci_batch auto-initializes the SBD backend on first call and
     # falls back to MPI.COMM_WORLD when mpi_comm is not provided, so no
     # explicit sbd.init() / mpi_comm threading is needed in user code.
-    from sbd.device_config import DeviceConfig, print_device_info
     from sbd.sbd_solver import solve_sci_batch
+    from sbd.device_config import DeviceConfig, print_device_info
 
     device_str = args.device
     if device_str == "auto":

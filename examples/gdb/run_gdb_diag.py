@@ -12,7 +12,8 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""Standalone GDB diagonalization over an explicit determinant list, in memory.
+"""
+Standalone GDB diagonalization over an explicit determinant list, in memory.
 
 GDB (general determinant basis) spans the subspace with the determinants it is
 given. TPB spans it with the Cartesian product of an alpha and a beta list, so

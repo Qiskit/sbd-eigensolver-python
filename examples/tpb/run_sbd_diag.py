@@ -12,7 +12,8 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""Standalone SBD diagonalization (no SQD loop, no qiskit dependency).
+"""
+Standalone SBD diagonalization (no SQD loop, no qiskit dependency).
 
 Runs a single TPB diagonalization from an FCIDUMP file and alpha determinant
 file using the SBD library directly.
@@ -48,7 +49,6 @@ import argparse
 import sys
 
 import numpy as np
-
 
 def parse_args():
     """Parse command line arguments for all TPB_SBD parameters"""

@@ -59,10 +59,7 @@ import numpy as np
 from mpi4py import MPI
 from pyscf import ao2mo, tools
 from qiskit.primitives import BitArray
-from qiskit_addon_sqd.fermion import (
-    diagonalize_fermionic_hamiltonian,
-    enlarge_batch_from_transitions,
-)
+from qiskit_addon_sqd.fermion import diagonalize_fermionic_hamiltonian, enlarge_batch_from_transitions
 
 
 def parse_args():
@@ -321,8 +318,8 @@ def main():
         print(f"Device: {args.device}")
         print()
 
-    from sbd.device_config import DeviceConfig
     from sbd.sbd_solver import solve_sci_batch
+    from sbd.device_config import DeviceConfig
 
     device_str = args.device
     if device_str == "auto":

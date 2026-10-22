@@ -1,5 +1,5 @@
 ---
-upgrade:
+other:
   - |
     The repository now runs ``ruff check``, a copyright-header check
     (``ruff check --preview --select CPY001``) and ``reno lint`` in CI, through
