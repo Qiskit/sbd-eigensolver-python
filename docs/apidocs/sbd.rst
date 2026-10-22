@@ -135,6 +135,7 @@ Inputs
 .. autofunction:: LoadAlphaDets
 .. autofunction:: sort_bitarray
 .. autofunction:: from_strings
+.. autofunction:: to_strings
 .. autofunction:: sort_bitarray_array
 
 Backends and devices

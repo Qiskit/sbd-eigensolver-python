@@ -624,6 +624,43 @@ def from_strings(strings, bit_length, total_bit_length, device=None):
     return get_backend(device).from_strings(list(strings), bit_length, total_bit_length)
 
 
+def to_strings(dets, bit_length, total_bit_length):
+    """Render packed determinants as ``total_bit_length``-character bitstrings.
+
+    The inverse of :func:`from_strings`, with the same right-to-left word packing,
+    and the bulk form of :func:`makestring`: it unpacks the whole array in NumPy
+    rather than crossing into C++ once per determinant. The strings are what
+    :func:`LoadAlphaDets` and the example drivers read back, so a determinant list
+    returned by a solve -- a carryover, say -- can be written out and reused.
+
+    Args:
+        dets: Packed determinants: an ``(n, words)`` array, or a list of word
+            lists as the TPB solvers return.
+        bit_length: Bits per packed word, as the determinants were packed with.
+        total_bit_length: Characters per string: ``norb`` for TPB alpha or beta
+            strings, ``2 * norb`` for GDB determinants.
+
+    Returns:
+        A list of ``n`` strings of ``0`` and ``1``.
+    """
+    import numpy as np
+
+    det = np.asarray(dets, dtype=np.uint64)
+    if det.size == 0:
+        return []
+    if det.ndim == 1:
+        det = det.reshape(-1, 1)
+    n, words = det.shape
+    if words * bit_length < total_bit_length:
+        raise ValueError(f"{words} word(s) of {bit_length} bits cannot hold "
+                         f"{total_bit_length} bits")
+    shifts = np.arange(bit_length, dtype=np.uint64)
+    bits = ((det[:, :, None] >> shifts) & np.uint64(1)).astype(np.uint8)
+    bits = bits.reshape(n, words * bit_length)[:, :total_bit_length]   # bit 0 first
+    chars = np.where(bits[:, ::-1], ord("1"), ord("0")).astype(np.uint8)
+    return [row.tobytes().decode("ascii") for row in chars]
+
+
 def sort_bitarray_array(dets, device=None):
     """Sort packed determinants into canonical order, array in and array out.
 
@@ -832,6 +869,23 @@ def gdb_diag(fcidump, det, sbd_data,
     """
     _ensure_initialized()
     backend = get_backend(device)
+    # The Thrust GDB solve never returns when a b_comm shard is empty: every rank
+    # waits in its ring exchange (MpiSlider::Sync, gdb/helper_thrust.h) whatever the
+    # placement, while the CPU backend handles the same input. A seed smaller than
+    # b_comm_size -- one Hartree-Fock determinant, say -- is the usual way to get
+    # there, so refuse it up front rather than hang until the job's time limit.
+    if (getattr(backend, "__name__", "").endswith("_core_gpu_thrust")
+            and getattr(sbd_data, "b_comm_size", 1) > 1 and _global_comm is not None):
+        import numpy as np
+
+        empty = _global_comm.allreduce(int(np.asarray(det).shape[0] == 0))
+        if empty:
+            raise ValueError(
+                "gdb_diag on the gpu (Thrust) backend needs determinants on every "
+                f"b_comm shard, but {empty} of the ranks hold "
+                "none: upstream's Thrust solve then waits forever instead of failing. "
+                "Use b_comm_size 1 (or fewer shards) until the subspace has at least "
+                "b_comm_size determinants, or the cpu backend")
     return backend.gdb_diag(
         _global_comm, sbd_data, fcidump, det, loadname, savename,
         determinant_distribution, determinant_grid_a, determinant_grid_b,
@@ -948,6 +1002,7 @@ __all__ = [
     'makestring',
     'from_string',
     'from_strings',
+    'to_strings',
     'sort_bitarray',
     'sort_bitarray_array',
     'tpb_diag_from_files',

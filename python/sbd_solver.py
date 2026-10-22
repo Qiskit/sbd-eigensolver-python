@@ -79,6 +79,7 @@ def solve_sci(
     clean_temp_dir: bool = True,
     device_config=None,
     fcidump_path: str | Path | None = None,
+    savename: str | None = None,
 ) -> SCIResult:
     """
     Diagonalize Hamiltonian in subspace defined by CI strings using SBD.
@@ -101,6 +102,10 @@ def solve_sci(
             When None (default), rank 0 writes a regenerated FCIDUMP into
             ``temp_dir`` and every rank opens that file, which requires
             ``temp_dir`` to be shared for multi-node runs.
+        savename: If set, SBD saves this solve's wavefunction under that prefix,
+            one file per alpha x beta block (``f"{savename}{rank:06d}"``), for
+            :func:`sbd.analysis.variance` or a later ``loadname``. The directory
+            must exist. Each call overwrites the previous one's files.
 
     Returns:
         The diagonalization result as SCIResult.
@@ -137,6 +142,7 @@ def solve_sci(
             fcidump=fcidump,
             device_config=device_config,
             ecore_offset=ecore_offset,
+            savename=savename,
         )
     finally:
         if clean_temp_dir and owns_sbd_dir and mpi_rank == 0:
@@ -157,6 +163,7 @@ def _solve_sci_core(
     fcidump,
     device_config=None,
     ecore_offset: float = 0.0,
+    savename: str | None = None,
 ) -> SCIResult:
     """
     Inner diagonalization kernel that operates on a pre-loaded FCIDUMP object.
@@ -198,7 +205,7 @@ def _solve_sci_core(
         sbd_data.dump_matrix_form_wf = str(wf_dump_file)
 
     results = backend.tpb_diag(
-        mpi_comm, sbd_data, fcidump, adet, bdet, loadname="", savename=""
+        mpi_comm, sbd_data, fcidump, adet, bdet, loadname="", savename=savename or ""
     )
 
     # Rank 0 reads the wavefunction file; Barrier ensures it's flushed.
@@ -521,6 +528,7 @@ def solve_sci_batch(
     clean_temp_dir: bool = True,
     device_config=None,
     fcidump_path: str | Path | None = None,
+    savename: str | None = None,
 ) -> list[SCIResult]:
     """
     Diagonalize Hamiltonian in multiple subspaces using SBD.
@@ -545,6 +553,11 @@ def solve_sci_batch(
             When None (default), rank 0 writes a regenerated FCIDUMP into
             ``temp_dir`` and every rank opens that file, which requires
             ``temp_dir`` to be shared for multi-node runs.
+        savename: If set, batch ``k``'s wavefunction is saved under
+            ``f"{savename}b{k:02d}-"``, one file per alpha x beta block, each call
+            overwriting the previous one's. Pick the batch you want afterwards, e.g.
+            the lowest-energy one, which is the one qiskit-addon-sqd keeps. The
+            directory must exist.
 
     Returns:
         List of SCIResult for each batch.
@@ -580,8 +593,9 @@ def solve_sci_batch(
                 fcidump=fcidump,
                 device_config=device_config,
                 ecore_offset=ecore_offset,
+                savename=f"{savename}b{k:02d}-" if savename else None,
             )
-            for ci_strs in ci_strings
+            for k, ci_strs in enumerate(ci_strings)
         ]
     finally:
         if clean_temp_dir and owns_sbd_dir and mpi_rank == 0:

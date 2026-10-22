@@ -124,3 +124,32 @@ def test_sci_state_matches_pyscf_standalone(device_config, name, keep):
 @pytest.mark.parametrize("name, keep", CASES, ids=[f"{n}-{k or 'full'}" for n, k in CASES])
 def test_sci_state_matches_pyscf_mpi(device_config, name, keep):
     _check_sci_state_matches_pyscf(device_config, name, keep)
+
+
+def test_savename_writes_the_returned_state(device_config, tmp_path):
+    """``savename`` saves the very state ``solve_sci`` returns, readable by the analysis.
+
+    Each batch of ``solve_sci_batch`` gets its own prefix, so one batch never
+    overwrites another's files.
+    """
+    import sbd
+    from sbd import analysis
+    from sbd.sbd_solver import solve_sci_batch
+    from pyscf import tools
+
+    h1, eri, norb, nelec = _hamiltonian("h6-singlet")
+    fcidump = tmp_path / "h6.fcidump"
+    tools.fcidump.from_integrals(str(fcidump), h1, eri, norb, sum(nelec), nuc=0.0)
+    batches = [(_strings(norb, nelec[0], 12, seed=s), _strings(norb, nelec[1], 12, seed=s + 1))
+               for s in (1, 5)]
+    prefix = str(tmp_path / "st-")
+    results = solve_sci_batch(batches, h1, eri, norb=norb, nelec=nelec,
+                              device_config=device_config,
+                              sbd_config={"eps": 1e-12, "max_it": 300}, savename=prefix)
+
+    loaded = sbd.LoadFCIDump(str(fcidump))
+    energies = [analysis.state_energy(f"{prefix}b{k:02d}-", loaded, bit_length=20)
+                for k in range(len(batches))]
+    for result, energy in zip(results, energies):
+        assert energy == pytest.approx(result.energy, abs=1e-8)
+    assert energies[0] != pytest.approx(energies[1], abs=1e-6), "batches overwrote each other"

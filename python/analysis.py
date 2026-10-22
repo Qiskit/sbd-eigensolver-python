@@ -48,7 +48,7 @@ from math import comb
 
 import numpy as np
 
-__all__ = ["SavedState", "VarianceResult", "load_state", "state_energy", "variance"]
+__all__ = ["SavedState", "VarianceResult", "load_gdb_shards", "load_state", "state_energy", "variance"]
 
 
 @dataclass
@@ -504,12 +504,49 @@ def _sorted_unique(state, comm):
     return det, coef
 
 
+def load_gdb_shards(source, norb, bit_length, b_comm_size, comm=None):
+    """A saved state's determinants, as the shard :func:`sbd.gdb_diag` wants on this rank.
+
+    For restarting a GDB calculation from its saved state, on any number of ranks:
+    the files are read and sorted across ranks as in :func:`state_energy`, then laid
+    out for ``b_comm_size`` -- every rank the whole basis when it is 1, otherwise
+    rank r the r-th globally sorted block. Pair it with ``loadname=source`` to start
+    Davidson from the saved amplitudes as well.
+
+    Args:
+        source, norb, bit_length: As for :func:`load_state`.
+        b_comm_size: The ``b_comm_size`` the restarted run will use.
+        comm: MPI communicator; default ``MPI.COMM_WORLD``.
+
+    Returns:
+        This rank's ``(n, words)`` array of determinants.
+    """
+    from mpi4py import MPI
+
+    comm = comm or MPI.COMM_WORLD
+    size, rank = comm.Get_size(), comm.Get_rank()
+    det, _coef = _sorted_unique(load_state(source, norb, bit_length, comm), comm)
+    if b_comm_size == size:
+        return det
+    whole = np.concatenate([d for d in comm.allgather(det) if len(d)], axis=0)
+    if b_comm_size == 1:
+        return np.ascontiguousarray(whole)
+    q, r = divmod(len(whole), b_comm_size)
+    shard = rank % b_comm_size
+    lo = shard * q + min(shard, r)
+    return np.ascontiguousarray(whole[lo:lo + q + (1 if shard < r else 0)])
+
+
 def _distributed_sort(det, coef, comm):
     """Sort determinants globally in SBD's order across ranks; rank r gets block r.
 
     A sample sort: each rank sorts its own rows, the ranks agree on P-1 splitters from
-    a small regular sample, and one Alltoallv moves each row to its owner. Memory per
-    rank stays O(n/P) plus one exchange buffer; nothing is gathered whole.
+    a small regular sample, and one Alltoallv moves each row to its owner. The
+    splitters only roughly balance the blocks, so a second Alltoallv then moves rows
+    by global index to make them exact: rank r ends with the r-th block of SBD's
+    ``q = N/P``, remainder-to-the-low-ranks split, the shape ``gdb_diag``'s ``input``
+    placement and the drivers' sharding expect. Memory per rank stays O(n/P) plus one
+    exchange buffer; nothing is gathered whole.
     """
     size = comm.Get_size()
     # lexsort's last key is primary, so det.T sorts by the last (most significant) word
@@ -533,7 +570,27 @@ def _distributed_sort(det, coef, comm):
     det_out = _alltoallv(comm, det.reshape(-1), counts * words, np.uint64).reshape(-1, words)
     coef_out = _alltoallv(comm, coef, counts, np.float64)
     order = np.lexsort(det_out.T) if len(det_out) else np.zeros(0, dtype=np.intp)
-    return np.ascontiguousarray(det_out[order]), np.ascontiguousarray(coef_out[order])
+    return _balance(det_out[order], coef_out[order], comm)
+
+
+def _balance(det, coef, comm):
+    """Re-split globally sorted blocks into SBD's exact ``q = N/P`` block sizes."""
+    size, rank = comm.Get_size(), comm.Get_rank()
+    words = det.shape[1] if det.ndim == 2 else 1
+    counts = np.array(comm.allgather(len(det)), dtype=np.int64)
+    total = int(counts.sum())
+    q, r = divmod(total, size)
+    target = np.array([q + (1 if i < r else 0) for i in range(size)], dtype=np.int64)
+    if np.array_equal(counts, target):
+        return np.ascontiguousarray(det), np.ascontiguousarray(coef)
+    # Global index of each local row, and the rank that owns that index.
+    first = int(counts[:rank].sum())
+    bounds = np.cumsum(target)
+    dest = np.searchsorted(bounds, np.arange(first, first + len(det)), side="right")
+    send = np.bincount(dest, minlength=size)
+    det = _alltoallv(comm, det.reshape(-1), send * words, np.uint64).reshape(-1, words)
+    coef = _alltoallv(comm, coef, send, np.float64)
+    return np.ascontiguousarray(det), np.ascontiguousarray(coef)
 
 
 def _rows_greater(det, row):
