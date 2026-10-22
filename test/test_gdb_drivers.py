@@ -370,3 +370,153 @@ def test_skip_weight_check_bypasses_the_validation(tmp_path):
     assert "do not have 5 alpha and 5 beta electrons" not in combined, (
         "--skip-weight-check did not skip the check"
     )
+
+
+# --- run_gdb_heatbath.py: --savename, --checkpoint_prefix, --resume_from_prefix
+
+
+def _h2o_ladder(alpha_limit: int = 24) -> list[str]:
+    return [
+        "--fcidump", str(H2O_DIR / "fcidump.txt"),
+        "--subspace-from", "from-alpha",
+        "--alpha-file", str(H2O_DIR / "h2o-1em3-alpha.txt"),
+        "--alpha-limit", str(alpha_limit),
+    ]
+
+
+def _state_files(prefix: pathlib.Path) -> list[pathlib.Path]:
+    return sorted(prefix.parent.glob(prefix.name + "[0-9]" * 6 + ".bin"))
+
+
+def test_heatbath_checkpoint_keeps_the_last_round_and_resumes_from_it(tmp_path):
+    """A checkpointed ladder resumed with its own cutoffs ends where it would have.
+
+    The checkpoint holds the last round's solved state and its ladder position.
+    Resuming re-solves that subspace, so the first resumed round must reproduce the
+    checkpointed energy, and carrying on must not raise it. Only the last round is
+    kept unless --checkpoint_frequency asks for more, and no scratch files remain.
+    """
+    _require(H2O_DIR / "h2o-1em3-alpha.txt")
+    ck, log = tmp_path / "ck-", tmp_path / "first.json"
+    _assert_ok(_run("run_gdb_heatbath.py", [
+        *_h2o_ladder(), "--cutoffs", "1e-3", "--max_rounds", "2",
+        "--checkpoint_prefix", str(ck), "--log", str(log),
+    ]))
+    record = json.loads((tmp_path / "ck-.json").read_text())
+    rounds = json.loads(log.read_text())["rounds"]
+    assert record["energy"] == pytest.approx(rounds[-1]["energy"], abs=1e-10)
+    assert record["dimension"] == rounds[-1]["dimension"]
+    assert len(record["history"]) == len(rounds)
+    assert _state_files(ck), "checkpoint wrote no state files"
+    leftovers = [p.name for p in tmp_path.iterdir() if ".round-" in p.name or "_r0" in p.name]
+    assert not leftovers, f"scratch or extra copies left behind: {leftovers}"
+
+    resumed_log = tmp_path / "resumed.json"
+    _assert_ok(_run("run_gdb_heatbath.py", [
+        *_h2o_ladder(), "--resume_from_prefix", str(ck), "--max_rounds", "3",
+        "--log", str(resumed_log),
+    ]))
+    resumed = json.loads(resumed_log.read_text())["rounds"]
+    # The history carries over, so the new rounds follow the checkpointed ones.
+    assert resumed[: len(rounds)] == record["history"]
+    first_new = resumed[len(rounds)]
+    assert first_new["dimension"] == record["dimension"]
+    assert first_new["energy"] == pytest.approx(record["energy"], abs=1e-8)
+    energies = [entry["energy"] for entry in resumed]
+    for before, after in zip(energies, energies[1:]):
+        assert after <= before + 1e-10, f"energy rose across a resumed round: {energies}"
+
+
+def test_heatbath_checkpoint_frequency_keeps_numbered_copies(tmp_path):
+    _require(H2O_DIR / "h2o-1em3-alpha.txt")
+    ck = tmp_path / "ck-"
+    _assert_ok(_run("run_gdb_heatbath.py", [
+        *_h2o_ladder(), "--cutoffs", "1e-3", "--max_rounds", "2",
+        "--checkpoint_prefix", str(ck), "--checkpoint_frequency", "1",
+    ]))
+    numbered = sorted({p.name[: len("ck-_r0000-")] for p in tmp_path.glob("ck-_r*.bin")})
+    assert numbered == ["ck-_r0001-", "ck-_r0002-"], numbered
+
+
+def test_heatbath_savename_is_a_state_the_analysis_reads(tmp_path):
+    """The saved final state carries the reported energy: analysis recomputes it."""
+    _require(H2O_DIR / "h2o-1em3-alpha.txt")
+    import sbd
+    from sbd import analysis
+
+    final, log = tmp_path / "final-", tmp_path / "ladder.json"
+    _assert_ok(_run("run_gdb_heatbath.py", [
+        *_h2o_ladder(), "--cutoffs", "1e-3", "--max_rounds", "2",
+        "--savename", str(final), "--log", str(log),
+    ]))
+    assert _state_files(final)
+    reported = json.loads(log.read_text())["rounds"][-1]["energy"]
+    energy = analysis.state_energy(str(final), sbd.LoadFCIDump(str(H2O_DIR / "fcidump.txt")),
+                                   bit_length=62)
+    assert energy == pytest.approx(reported, abs=1e-8)
+
+
+@pytest.mark.parametrize("flag", ["--savename", "--checkpoint_prefix"])
+def test_heatbath_refuses_a_missing_save_directory(tmp_path, flag):
+    """SBD would drop the save silently; the driver must stop before solving."""
+    _require(H2O_DIR / "h2o-1em3-alpha.txt")
+    completed = _run("run_gdb_heatbath.py", [
+        *_h2o_ladder(TINY_ALPHA_LIMIT), "--cutoffs", "1e-3", "--max_rounds", "1",
+        flag, str(tmp_path / "missing" / "x-"),
+    ])
+    assert completed.returncode != 0
+    assert "does not exist" in completed.stderr
+    assert not (tmp_path / "missing").exists()
+
+
+def test_diag_refuses_a_missing_save_directory(tmp_path):
+    completed = _run("run_gdb_diag.py", [
+        *_h2o_args(TINY_ALPHA_LIMIT), "--savename", str(tmp_path / "missing" / "x-"),
+    ])
+    assert completed.returncode != 0
+    assert "does not exist" in completed.stderr
+
+
+@pytest.mark.parametrize("script", ["run_gdb_diag", "run_gdb_heatbath"])
+def test_spin_weight_check_accepts_an_empty_shard(script):
+    """A one-determinant seed over several ranks leaves all but one shard empty."""
+    import importlib.util
+
+    import numpy as np
+
+    spec = importlib.util.spec_from_file_location(f"_{script}", DRIVER_DIR / f"{script}.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    module.check_spin_weights(np.zeros((0, 2), dtype=np.uint64), 54, 0, 62)
+
+
+def test_heatbath_resumes_from_the_previous_state_after_an_interrupted_save(tmp_path):
+    """A save cut short leaves the last complete state aside, and a resume uses it.
+
+    Recreates the moment inside promote_state after the previous checkpoint moved to
+    PREFIX.prev- and the new files moved in, but before the new JSON was written.
+    """
+    import shutil
+
+    _require(H2O_DIR / "h2o-1em3-alpha.txt")
+    ck = tmp_path / "ck-"
+    _assert_ok(_run("run_gdb_heatbath.py", [
+        *_h2o_ladder(), "--cutoffs", "1e-3", "--max_rounds", "2",
+        "--checkpoint_prefix", str(ck),
+    ]))
+    record = json.loads((tmp_path / "ck-.json").read_text())
+    for path in _state_files(ck):
+        shutil.copyfile(path, tmp_path / path.name.replace("ck-", "ck-.prev-"))
+    (tmp_path / "ck-.json").rename(tmp_path / "ck-.prev-.json")
+
+    log = tmp_path / "resumed.json"
+    out = _assert_ok(_run("run_gdb_heatbath.py", [
+        *_h2o_ladder(), "--resume_from_prefix", str(ck), "--max_rounds", "3",
+        "--checkpoint_prefix", str(ck), "--log", str(log),
+    ]))
+    assert "the last save was interrupted" in out
+    first = json.loads(log.read_text())["rounds"][len(record["history"])]
+    assert first["energy"] == pytest.approx(record["energy"], abs=1e-8)
+    assert not list(tmp_path.glob("ck-.prev-*")), "the previous state was not cleaned up"
+    assert (tmp_path / "ck-.json").exists()

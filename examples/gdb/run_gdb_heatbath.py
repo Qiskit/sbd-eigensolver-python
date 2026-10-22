@@ -61,6 +61,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 import time
 
@@ -77,6 +78,10 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Iteratively grow a GDB subspace by heatbath expansion",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        # No abbreviations: --resume_from would otherwise resolve to
+        # --resume_from_prefix, taking a prefix where the SQD driver's --resume_from
+        # takes a file path, and the mix-up would pass silently.
+        allow_abbrev=False,
     )
 
     parser.add_argument('--device', default='cpu',
@@ -154,13 +159,42 @@ def parse_args():
                        help='Basis shards. The only dimension that divides memory')
     parser.add_argument('--t_comm_size', type=int, default=1,
                        help='Task communicator size; must not exceed b_comm_size')
-    parser.add_argument('--determinant_distribution', default='',
+    parser.add_argument('--determinant_distribution', default='grid-cyclic-balanced',
                        choices=['', 'input', 'equal-bra-a', 'count', 'count-sorted',
                                 'grid-cyclic', 'grid-cyclic-balanced'],
-                       help='How determinants are placed across b_comm')
+                       help='How determinants are placed across b_comm. The default '
+                            'keeps a heat-bath subspace balanced, where equal-bra-a '
+                            '(gdb_diag\'s own default, \'\') can put most of it on '
+                            'one rank. It also accepts an empty shard, which a '
+                            'one-determinant seed leaves on all but one rank')
 
     parser.add_argument('--log', default='', metavar='FILE',
                        help='Write the per-round (dimension, energy) series as JSON')
+
+    # --- saving and resuming ----------------------------------------------
+    parser.add_argument('--savename', default='', metavar='PREFIX',
+                       help='Save the final round\'s state (determinants and '
+                            'amplitudes) as PREFIX000000.bin ... , one file per '
+                            'basis shard, for examples/analysis/variance.py or '
+                            '--resume_from_prefix. Overwrites any earlier state there')
+    parser.add_argument('--checkpoint_prefix', dest='checkpoint', default='', metavar='PREFIX',
+                       help='After every round, save that round\'s state and the '
+                            'ladder position (PREFIX.json), so a run stopped at any '
+                            'point can be continued with --resume_from_prefix PREFIX. Only '
+                            'the latest round is kept unless --checkpoint_frequency '
+                            'is set. One run per prefix: a run removes scratch files '
+                            'an interrupted earlier run left under it')
+    parser.add_argument('--checkpoint_frequency', type=int, default=0, metavar='N',
+                       help='With --checkpoint_prefix, also keep a copy of every Nth '
+                            'round under PREFIX_rNNNN, alongside the latest one '
+                            '(0 = keep the latest only)')
+    parser.add_argument('--resume_from_prefix', dest='resume_from', default='', metavar='PREFIX',
+                       help='Continue from a --checkpoint_prefix or --savename state: its '
+                            'determinants are the starting subspace, its amplitudes '
+                            'Davidson\'s starting vector. With a .json beside it '
+                            '(a checkpoint), the ladder continues where it stopped '
+                            'unless --cutoffs is given; otherwise --cutoffs runs from '
+                            'the start. Replaces --subspace-from')
 
     args = parser.parse_args()
     # Even, and at most 62. 64 overflows the shift in SBD's bitadvance(), reached
@@ -173,9 +207,16 @@ def parse_args():
         parser.error(f"--bit_length must be even and between 2 and 62, "
                      f"got {args.bit_length}")
 
+    if args.checkpoint_frequency < 0:
+        parser.error("--checkpoint_frequency must be >= 0")
+    if args.checkpoint_frequency and not args.checkpoint:
+        parser.error("--checkpoint_frequency needs --checkpoint_prefix")
+    args.cutoffs_given = any(a == '--cutoffs' or a.startswith('--cutoffs=')
+                             for a in sys.argv[1:])
+
     # One determinant cannot be sharded: rank 0 owns it, the rest get empty shards,
     # and a single parent gives OpenMP nothing to divide either.
-    if args.subspace_from == 'hf' and args.b_comm_size > 1:
+    if args.subspace_from == 'hf' and args.b_comm_size > 1 and not args.resume_from:
         print("WARNING: --subspace-from hf is a single determinant, so "
               f"--b_comm_size {args.b_comm_size} leaves the", file=sys.stderr)
         print("  other ranks with empty shards and runs the first rounds on one "
@@ -230,7 +271,9 @@ def _spin_masks(n_words, bit_length):
 
 def _popcount_rows(words):
     """Bits set per row of a (n, words) uint64 array."""
-    return _POPCOUNT[words.view(np.uint8)].reshape(words.shape[0], -1).sum(
+    # Not reshape(n, -1): with n == 0 -- an empty shard, as a one-determinant seed
+    # leaves on every rank but one -- NumPy cannot infer the other dimension.
+    return _POPCOUNT[words.view(np.uint8)].reshape(words.shape[0], 8 * words.shape[1]).sum(
         axis=1, dtype=np.int64)
 
 
@@ -363,6 +406,136 @@ def build_seed(args, sbd, norb, nelec, ms2, rank):
     return whole[begin:end], source
 
 
+def check_save_dirs(args, comm, rank):
+    """Every --savename/--checkpoint_prefix directory must exist before any solve.
+
+    SBD writes its state files without checking that they opened, so a missing
+    directory loses the save while the run reports success.
+    """
+    problem = None
+    if rank == 0:
+        for flag, prefix in (('--savename', args.savename), ('--checkpoint_prefix', args.checkpoint)):
+            directory = os.path.dirname(os.path.abspath(prefix)) if prefix else None
+            if directory and not os.path.isdir(directory):
+                problem = (f"{flag} {prefix!r}: directory {directory!r} does not exist "
+                           f"(SBD would lose the save without an error); create it first")
+                break
+    problem = comm.bcast(problem, root=0)
+    if problem:
+        raise ValueError(problem)
+
+
+def state_files(prefix):
+    """The GDB state files saved under ``prefix``: PREFIX000000.bin, ... (local call)."""
+    files, index = [], 0
+    while os.path.exists(f"{prefix}{index:06d}.bin"):
+        files.append(f"{prefix}{index:06d}.bin")
+        index += 1
+    return files
+
+
+def promote_state(scratch, target, comm, extra=None):
+    """Move one round's state from ``scratch`` to ``target``, replacing what was there.
+
+    Rank 0 does every rename after a barrier, so each shard file is complete first.
+    A complete state is on disk at every moment, so an interrupt anywhere -- Ctrl-C
+    included -- loses at most the round in progress:
+
+    1. the previous state moves aside, to ``target + ".prev-"``, JSON first;
+    2. the new files move in, and the new JSON (``extra``) is written last;
+    3. the previous state is deleted.
+
+    Until 2 completes, ``target`` has no JSON and the previous state is at
+    ``.prev-``, which :func:`resume_prefix` falls back to.
+    """
+    comm.Barrier()
+    if comm.Get_rank() == 0:
+        prev = target + PREV
+        _remove_state(prev)
+        if os.path.exists(target + ".json"):
+            os.replace(target + ".json", prev + ".json")
+        for path in state_files(target):
+            os.replace(path, prev + path[len(target):])
+        for path in state_files(scratch):
+            os.replace(path, target + path[len(scratch):])
+        if extra is not None:
+            tmp = target + ".json.tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(extra, handle, indent=2)
+            os.replace(tmp, target + ".json")
+        _remove_state(prev)
+    comm.Barrier()
+
+
+PREV = ".prev-"
+
+
+def _remove_state(prefix):
+    if os.path.exists(prefix + ".json"):
+        os.remove(prefix + ".json")
+    for path in state_files(prefix):
+        os.remove(path)
+
+
+def resume_prefix(prefix):
+    """The prefix to resume from: ``prefix``, or its previous state if a save was cut short.
+
+    A checkpoint's JSON is written last, so a checkpoint with state files but no JSON
+    was interrupted while being replaced; the complete state is the previous one.
+    """
+    if not os.path.exists(prefix + ".json") and os.path.exists(prefix + PREV + ".json"):
+        return prefix + PREV
+    return prefix
+
+
+def copy_state(source, target, comm):
+    """Copy a promoted state (and its JSON, if any) to ``target``, for history."""
+    import shutil
+
+    comm.Barrier()
+    if comm.Get_rank() == 0:
+        # Clear the target first, as promote_state does: an earlier, larger state
+        # under the same prefix would otherwise leave extra shard files behind.
+        if os.path.exists(target + ".json"):
+            os.remove(target + ".json")
+        for stale in state_files(target):
+            os.remove(stale)
+        for path in state_files(source):
+            shutil.copyfile(path, target + path[len(source):])
+        if os.path.exists(source + ".json"):
+            shutil.copyfile(source + ".json", target + ".json")
+    comm.Barrier()
+
+
+def load_resume(args, sbd, norb, comm, rank):
+    """The saved state's determinants as this rank's seed shard, plus its ladder record."""
+    from sbd import analysis
+
+    # A save interrupted while replacing the checkpoint leaves the complete state
+    # aside; resume from that instead.
+    chosen = comm.bcast(resume_prefix(args.resume_from) if rank == 0 else None, root=0)
+    if chosen != args.resume_from and rank == 0:
+        print(f"  NOTE: {args.resume_from}.json is missing -- the last save was "
+              f"interrupted -- so resuming from the previous complete state, "
+              f"{chosen}", flush=True)
+    args.resume_from = chosen
+    found = comm.bcast(state_files(args.resume_from) if rank == 0 else None, root=0)
+    if not found:
+        raise ValueError(f"--resume_from_prefix {args.resume_from!r}: no state files "
+                         f"({args.resume_from}000000.bin ...) found")
+    det = analysis.load_gdb_shards(args.resume_from, norb, args.bit_length,
+                                   args.b_comm_size, comm)
+    record = None
+    if rank == 0 and os.path.exists(args.resume_from + ".json"):
+        with open(args.resume_from + ".json", encoding="utf-8") as handle:
+            record = json.load(handle)
+    record = comm.bcast(record, root=0)
+    source = (f"resumed from {args.resume_from} ({len(found)} file(s)"
+              + (f", after rung {record['rung']} round {record['round']}" if record else "")
+              + ")")
+    return det, source, record, len(found)
+
+
 def reshard(det, args, comm, rank, size):
     """Put the expanded list back into the shape the next round expects.
 
@@ -423,14 +596,73 @@ def main():
         print("ERROR: --cutoffs is empty", file=sys.stderr)
         return 1
 
+    resumed, resumed_files = None, 0
     try:
-        det, source = build_seed(args, sbd, norb, nelec, ms2, rank)
+        check_save_dirs(args, comm, rank)
+        if args.resume_from:
+            det, source, resumed, resumed_files = load_resume(args, sbd, norb, comm, rank)
+        else:
+            det, source = build_seed(args, sbd, norb, nelec, ms2, rank)
         if not args.skip_weight_check:
             check_spin_weights(det, nelec, ms2, args.bit_length)
     except ValueError as exc:
-        if rank == 0:
-            print(f"ERROR: {exc}", file=sys.stderr)
+        # Every rank, not rank 0 only: the error may be raised on one rank alone,
+        # and run() aborts the job as soon as any rank returns.
+        print(f"[rank {rank}] ERROR: {exc}", file=sys.stderr, flush=True)
         return 1
+
+    # Where the ladder starts. A checkpoint holds the last completed round's solved
+    # state -- before its expansion, which SBD returns but does not save. So the first
+    # resumed round re-solves that subspace (from its saved amplitudes, so quickly) and
+    # expands it again. Without --cutoffs, carry on with the checkpoint's ladder from
+    # that rung. With --cutoffs, they become further rungs after the checkpoint's: the
+    # ladder up to its rung is kept, so the history -- and --log -- stay one record of
+    # the whole calculation across any number of resumes.
+    first_rung, first_round, history = 0, 0, []
+    if resumed:
+        history = list(resumed.get("history", []))
+        done = [float(c) for c in resumed["cutoffs"]][: resumed["rung"] + 1]
+        if args.cutoffs_given:
+            cutoffs = done + cutoffs
+            first_rung = len(done)
+        else:
+            cutoffs = [float(c) for c in resumed["cutoffs"]]
+            first_rung = resumed["rung"]
+            # Re-solving the checkpointed round counts as that round again, so the
+            # rung keeps its numbering and its --max_rounds budget.
+            first_round = resumed["round"]
+    # Each round writes its solved state here; it becomes the checkpoint and the
+    # final --savename by rename, so no round is diagonalized twice.
+    scratch = None
+    if args.savename or args.checkpoint:
+        base = args.checkpoint or args.savename
+        scratch = comm.bcast(base + f".round-{os.getpid()}-" if rank == 0 else None, root=0)
+        if rank == 0:
+            # A run interrupted mid-round leaves its scratch state behind. It is never
+            # read -- a resume uses the promoted state -- so clear it, rather than
+            # accumulate one round's worth of files per interruption.
+            import glob
+            stale = glob.glob(glob.escape(base) + ".round-*-[0-9][0-9][0-9][0-9][0-9][0-9].bin")
+            for path in stale:
+                os.remove(path)
+            if stale:
+                print(f"  NOTE: removed {len(stale)} scratch file(s) an interrupted run "
+                      f"left under {base}", flush=True)
+    # SBD's GDB loader reads file b on b_comm position b only, then passes what does
+    # not belong there around the ring. With more shards than files every amplitude
+    # still arrives; with fewer, the files past b_comm_size are never read, and
+    # Davidson would start from part of the state. That changes only how fast the
+    # first round converges, not its answer, but start fresh rather than from a
+    # silently partial vector.
+    loadname = args.resume_from or ""
+    resolving = bool(args.resume_from)
+    if loadname and resumed_files > args.b_comm_size:
+        loadname = ""
+        if rank == 0:
+            print(f"  NOTE: the checkpoint has {resumed_files} files but --b_comm_size is "
+                  f"{args.b_comm_size}, and SBD can only load amplitudes onto at least as "
+                  f"many shards as files. The determinants are resumed; Davidson starts "
+                  f"fresh, so the first round takes longer.", flush=True)
 
     def global_dim(local):
         """Determinants across the whole basis, counted once each.
@@ -453,12 +685,25 @@ def main():
     # into gdb_diag's own collectives. It hides in serial testing because the
     # b_comm_size == 1 path short-circuits without communicating.
     starting_dim = global_dim(det)
-    if args.b_comm_size > 1 and det.shape[0] == 0:
-        # Printed by whichever rank is starved, which is the informative one.
-        print(f"  NOTE: rank {rank}'s shard is empty -- the seed has fewer "
-              f"determinants than b_comm_size. 'count' and 'count-sorted' placement "
-              f"cannot take an empty shard; 'input' and the grid schemes can.",
-              flush=True)
+    starved = comm.allreduce(int(args.b_comm_size > 1 and det.shape[0] == 0))
+    if starved and sbd.get_device() == "gpu":
+        # sbd.gdb_diag refuses this too, but the remedy is specific to this driver.
+        if rank == 0:
+            print(f"ERROR: the seed has {starting_dim} determinant(s) for --b_comm_size "
+                  f"{args.b_comm_size}, so {starved} shard(s) would be empty, and the "
+                  f"gpu (Thrust) GDB solve hangs on an empty shard. Run the first "
+                  f"rounds on one GPU with --checkpoint_prefix, then continue on more "
+                  f"with --resume_from_prefix:\n"
+                  f"  python run_gdb_heatbath.py --device gpu ... --checkpoint_prefix ck-\n"
+                  f"  mpirun -np {args.b_comm_size} python run_gdb_heatbath.py --device gpu "
+                  f"--b_comm_size {args.b_comm_size} --resume_from_prefix ck- ...",
+                  file=sys.stderr, flush=True)
+        return 1
+    if starved and rank == 0:
+        print(f"  NOTE: {starved} shard(s) are empty -- the seed has fewer determinants "
+              f"than --b_comm_size. Such rounds run, but are not saved, and 'count' and "
+              f"'count-sorted' placement cannot take them. A one-determinant seed is far "
+              f"faster on one rank.", flush=True)
 
     if rank == 0:
         grid = args.t_comm_size * args.b_comm_size
@@ -473,7 +718,8 @@ def main():
               f"{nelec} electrons")
         print(f"  Seed: {source}")
         print(f"  Starting dimension: {starting_dim}")
-        print(f"  Cutoff ladder: {cutoffs}")
+        print(f"  Cutoff ladder: {cutoffs}"
+              + (f", resuming at rung {first_rung} round {first_round}" if resumed else ""))
         print(f"  Per rung: up to {args.max_rounds} rounds, advance when "
               f"|dE| < {args.energy_tol:g}")
         if args.max_dim:
@@ -484,13 +730,16 @@ def main():
                   f"subspace rather than grow it.")
         print()
         print(f"  {'rung':>4} {'round':>5} {'dimension':>12} {'energy':>18} "
-              f"{'dE':>12} {'secs':>7}")
+              f"{'dE':>12} {'secs':>7}" + (f" {'save':>6}" if scratch else ""))
 
-    history = []
-    previous_energy = None      # for the displayed dE, continuous across rungs
+    previous_energy = history[-1]["energy"] if history else None
+    rises, warned_rise = 0, False
     stop_reason = "ladder complete"
+    last_round = None
 
     for rung, cutoff in enumerate(cutoffs):
+        if rung < first_rung:
+            continue
         rung_converged = False
         # Deliberately NOT seeded from the previous rung's energy. Round 0 of a new
         # rung re-diagonalizes the subspace the previous rung already expanded, so
@@ -498,13 +747,14 @@ def main():
         # would declare the rung done before its smaller cutoff had expanded
         # anything at all.
         rung_baseline = None
-        for round_index in range(args.max_rounds):
+        start_round = first_round if rung == first_rung else 0
+        for round_index in range(start_round, max(args.max_rounds, start_round + 1)):
             dim = global_dim(det)
             if args.max_dim and dim > args.max_dim:
                 stop_reason = f"dimension {dim} exceeds --max_dim {args.max_dim}"
                 if rank == 0:
                     print(f"  stopping: {stop_reason}")
-                return _finish(args, history, stop_reason, rank)
+                return _save_and_finish(args, history, stop_reason, last_round, comm, rank)
 
             config = backend.GDB_SBD()
             config.method = args.method
@@ -519,19 +769,38 @@ def main():
             config.heatbath_truncation = args.heatbath_truncation
             config.heatbath_batch_size = args.heatbath_batch_size
 
+            # SBD's save reads each shard's first determinant unchecked, so a round
+            # with an empty shard -- the first rounds of a one-determinant seed over
+            # several ranks -- cannot be saved. Skip saving it; those subspaces are
+            # tiny, and saving resumes as soon as every rank holds determinants.
+            can_save = bool(scratch) and bool(comm.allreduce(int(det.shape[0] == 0)) == 0)
+            if scratch and not can_save and rank == 0:
+                print(f"  NOTE: round {round_index} not saved: a shard is empty "
+                      f"(SBD cannot save one). Saving starts once every rank holds "
+                      f"determinants.", flush=True)
+
             start = time.perf_counter()
             result = sbd.gdb_diag(
                 fcidump, det, config, device=args.device,
                 determinant_distribution=args.determinant_distribution,
+                loadname=loadname, savename=scratch if can_save else "",
             )
+            # The first round of a resumed run re-solves the checkpointed subspace,
+            # which repeats the checkpoint's last energy; it is marked as such.
+            resolved = resolving
+            resolving = False
+            loadname = ""     # only the first round starts from the resumed amplitudes
             elapsed = time.perf_counter() - start
 
             energy = result["energy"]
             delta = None if previous_energy is None else energy - previous_energy
-            if rank == 0:
-                shown = "" if delta is None else f"{delta:+.6f}"
-                print(f"  {rung:>4} {round_index:>5} {dim:>12} {energy:>18.10f} "
-                      f"{shown:>12} {elapsed:>7.1f}", flush=True)
+            # Variational: a round's subspace contains the previous one, so its energy
+            # can only fall. A rise means the solve stopped on a higher state.
+            # (Not with --heatbath_truncation, which can shrink the subspace.)
+            rose = (delta is not None and delta > RISE_TOL
+                    and not args.heatbath_truncation)
+            if rose:
+                rises += 1
             # Only the seed round can be a no-op; after that the subspace contains
             # its own excitation neighbours.
             if (rank == 0 and rung == 0 and round_index == 0 and dim > 1
@@ -544,7 +813,45 @@ def main():
                 "rung": rung, "cutoff": cutoff, "round": round_index,
                 "dimension": dim, "energy": energy,
                 "delta_energy": delta, "seconds": elapsed,
+                **({"resumed": True} if resolved else {}),
             })
+
+            this_round = {"rung": rung, "round": round_index, "cutoff": cutoff,
+                          "dimension": dim, "energy": energy}
+            # The driver's own share of saving: the barrier, the renames into place,
+            # the JSON and any numbered copy. Measured on every rank and reported as
+            # the max, since a rank held at the barrier is paying for it too. SBD's
+            # write of the state files happens inside gdb_diag, so it is in "secs".
+            save_start = time.perf_counter()
+            if can_save:
+                last_round = this_round
+            if can_save and args.checkpoint:
+                record = dict(this_round, cutoffs=cutoffs, history=history,
+                              bit_length=args.bit_length, fcidump=args.fcidump)
+                promote_state(scratch, args.checkpoint, comm, extra=record)
+                count = len(history)
+                if args.checkpoint_frequency and count % args.checkpoint_frequency == 0:
+                    copy_state(args.checkpoint, f"{args.checkpoint}_r{count:04d}-", comm)
+            elif can_save and args.savename:
+                promote_state(scratch, args.savename, comm)
+            save_seconds = None
+            if can_save:
+                save_seconds = comm.allreduce(time.perf_counter() - save_start, op=MPI.MAX)
+                history[-1]["save_seconds"] = save_seconds
+            if rank == 0:
+                shown = "" if delta is None else f"{delta:+.6f}"
+                print(f"  {rung:>4} {round_index:>5} {dim:>12} {energy:>18.10f} "
+                      f"{shown:>12} {elapsed:>7.1f}"
+                      + ("" if save_seconds is None else f" {save_seconds:>6.2f}")
+                      + ("  (re-solve of the checkpoint)" if resolved else "")
+                      + ("  << ROSE" if rose else ""), flush=True)
+                if rose and not warned_rise:
+                    print("  WARNING: the energy rose although the subspace grew. The "
+                          "energy of a larger subspace can only be lower, so that solve "
+                          "did not find its lowest state, and these energies are not "
+                          "trustworthy. Tighten --tolerance, raise --iteration, or start "
+                          "from a better determinant (see the README).", flush=True)
+                    warned_rise = True
 
             grown = result["carryover_det"]
             det = reshard(grown, args, comm, rank, size)
@@ -575,10 +882,39 @@ def main():
             print(f"  rung {rung} at cutoff {cutoff:g}: hit --max_rounds "
                   f"{args.max_rounds} without converging")
 
-    return _finish(args, history, stop_reason, rank)
+    if rises and rank == 0:
+        print(f"  WARNING: the energy rose in {rises} round(s); see the warning above.")
+    return _save_and_finish(args, history, stop_reason, last_round, comm, rank)
 
 
-def _finish(args, history, stop_reason, rank):
+# A re-solve of the same subspace can move by roundoff; anything larger is a real rise.
+RISE_TOL = 1e-6
+
+
+def _save_and_finish(args, history, stop_reason, last_round, comm, rank):
+    """Leave the last completed round's state where --savename asks, then summarize.
+
+    Every round already promoted its state to --checkpoint_prefix (or --savename), so all
+    that is left is copying the checkpoint to a separate --savename, if both are set.
+    """
+    final_copy = None
+    if last_round is not None:
+        if args.savename and args.checkpoint:
+            from mpi4py import MPI
+            start = time.perf_counter()
+            copy_state(args.checkpoint, args.savename, comm)
+            final_copy = comm.allreduce(time.perf_counter() - start, op=MPI.MAX)
+        if rank == 0 and (args.savename or args.checkpoint):
+            where = args.savename or args.checkpoint
+            print(f"  Saved the last round's state (rung {last_round['rung']} round "
+                  f"{last_round['round']}, dim {last_round['dimension']}, "
+                  f"E = {last_round['energy']:.10f}) as {where}000000.bin ..."
+                  + ("" if final_copy is None else
+                     f" (copied from the checkpoint in {final_copy:.2f} s)"))
+    return _finish(args, history, stop_reason, rank, final_copy)
+
+
+def _finish(args, history, stop_reason, rank, final_copy=None):
     """Print the summary and optionally write the series."""
     if rank != 0:
         return 0
@@ -594,6 +930,14 @@ def _finish(args, history, stop_reason, rank):
     print(f"  Gain:  {last['energy'] - first['energy']:+.6f} Hartree over "
           f"{len(history)} round(s), "
           f"{sum(h['seconds'] for h in history):.1f} s total")
+    saves = [h["save_seconds"] for h in history if h.get("save_seconds") is not None]
+    if saves:
+        total = sum(saves) + (final_copy or 0.0)
+        print(f"  Saving: {total:.2f} s in the driver over {len(saves)} round(s) "
+              f"(max over ranks; the 'save' column"
+              + (", plus the final copy" if final_copy is not None else "") + "). "
+              f"SBD's own write of the state files is inside 'secs'; its time is "
+              f"the 'sbd: end save wavefunction' lines.")
     print("  The energy is variational, so it must not rise: a positive gain means "
           "the subspace shrank or a round failed to converge.")
     if args.log:
@@ -604,5 +948,45 @@ def _finish(args, history, stop_reason, rank):
     return 0
 
 
+def run():
+    """Run main(); on a failure on ANY rank, abort the whole MPI job.
+
+    A rank that fails while the others wait in a collective would otherwise
+    leave the job hanging until its time limit. The failing rank prints its own
+    error, tagged with its rank, since it may not be rank 0.
+    """
+    try:
+        code = main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] interrupted\n")
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            world.Abort(130)
+        return 130
+    except BaseException:
+        import traceback
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] unhandled error:\n"
+                         + traceback.format_exc())
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            world.Abort(1)
+        raise
+    if code:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        if world.Get_size() > 1:
+            sys.stderr.write(f"[rank {world.Get_rank()}] exiting with status "
+                             f"{code}; aborting the MPI job\n")
+            sys.stderr.flush()
+            world.Abort(code)
+    return code
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

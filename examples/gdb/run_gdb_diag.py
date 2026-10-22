@@ -102,7 +102,9 @@ def _spin_masks(n_words, bit_length):
 
 def _popcount_rows(words):
     """Bits set per row of a (n, words) uint64 array."""
-    return _POPCOUNT[words.view(np.uint8)].reshape(words.shape[0], -1).sum(
+    # Not reshape(n, -1): with n == 0 -- an empty shard, as a one-determinant seed
+    # leaves on every rank but one -- NumPy cannot infer the other dimension.
+    return _POPCOUNT[words.view(np.uint8)].reshape(words.shape[0], 8 * words.shape[1]).sum(
         axis=1, dtype=np.int64)
 
 
@@ -205,12 +207,16 @@ def parse_args():
                        help='Task communicator size. Must not exceed b_comm_size: GDB '
                             'runs one task per basis-ring station and there are '
                             'exactly b_comm_size of them')
-    parser.add_argument('--determinant_distribution', default='',
+    parser.add_argument('--determinant_distribution', default='grid-cyclic-balanced',
                        choices=['', 'input', 'equal-bra-a', 'count', 'count-sorted',
                                 'grid-cyclic', 'grid-cyclic-balanced'],
-                       help="How to place determinants across b_comm. Default "
-                            "equal-bra-a, which equalizes distinct alpha strings per "
-                            "rank -- the quantity that balances the matvec")
+                       help="How to place determinants across b_comm. The default "
+                            "spreads alpha and beta keys over a grid, then evens out "
+                            "the determinant counts: balanced for irregular subspaces "
+                            "such as heat-bath ones, where equal-bra-a (gdb_diag's own "
+                            "default, '') can put most of them on one rank. 'input' "
+                            "keeps the shards as read, the cheapest choice when the "
+                            "files are already balanced")
     parser.add_argument('--determinant_grid_a', type=int, default=0,
                        help='Grid rows for the grid-cyclic schemes; with '
                             '--determinant_grid_b must multiply to b_comm_size')
@@ -273,6 +279,12 @@ def parse_args():
                        help='Load an initial wavefunction from this file')
     parser.add_argument('--savename', default='',
                        help='Save the final wavefunction under this prefix')
+    parser.add_argument('--carryover_detfile', default='', metavar='PREFIX',
+                       help='Write the carryover SBD returned (needs --carryover_type '
+                            '1-3) as determinant strings, PREFIX000000.txt ..., one '
+                            'file per rank, globally sorted: the layout --detfiles '
+                            'reads, so a next run can start from it. With types 2/3 '
+                            'that is the heat-bath-expanded next subspace.')
 
     args = parser.parse_args()
     # Even, and at most 62. 64 overflows the shift in SBD's bitadvance(), reached
@@ -318,6 +330,62 @@ def interleave_spin_strings(alpha, beta):
     return ''.join(a_rev[i] + b_rev[i] for i in range(len(a_rev)))[::-1]
 
 
+def write_carryover(args, carryover, total_bits, rank, size):
+    """Write the carryover as globally sorted determinant strings, one file per rank.
+
+    Collective. SBD leaves the carryover spread over the ranks, but not always in a
+    layout --detfiles can read back block by block: types 2/3 come back globally
+    sorted over the world (HeatbathExpansion ends with a global sort), while type 1
+    keeps each rank's own selection, in the order the input placement put it, and
+    ranks that share a b_comm position (t_comm or the helper dimension above 1) hold
+    copies of one shard. So only one copy of each shard takes part -- world ranks
+    ``0 .. b_comm_size - 1``, as for type 1, or every rank for 2/3 -- and a
+    distributed sort puts block r on rank r. Nothing is gathered whole: each rank
+    sorts, exchanges and writes only its own part.
+    """
+    import os
+    from mpi4py import MPI
+    import sbd
+    from sbd import analysis
+
+    comm = MPI.COMM_WORLD
+    start = time.perf_counter()
+    det = np.asarray(carryover, dtype=np.uint64)
+    distinct = args.carryover_type in (2, 3) or rank < args.b_comm_size
+    if not distinct or det.size == 0:
+        det = np.zeros((0, max(det.shape[1] if det.ndim == 2 else 0,
+                               -(-total_bits // args.bit_length))), dtype=np.uint64)
+    det, _ = analysis._distributed_sort(det, np.zeros(len(det)), comm)
+    # A repeat after a global sort is adjacent on one rank or across neighbours.
+    local = bool(len(det) > 1 and np.any(np.all(det[1:] == det[:-1], axis=1)))
+    edges = comm.allgather((det[0].copy(), det[-1].copy()) if len(det) else None)
+    previous = next((e[1] for e in reversed(edges[:rank]) if e is not None), None)
+    across = bool(len(det) and previous is not None and np.array_equal(previous, det[0]))
+    if comm.allreduce(int(local or across)):
+        raise RuntimeError("the carryover holds a determinant twice; not writing it")
+    counts = comm.allgather(len(det))
+    # Number the non-empty blocks consecutively, so the files have no gaps.
+    index = sum(1 for c in counts[:rank] if c)
+    path = f"{args.carryover_detfile}{index:06d}.txt"
+    if len(det):
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="ascii") as handle:
+            handle.write("\n".join(sbd.to_strings(det, args.bit_length, total_bits)))
+            handle.write("\n")
+        os.replace(tmp, path)
+    elapsed = comm.allreduce(time.perf_counter() - start, op=MPI.MAX)
+    files = [f"{args.carryover_detfile}{i:06d}.txt" for i in range(sum(1 for c in counts if c))]
+    if rank == 0:
+        # A larger earlier run under the same prefix must not leave extra files.
+        stale = len(files)
+        while os.path.exists(f"{args.carryover_detfile}{stale:06d}.txt"):
+            os.remove(f"{args.carryover_detfile}{stale:06d}.txt")
+            stale += 1
+    return (f"Carryover written: {sum(counts)} determinants in {len(files)} file(s), "
+            f"globally sorted, in {elapsed:.2f} s (max over ranks)\n"
+            f"  next run: --detfiles {','.join(files)}")
+
+
 def shard_bounds(total, b_comm_size, index):
     """This rank's slice of a globally sorted list of ``total`` determinants.
 
@@ -347,6 +415,41 @@ def main():
     rank = sbd.get_rank()
     size = sbd.get_world_size()
     device = sbd.get_device()
+
+    # SBD writes the state without checking that its file opened, so a missing
+    # directory would lose the save while the run reports success. Checked by
+    # every rank: each one writes its own file there.
+    import os
+    for flag, path in (("--savename", args.savename),
+                       ("--carryover_detfile", args.carryover_detfile)):
+        if path and not os.path.isdir(os.path.dirname(os.path.abspath(path))):
+            print(f"[rank {rank}] ERROR: {flag} {path!r}: directory "
+                  f"{os.path.dirname(os.path.abspath(path))!r} does not exist; "
+                  f"create it first", file=sys.stderr, flush=True)
+            return 1
+    if args.carryover_detfile and not args.carryover_type:
+        print(f"[rank {rank}] ERROR: --carryover_detfile needs --carryover_type 1, 2 "
+              f"or 3: with 0, SBD selects no carryover", file=sys.stderr, flush=True)
+        return 1
+    if args.loadname:
+        # SBD reads file b of a saved state onto b_comm position b, then passes what
+        # does not belong there around the ring; files past b_comm_size are never
+        # read. Davidson would then start from part of the state -- the right answer,
+        # slower, and without a word -- so say so instead.
+        count = 0
+        while os.path.exists(f"{args.loadname}{count:06d}.bin"):
+            count += 1
+        if count == 0:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r}: no saved state "
+                  f"({args.loadname}000000.bin ...)", file=sys.stderr, flush=True)
+            return 1
+        if count > args.b_comm_size:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r} has {count} files "
+                  f"but --b_comm_size is {args.b_comm_size}: SBD loads a saved state "
+                  f"only onto at least as many shards as it has files, and would start "
+                  f"from part of it. Use --b_comm_size {count} or more, or leave out "
+                  f"--loadname.", file=sys.stderr, flush=True)
+            return 1
 
     if rank == 0:
         print("=" * 70)
@@ -505,6 +608,13 @@ def main():
     )
     elapsed = time.perf_counter() - start
 
+    # Collective, so every rank must reach it: before the rank-0-only report below,
+    # which the other ranks skip by returning.
+    carryover_report = None
+    if args.carryover_detfile:
+        carryover_report = write_carryover(args, results['carryover_det'], total_bits,
+                                           rank, size)
+
     if rank != 0:
         return 0
 
@@ -548,6 +658,9 @@ def main():
                   "(gdb/expansion.h:543), so this is the next subspace, not just "
                   "the new candidates.")
 
+    if carryover_report:
+        print(carryover_report)
+
     if args.rdm_output:
         # assemble_rdms' layout was verified against PySCF on the TPB path; the
         # keys and flat-index convention are shared with GDB, but that
@@ -564,5 +677,45 @@ def main():
     return 0
 
 
+def run():
+    """Run main(); on a failure on ANY rank, abort the whole MPI job.
+
+    A rank that fails while the others wait in a collective would otherwise
+    leave the job hanging until its time limit. The failing rank prints its own
+    error, tagged with its rank, since it may not be rank 0.
+    """
+    try:
+        code = main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] interrupted\n")
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            world.Abort(130)
+        return 130
+    except BaseException:
+        import traceback
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] unhandled error:\n"
+                         + traceback.format_exc())
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            world.Abort(1)
+        raise
+    if code:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        if world.Get_size() > 1:
+            sys.stderr.write(f"[rank {world.Get_rank()}] exiting with status "
+                             f"{code}; aborting the MPI job\n")
+            sys.stderr.flush()
+            world.Abort(code)
+    return code
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

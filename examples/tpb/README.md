@@ -391,13 +391,14 @@ grid (a fourth, *derived* dimension — `helper` — is not set directly).
 | `--checkpoint_path` | Write `ci_strs_a`/`ci_strs_b`/`orbital_occupancies`/energy to this path as JSON text (rank 0 only), every `--checkpoint_frequency` iterations. **Must be visible under the same path from every rank** — `--resume_from` has no rank-0-reads-then-broadcasts step, every rank opens this path itself | unset |
 | `--checkpoint_frequency` | Write every this many iterations, plus always on the last one regardless of alignment | `1` (every iteration) |
 | `--resume_from` | Seed a new run's `include_configurations`/`initial_occupancies` from a previous `--checkpoint_path`'s last recorded iteration | unset |
+| `--savename` | Save the state behind the reported result — the lowest-energy batch over all iterations — as `PREFIX000000` …, one file per α × β block, for `../analysis/variance.py`. Each batch saves under `PREFIXbNN-` while the loop runs and only the best is kept; the directory must exist and be visible to every rank | unset |
 
 What's preserved is which determinants (`ci_strs_a`/`ci_strs_b`, as plain
 integers — independent of MPI decomposition, since they carry no rank/grid
 information) and the derived per-orbital occupancy averages. **Not** the
 wavefunction amplitudes matrix itself (`dim_a × dim_b` floats — at large
 `--max_dim` this alone would dwarf everything else; neither consuming parameter
-needs it).
+needs it). The amplitudes are what `--savename` writes, separately, for analysis.
 
 Not a bit-identical continuation: RNG state is fresh in the new process, and
 every string from the resumed iteration becomes a **permanent** include for

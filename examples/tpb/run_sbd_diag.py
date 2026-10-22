@@ -147,6 +147,16 @@ def parse_args():
                        help='Carryover ratio')
     parser.add_argument('--carryover_threshold', '--threshold', type=float, default=0.0, dest='threshold',
                        help='Carryover threshold')
+    parser.add_argument('--carryover_adetfile', default='', metavar='FILE',
+                       help='Write the alpha strings SBD carried over (needs '
+                            '--carryover_type 1-3) to FILE, one NORB-bit string per '
+                            'line: the format --adetfile reads, so a next run can '
+                            'start from them. Written by rank 0; every rank holds '
+                            'the same list.')
+    parser.add_argument('--carryover_bdetfile', default='', metavar='FILE',
+                       help='The same for the beta strings. With --symmetrize_spin 1 '
+                            '(the default) the next run builds beta from --adetfile '
+                            'alone, so this is only needed with --symmetrize_spin 0.')
     
     # Determinant representation
     parser.add_argument('--bit_length', type=int, default=20,
@@ -166,6 +176,16 @@ def parse_args():
     return parser.parse_args()
 
 
+def write_strings(path, strings):
+    """Write one string per line, replacing ``path`` only once the file is complete."""
+    import os
+
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="ascii") as handle:
+        handle.write("\n".join(strings) + ("\n" if strings else ""))
+    os.replace(tmp, path)
+
+
 def main():
     args = parse_args()
     
@@ -178,6 +198,39 @@ def main():
 
     rank = sbd.get_rank()
     size = sbd.get_world_size()
+
+    # SBD writes the state without checking that its file opened, so a missing
+    # directory would lose the save while the run reports success. Checked by
+    # every rank: each one writes its own file there.
+    import os
+    for flag, path in (("--savename", args.savename),
+                       ("--carryover_adetfile", args.carryover_adetfile),
+                       ("--carryover_bdetfile", args.carryover_bdetfile)):
+        if path and not os.path.isdir(os.path.dirname(os.path.abspath(path))):
+            print(f"[rank {rank}] ERROR: {flag} {path!r}: directory "
+                  f"{os.path.dirname(os.path.abspath(path))!r} does not exist; "
+                  f"create it first", file=sys.stderr, flush=True)
+            return 1
+    if args.loadname:
+        # SBD's TPB loader opens file b on b_comm rank b and aborts the job when one
+        # is missing; files past the grid are never read. So a saved state loads only
+        # onto the alpha x beta grid that wrote it.
+        count = 0
+        while os.path.exists(f"{args.loadname}{count:06d}"):
+            count += 1
+        grid = args.adet_comm_size * args.bdet_comm_size
+        if count != grid:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r} has {count} file(s) "
+                  f"but the grid --adet_comm_size x --bdet_comm_size is {grid}: SBD loads "
+                  f"a saved TPB state only onto the grid that wrote it (one file per "
+                  f"block). Use the same grid, or leave out --loadname.",
+                  file=sys.stderr, flush=True)
+            return 1
+    if (args.carryover_adetfile or args.carryover_bdetfile) and not args.carryover_type:
+        print(f"[rank {rank}] ERROR: --carryover_adetfile/--carryover_bdetfile need "
+              f"--carryover_type 1, 2 or 3: with 0, SBD selects no carryover",
+              file=sys.stderr, flush=True)
+        return 1
     
     if rank == 0:
         print("="*70)
@@ -293,6 +346,13 @@ def main():
 
             print(f"Density: {combined_density}")
             print(f"Carryover determinants: {len(results['carryover_adet'])}")
+            for path, key in ((args.carryover_adetfile, 'carryover_adet'),
+                              (args.carryover_bdetfile, 'carryover_bdet')):
+                if path:
+                    strings = sbd.to_strings(results[key], args.bit_length,
+                                             len(results['density']) // 2)
+                    write_strings(path, strings)
+                    print(f"  wrote {len(strings)} {key[10:]} strings to {path}")
 
             norb = len(density) // 2
             rdm1, rdm2 = assemble_rdms(results, norb)
@@ -319,19 +379,19 @@ def main():
 
         return_code = 0
 
+    # Printed on every rank, not rank 0 only: the failing rank need not be rank 0,
+    # and run() then aborts the job so the others do not wait for it.
     except FileNotFoundError as e:
-        if rank == 0:
-            print(f"\n✗ Error: {e}")
-            print("\nPlease check file paths:")
-            print(f"  FCIDUMP: {args.fcidump}")
-            print(f"  Alpha dets: {args.adetfile}")
+        print(f"\n[rank {rank}] ✗ Error: {e}\n"
+              f"Please check file paths:\n"
+              f"  FCIDUMP: {args.fcidump}\n"
+              f"  Alpha dets: {args.adetfile}", file=sys.stderr, flush=True)
         return_code = 1
 
     except Exception as e:
-        if rank == 0:
-            print(f"\n✗ Error during calculation: {e}")
-            import traceback
-            traceback.print_exc()
+        import traceback
+        print(f"\n[rank {rank}] ✗ Error during calculation: {e}\n"
+              + traceback.format_exc(), file=sys.stderr, flush=True)
         return_code = 1
 
     finally:
@@ -342,5 +402,46 @@ def main():
 
     return return_code
 
+
+def run():
+    """Run main(); on a failure on ANY rank, abort the whole MPI job.
+
+    A rank that fails while the others wait in a collective would otherwise
+    leave the job hanging until its time limit. The failing rank prints its own
+    error, tagged with its rank, since it may not be rank 0.
+    """
+    try:
+        code = main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] interrupted\n")
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            world.Abort(130)
+        return 130
+    except BaseException:
+        import traceback
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] unhandled error:\n"
+                         + traceback.format_exc())
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            world.Abort(1)
+        raise
+    if code:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        if world.Get_size() > 1:
+            sys.stderr.write(f"[rank {world.Get_rank()}] exiting with status "
+                             f"{code}; aborting the MPI job\n")
+            sys.stderr.flush()
+            world.Abort(code)
+    return code
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

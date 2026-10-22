@@ -40,8 +40,11 @@ Multi-node note:
 """
 
 import argparse
+import glob
 import json
+import os
 import re
+import sys
 import time
 from functools import partial
 from pathlib import Path
@@ -166,6 +169,16 @@ def parse_args():
                           "but starts the new run's subspace and configuration "
                           "recovery from where the old one stopped rather than "
                           "from raw samples again.")
+
+    sqd.add_argument("--savename", type=str, default=None,
+                     help="Save the state behind the reported result -- the "
+                          "lowest-energy batch over all iterations -- for "
+                          "examples/analysis/variance.py: files PREFIX000000, "
+                          "PREFIX000001, ... (one per rank of the solve). Each "
+                          "batch is saved under PREFIXbNN- while the loop runs; "
+                          "only the best is kept, and the per-batch files are "
+                          "removed at the end. The directory must exist and be "
+                          "visible to every rank.")
 
     # ---- SBD: the inner eigensolver -------------------------------------------
     # Names match the C++ CLI (vendor/sbd-upstream/include/sbd/chemistry/tpb/
@@ -361,6 +374,17 @@ def main():
                   "no effect with --sbd_carryover_type 3, which selects by "
                   "--sbd_carryover_threshold alone.\n")
 
+    if args.savename:
+        directory = os.path.dirname(os.path.abspath(args.savename))
+        problem = None
+        if rank == 0 and not os.path.isdir(directory):
+            problem = (f"--savename {args.savename!r}: directory {directory!r} does "
+                       f"not exist (SBD would lose the save without an error); "
+                       f"create it first")
+        problem = comm.bcast(problem, root=0)
+        if problem:
+            raise ValueError(problem)
+
     _, policy_kwargs = build_policy(args, rank)
 
     norb, nelec_total, ms2 = parse_fcidump_header(args.fcidump)
@@ -450,6 +474,18 @@ def main():
                   "(a checkpoint written under --sbd_carryover_type != 0 holds "
                   "SBD's carryover, not the whole solved subspace)")
     include_configurations = (include_a, include_b) if (include_a or include_b) else None
+    if rank == 0 and args.max_dim and include_configurations:
+        # include_configurations are always kept, so at --max_dim they take the whole
+        # budget: no sampled or recovered string can enter, and every iteration
+        # re-solves the same subspace. Easy to hit by resuming a run that had reached
+        # its cap.
+        kept = max(len(set(include_a)), len(set(include_b)))
+        if kept >= args.max_dim:
+            print(f"WARNING: {len(set(include_a))} alpha / {len(set(include_b))} beta "
+                  f"strings are carried in as include_configurations, already at "
+                  f"--max_dim {args.max_dim}: no new strings can enter, so every "
+                  f"iteration will repeat the same subspace. Raise --max_dim to let "
+                  f"the loop improve on it.\n", flush=True)
 
     if args.counts:
         bit_array = load_counts_as_bitarray(args.counts, norb * 2)
@@ -503,14 +539,47 @@ def main():
         # directly. Assumes --fcidump is on a filesystem visible to every
         # rank, which is already true for any realistic multi-node run.
         fcidump_path=args.fcidump,
+        # Batch k saves under f"{savename}b{k:02d}-"; the callback keeps the best.
+        savename=args.savename,
     )
 
     # --- Run SQD loop ---
     result_history = []
     checkpoint_history: list[dict] = []
 
+    best_energy = [np.inf]
+
+    def batch_files(prefix):
+        return sorted(glob.glob(glob.escape(prefix) + "[0-9]" * 6))
+
+    if args.savename and rank == 0:
+        # An earlier run's state under this prefix must not survive as if it were
+        # this run's, should this one fail before saving anything.
+        for stale in batch_files(args.savename):
+            os.remove(stale)
+
+    def keep_best(results):
+        """Move this iteration's best batch to --savename if it beats every earlier one.
+
+        Matches what the loop returns: its result is the lowest energy over all
+        iterations, not the last iteration's. Runs on rank 0 only, as the
+        callback does; no barrier is needed: the solver barriers after the save,
+        and no rank can save again before rank 0 joins the next solve.
+        """
+        k = int(np.argmin([r.energy for r in results]))
+        if not results[k].energy < best_energy[0]:
+            return
+        best_energy[0] = results[k].energy
+        for old in batch_files(args.savename):
+            os.remove(old)
+        source = f"{args.savename}b{k:02d}-"
+        for path in batch_files(source):
+            os.replace(path, args.savename + path[len(source):])
+
     def callback(results: list[SCIResult]):
         result_history.append(results)
+        if args.savename:
+            keep_best(results)
         if rank == 0:
             iteration = len(result_history)
             print(f"Iteration {iteration}")
@@ -623,6 +692,13 @@ def main():
                 )
         raise
 
+    if args.savename:
+        comm.Barrier()
+        if rank == 0:
+            for k in range(args.num_batches):
+                for path in batch_files(f"{args.savename}b{k:02d}-"):
+                    os.remove(path)
+
     if rank == 0:
         total_time = time.perf_counter() - t0
         print()
@@ -634,6 +710,9 @@ def main():
         print(f"Nuclear repulsion: {nuclear_repulsion_energy:.10f}")
         print(f"Total energy:      {result.energy + nuclear_repulsion_energy:.10f}")
         print(f"Total time:        {total_time:.1f}s")
+        if args.savename:
+            print(f"State saved:       {args.savename}000000 ... "
+                  f"({len(batch_files(args.savename))} file(s))")
         print()
 
         if result_history:
@@ -651,5 +730,45 @@ def main():
         pass
 
 
+def run():
+    """Run main(); on a failure on ANY rank, abort the whole MPI job.
+
+    A rank that fails while the others wait in a collective would otherwise
+    leave the job hanging until its time limit. The failing rank prints its own
+    error, tagged with its rank, since it may not be rank 0.
+    """
+    try:
+        code = main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] interrupted\n")
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            world.Abort(130)
+        return 130
+    except BaseException:
+        import traceback
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] unhandled error:\n"
+                         + traceback.format_exc())
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            world.Abort(1)
+        raise
+    if code:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        if world.Get_size() > 1:
+            sys.stderr.write(f"[rank {world.Get_rank()}] exiting with status "
+                             f"{code}; aborting the MPI job\n")
+            sys.stderr.flush()
+            world.Abort(code)
+    return code
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(run())

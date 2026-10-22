@@ -1,0 +1,80 @@
+---
+features:
+  - |
+    :func:`sbd.sbd_solver.solve_sci` and :func:`sbd.sbd_solver.solve_sci_batch` take a
+    new ``savename`` argument, which saves the solved wavefunction with SBD's
+    ``savename`` for :mod:`sbd.analysis`. ``solve_sci_batch`` saves batch ``k`` under
+    ``f"{savename}b{k:02d}-"``, so batches do not overwrite each other.
+  - |
+    New :func:`sbd.to_strings`, the inverse of :func:`sbd.from_strings`: packed
+    determinants back to bitstrings, in NumPy rather than one C++ call each, so a
+    determinant list returned by a solve can be written out and reused.
+  - |
+    New :func:`sbd.analysis.load_gdb_shards`: the determinants of a saved GDB state,
+    re-split for a given ``b_comm_size``, so a state saved on one layout can seed a
+    diagonalization on another.
+  - |
+    ``examples/gdb/run_gdb_heatbath.py`` can save, checkpoint and resume:
+    ``--savename`` keeps the last completed round's state for
+    ``examples/analysis/variance.py``; ``--checkpoint_prefix`` keeps the latest round's
+    state and ladder position after every round, plus every ``N``\ th round's with
+    ``--checkpoint_frequency N``; ``--resume_from_prefix`` continues from a checkpoint,
+    on the same or a different ``--b_comm_size``, with its own ladder or further
+    ``--cutoffs`` added as new rungs. A checkpoint is replaced without ever leaving no
+    complete state on disk, so a run interrupted at any point, mid-save included, can
+    be resumed. The time spent saving is reported per round.
+  - |
+    ``examples/tpb/run_sbd_diag.py --carryover_adetfile/--carryover_bdetfile`` and
+    ``examples/gdb/run_gdb_diag.py --carryover_detfile`` write the carryover SBD
+    selected, in the format ``--adetfile`` and ``--detfiles`` read, so a next run can
+    start from it. The GDB files are written one per rank, globally sorted, without
+    gathering the list onto one rank.
+  - |
+    ``examples/tpb/run_sqd_sbd.py --savename`` saves the state behind the reported
+    result, the lowest-energy batch over all iterations, for
+    ``examples/analysis/variance.py``.
+  - |
+    New ``examples/analysis/extrapolate.py``: a weighted linear extrapolation of E_var
+    against PT2 (or the variance) to zero over a series of ``variance.py`` results, with
+    a robustness check and warnings when the states are too far from convergence for the
+    straight line to hold.
+  - |
+    New ``examples/TUTORIAL.md``: Fe4S4 worked end to end with every tool, from a
+    single determinant to an extrapolated energy, compared with the published DMRG
+    reference.
+upgrade:
+  - |
+    The GDB drivers default to ``--determinant_distribution grid-cyclic-balanced``,
+    which keeps heat-bath subspaces balanced across ranks; ``equal-bra-a``, still
+    :func:`sbd.gdb_diag`'s own default, can put most of one on a single rank. Pass
+    ``--determinant_distribution input`` to keep shards that are already balanced as
+    they are.
+  - |
+    The heat-bath driver's checkpoint options are spelled ``--checkpoint_prefix`` and
+    ``--resume_from_prefix``, and it no longer accepts abbreviated options, so that the
+    SQD driver's ``--resume_from FILE`` cannot be mistaken for a prefix.
+fixes:
+  - |
+    :func:`sbd.gdb_diag` on the ``gpu`` (Thrust) backend raises an error when a b_comm
+    shard is empty, instead of waiting forever: upstream's Thrust solve never returns
+    in that case. A one-determinant seed over several GPUs is the usual way to get
+    there; the heat-bath driver says how to start on one GPU and resume on more.
+  - |
+    The heat-bath driver warns when a round's energy rises. A larger subspace can only
+    have a lower energy, so a rise means the solve stopped on a higher state.
+  - |
+    The example drivers check that the directories of their output files exist before
+    solving. SBD does not report a file it failed to open, so a missing directory used
+    to lose the save while the run reported success.
+  - |
+    The example drivers check ``--loadname`` against the layout: a TPB state loads only
+    onto the grid that saved it (otherwise SBD aborts the job), and a GDB state onto at
+    least as many shards as it has files (otherwise Davidson starts from part of it).
+  - |
+    The example drivers no longer hang when one rank fails. An error on any rank is
+    printed by that rank, tagged with its number, and the whole MPI job is aborted;
+    before, an error on a rank other than 0 could go unreported while the other ranks
+    waited for it in a collective. Ctrl-C is reported in one line.
+  - |
+    :func:`sbd.analysis` splits a re-sorted state exactly evenly over ranks; the
+    sample sort's blocks were only approximately balanced.

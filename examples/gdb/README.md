@@ -96,6 +96,16 @@ mpirun -np 4 python run_gdb_heatbath.py --b_comm_size 4 --device gpu --cutoffs 1
 
 # Record the (dimension, energy) series for a comparison table
 python run_gdb_heatbath.py --cutoffs 1e-3,1e-4 --log ladder.json
+
+# Checkpoint every round, and save the final state for ../analysis/variance.py
+mkdir -p run1
+python run_gdb_heatbath.py --subspace-from hf --cutoffs 1e-3,1e-4 \
+    --checkpoint_prefix run1/ck- --savename run1/final-
+
+# Later: carry on from that checkpoint with a finer cutoff, on 4 GPUs
+mkdir -p run2
+mpirun -np 4 python run_gdb_heatbath.py --device gpu --b_comm_size 4 \
+    --resume_from_prefix run1/ck- --cutoffs 3e-5 --checkpoint_prefix run2/ck- --savename run2/final-
 ```
 
 ### Parameters
@@ -143,6 +153,53 @@ Solver, MPI and output — the same meanings as in `run_gdb_diag.py`:
 | `--determinant_distribution` | Placement across `b_comm`; see [Placement across `b_comm`](#placement-across-b_comm) | `equal-bra-a` |
 | `--log FILE` | Write the per-round `(rung, cutoff, round, dimension, energy, delta_energy, seconds)` series as JSON — the machine-readable form of the table the driver prints | none |
 
+Saving and resuming — see [Saving, checkpointing and resuming](#saving-checkpointing-and-resuming):
+
+| Parameter | What it controls | Default |
+|---|---|---|
+| `--savename PREFIX` | Save the last completed round's state (determinants and amplitudes), `PREFIX000000.bin` …, one file per shard, for `../analysis/variance.py` | none |
+| `--checkpoint_prefix PREFIX` | After every round, save that round's state as above plus `PREFIX.json` (ladder position and history). Only the latest round is kept | none |
+| `--checkpoint_frequency N` | Also keep a copy of every `N`th round's checkpoint, as `PREFIX_rNNNN-` | `0` (none) |
+| `--resume_from_prefix PREFIX` | Start from a checkpoint (or any GDB state saved with `savename`) instead of `--subspace-from` | none |
+
+### Saving, checkpointing and resuming
+
+**`--savename PREFIX`** keeps one result: the state of the last completed round, the
+solved subspace and its amplitudes. That is the state to analyse with
+`../analysis/variance.py` (give it the same `--bit_length`). It is the state *before*
+that round's expansion, which SBD returns as a determinant list but does not save; so
+its energy is the last row of the table.
+
+**`--checkpoint_prefix PREFIX`** writes the same state after every round, plus `PREFIX.json`
+with the ladder position, the cutoffs and the history so far. Each round replaces the
+previous one without ever leaving no complete state on disk: the previous state is
+moved aside to `PREFIX.prev-` first, the new files are renamed in, the `.json` is
+written last, and only then is the previous state deleted. A run stopped at any
+point, Ctrl-C or a killed job, leaves its last *completed* round; if it was stopped
+mid-save, `--resume_from_prefix` finds the complete state at `PREFIX.prev-` and says
+so. Scratch files of a round that was in progress are removed by the next run under
+that prefix. With
+`--checkpoint_frequency N` every `N`th round is also kept as `PREFIX_rNNNN-…`, for going
+back to an earlier point. Each copy is the whole state, so mind the disk at large
+dimension.
+
+**`--resume_from_prefix PREFIX`** starts from a checkpoint:
+
+- **The subspace** is the checkpoint's determinants, in place of `--subspace-from`. The
+  first round re-solves them (from the saved amplitudes, so Davidson converges quickly)
+  and repeats the checkpoint's energy — it is marked `(re-solve of the checkpoint)` —
+  then expands them, as the interrupted run would have.
+- **The ladder** continues from the checkpoint's rung with its cutoffs and history,
+  unless `--cutoffs` is given: then those cutoffs run from that state, which is how to
+  go further after a finished run (`--cutoffs 3e-5`), with no rerun from Hartree–Fock.
+- **The layout can differ.** The determinants are re-split across the new
+  `--b_comm_size`, so a checkpoint from one GPU can resume on four, and the other way.
+- Keep the FCIDUMP and `--bit_length` the same as the run that wrote the checkpoint.
+
+Every directory named by `--savename` and `--checkpoint_prefix` must exist, and be visible to
+every rank. SBD does not report a file it failed to write, so the driver checks before
+it starts and stops with an error otherwise.
+
 ### Why a cutoff *ladder*
 
 `heatbath_cutoff` admits a candidate when its estimated contribution exceeds the
@@ -188,7 +245,7 @@ every row of a seed comparison:
 | `--subspace-from` | starting subspace |
 |---|---|
 | `files` *(default)* | determinant files, defaulting to upstream's four Fe4S4 files |
-| `hf` | the Hartree-Fock determinant alone, built from the FCIDUMP header — the no-input null |
+| `hf` | the lowest `n_alpha` and `n_beta` orbitals filled — the Hartree-Fock determinant when the orbitals are canonical, built from the FCIDUMP header |
 | `from-alpha` | an alpha list interleaved with itself, i.e. a TPB-shaped product space |
 | `strings` | an arbitrary bitstring file, e.g. sampled configurations |
 
@@ -200,6 +257,19 @@ file-seeded run reaches, at a comparable dimension — so on that system the exp
 is doing most of the work and a pre-existing subspace adds little. Whether that holds
 for your system is exactly the kind of thing to check with `--log` and a dimension
 sweep.
+
+**`hf` is only Hartree–Fock if the orbitals are canonical.** It fills the lowest-index
+orbitals, which is the Hartree–Fock determinant when the FCIDUMP's orbitals come from
+a Hartree–Fock calculation, but not for localized or otherwise rotated orbitals. Then
+the "lowest" orbitals mean nothing, and for strongly correlated, magnetic systems even
+the true Hartree–Fock determinant can be a poor start. On the Li–Chan Fe4S4 FCIDUMP
+(localized orbitals, the same active space as upstream's in another basis), `hf` is
+24 Ha above the exact energy and the ladder from it fails: energies rise between
+rounds, which the driver flags. The broken-symmetry determinant Li and Chan
+recommend — Fe1 and Fe2 3d shells spin-up, Fe3 and Fe4 spin-down — is 0.95 Ha above,
+and the same ladder from it converges smoothly, ending 306 mHa lower than the
+upstream `hf` ladder at the same dimension. Build such a determinant as a string and
+pass it with `--subspace-from strings`; `../TUTORIAL.md` Part 6 shows how.
 
 Compare seeds **at matched dimension**, not at matched cutoff. Different seeds reach
 different sizes from the same cutoff, so a cutoff-matched comparison mostly reports
