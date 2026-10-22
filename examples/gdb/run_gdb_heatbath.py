@@ -12,8 +12,7 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""
-Grow a GDB subspace with SBD's own heatbath expansion, round after round.
+"""Grow a GDB subspace with SBD's own heatbath expansion, round after round.
 
 This is selected CI (HCI) driven from Python: diagonalize, let SBD expand the
 subspace from the resulting wavefunction, diagonalize the larger subspace, repeat.
@@ -403,8 +402,9 @@ def reshard(det, args, comm, rank, size):
 def main():
     args = parse_args()
 
-    import sbd
     from mpi4py import MPI
+
+    import sbd
 
     sbd.init(device=args.device)
     backend = sbd.get_backend(args.device)

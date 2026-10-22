@@ -10,8 +10,7 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""
-SBD (Selected Basis Diagonalization) Python Bindings
+"""SBD (Selected Basis Diagonalization) Python bindings.
 
 This package provides Python bindings for the SBD library.
 
@@ -29,10 +28,11 @@ Device switching (CPU/GPU) within the same process::
     result_gpu = sbd.tpb_diag(..., device='gpu')
 """
 
+import contextlib
 import os
 import re
-from importlib.metadata import version
 import subprocess
+from importlib.metadata import version
 
 # Single-sourced from the [project] table in pyproject.toml, so the version is
 # declared in exactly one place. Note the argument is the *distribution* name
@@ -88,7 +88,6 @@ _usable_cache = None    # list of usable devices; the static scan runs once
 
 def _extension_path(module_name):
     """Path of the built extension for `module_name`, or None."""
-    import os
     here = os.path.dirname(os.path.abspath(__file__))
     try:
         names = os.listdir(here)
@@ -112,7 +111,8 @@ def _inspect_extension(path):
     an ABI/symbol mismatch, which only surfaces on a real dlopen; that is
     reported by _load_backend() at first use.
     """
-    import subprocess, sys as _sys
+    import subprocess
+    import sys as _sys
     if _sys.platform == 'darwin':
         return True, None          # otool output does not mark unresolved deps
     try:
@@ -131,7 +131,7 @@ def _inspect_extension(path):
                        f"host is {platform.machine()}. Rebuild it here. (Note "
                        f"the loader reports this as 'cannot open shared object "
                        f"file', which is misleading -- the file exists.)")
-    missing = [l.split('=>')[0].strip() for l in out.splitlines() if 'not found' in l]
+    missing = [ln.split('=>')[0].strip() for ln in out.splitlines() if 'not found' in ln]
     if missing:
         return False, (f"missing shared librar{'y' if len(missing) == 1 else 'ies'}: "
                        f"{', '.join(missing)}. Put the containing directory on "
@@ -224,7 +224,7 @@ def _load_backend(device):
     except Exception as exc:
         # Never substitute a different backend: a silently-swapped device is the
         # same class of lie as a silent host fallback.
-        ok, reason = _inspect_extension(path)
+        _, reason = _inspect_extension(path)
         detail = reason or f"{type(exc).__name__}: {exc}"
         _backend_errors[device] = detail
         raise RuntimeError(
@@ -311,8 +311,7 @@ def _resolve_device(device):
 
 
 def init(device='cpu', comm_backend='mpi'):
-    """
-    Initialize SBD with MPI and set the default compute device.
+    """Initialize SBD with MPI and set the default compute device.
 
     Calling ``init()`` explicitly is **optional** — SBD auto-initializes on
     first use with ``device='cpu'`` and ``comm_backend='mpi'``.  Call it
@@ -354,10 +353,10 @@ def init(device='cpu', comm_backend='mpi'):
             _comm_module = MPI
             _global_comm = MPI.COMM_WORLD
             _comm_backend = 'mpi'
-        except ImportError:
+        except ImportError as exc:
             raise RuntimeError(
                 "MPI backend requires mpi4py. Install with: pip install mpi4py"
-            )
+            ) from exc
     else:
         raise ValueError(f"Unknown comm_backend: '{comm_backend}'. Supported: 'mpi'")
 
@@ -375,8 +374,7 @@ def init(device='cpu', comm_backend='mpi'):
 
 
 def finalize():
-    """
-    Finalize SBD and reset session state.
+    """Finalize SBD and reset session state.
 
     Synchronizes GPU (if used) but does NOT call MPI_Finalize — mpi4py
     handles MPI lifecycle automatically.
@@ -388,10 +386,8 @@ def finalize():
     # Synchronize GPU backends
     for name, backend in _backends.items():
         if name == 'gpu' and hasattr(backend, 'cleanup_device'):
-            try:
+            with contextlib.suppress(Exception):
                 backend.cleanup_device()
-            except Exception:
-                pass
 
     _default_device = None
     _comm_backend = None
@@ -410,8 +406,7 @@ def is_initialized():
 # ---------------------------------------------------------------------------
 
 def get_backend(device=None):
-    """
-    Get the backend module for the given device.
+    """Get the backend module for the given device.
 
     Auto-initializes SBD if needed. Passing ``device`` overrides the
     default, which is how you switch backends within one process. The one
@@ -647,8 +642,7 @@ def sort_bitarray(dets, device=None):
 
 def tpb_diag_from_files(fcidumpfile, adetfile, sbd_data,
                         loadname="", savename="", device=None):
-    """
-    Perform TPB diagonalization from files.
+    """Perform TPB diagonalization from files.
 
     The one determinant file supplies both the alpha and the beta list, so the
     subspace is the product of that list with itself. For different alpha and
@@ -681,8 +675,7 @@ def tpb_diag_from_files(fcidumpfile, adetfile, sbd_data,
 
 def tpb_diag(fcidump, adet, bdet, sbd_data,
              loadname="", savename="", device=None):
-    """
-    Perform TPB diagonalization with data structures.
+    """Perform TPB diagonalization with data structures.
 
     Args:
         fcidump: FCIDump object.
@@ -749,8 +742,7 @@ def gdb_diag(fcidump, det, sbd_data,
              loadname="", savename="", device=None,
              determinant_distribution="", determinant_grid_a=0,
              determinant_grid_b=0):
-    """
-    Perform GDB diagonalization over an explicit list of determinants.
+    """Perform GDB diagonalization over an explicit list of determinants.
 
     Unlike TPB, which spans the subspace with the Cartesian product of an alpha
     and a beta determinant list, GDB spans it with the given determinants
@@ -896,12 +888,12 @@ def print_info():
     print(f"Compiled backends: {', '.join(available_backends()) or 'none'}")
 
     if _initialized:
-        print(f"\nCurrent session:")
+        print("\nCurrent session:")
         print(f"  Default device: {_default_device}")
         print(f"  Communication: {_comm_backend}")
         print(f"  MPI rank: {get_rank()}/{get_world_size()}")
     else:
-        print(f"\nNot initialized. Call sbd.init() or any API function to start.")
+        print("\nNot initialized. Call sbd.init() or any API function to start.")
     print("=" * 60)
 
 
@@ -952,7 +944,6 @@ __all__ = [
     'gdb_diag',
 
     # Utilities
-    'available_backends',
     'print_info',
 
     # Sub-modules
