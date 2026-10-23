@@ -177,10 +177,24 @@ def main():
         notes.append("the slope is not negative: E_var should fall as PT2 rises toward "
                      "zero, so these states may not belong to one series")
     if args.x == "pt2" and slope < -1.5:
-        notes.append(f"the slope is {slope:.1f}, steeper than -1: PT2 recovers only "
-                     f"about {100 / abs(slope):.0f}% of the energy still missing, so "
-                     f"E_var + PT2 is well above this estimate; the extrapolation "
-                     f"needs states with smaller PT2 to be trusted")
+        # A steep slope means PT2 recovers only part of the missing energy. That is
+        # harmless if the states lie on one straight line -- the intercept is then
+        # what it is -- and a warning sign if they do not, or if there are too few to
+        # tell.
+        stable = (drop is not None and not np.isnan(e0_err) and len(points) >= 3
+                  and abs(drop - e0) <= max(3 * e0_err, 1e-3) and chi2 <= 4)
+        recovered = f"PT2 recovers only about {100 / abs(slope):.0f}% of the energy still missing"
+        if stable:
+            notes.append(f"the slope is {slope:.1f}, steeper than -1: {recovered}, so "
+                         f"E_var + PT2 sits well above the extrapolated energy. The "
+                         f"states lie on one line and the result is stable to dropping "
+                         f"one, so the intercept is usable; the slope tends to -1 only "
+                         f"as PT2 goes to zero")
+        else:
+            notes.append(f"the slope is {slope:.1f}, steeper than -1: {recovered}, and "
+                         f"there are not enough states on a straight line to show the "
+                         f"linear form holds; add states with smaller PT2 before "
+                         f"trusting the extrapolation")
     if abs(x[0]) > 3 * abs(x[-1]) and len(points) >= 3 and drop is not None \
             and abs(drop - e0) > (3 * e0_err if not np.isnan(e0_err) else 0):
         notes.append(f"leaving out the largest-{name} state moves the result by more "

@@ -1,13 +1,23 @@
-# Tutorial: the best energy we can get for Fe4S4
+# Tutorial: SBD's tools on Fe4S4, from first solve to converged energy
 
 > **Draft.** Every command and number here was run on the server described below.
 > Under review: the chemistry in Parts 6–7 would benefit from an expert read.
 
-This tutorial works through one problem from start to finish: estimating the
-ground-state energy of an iron–sulfur cluster, Fe4S4, as well as the tools in this
-repository allow. It is written for someone new to the area. Each step says what to
-run, what to look at, and what a person working on the problem would conclude before
-deciding what to do next.
+SBD is the classical diagonalization engine behind sample-based quantum
+diagonalization (SQD): in an SQD workflow, configurations sampled on a quantum
+computer define a subspace, and SBD finds the lowest-energy state within it. This
+tutorial is about that engine and the tools around it — how to diagonalize a
+subspace, grow and refine it, save and resume long runs, and judge how good the
+resulting state is — on one realistic problem, the iron–sulfur cluster Fe4S4.
+
+The same tools apply whatever produced the subspace: quantum samples, a carryover from
+a previous run, or classical selection. Here the subspace is grown and refined with
+SBD's own selection, so every step can be run without quantum hardware, and the
+analysis tools of Parts 2, 6 and 7 apply unchanged to SQD's states (Part 9).
+
+It is written for someone new to the area. Each step says what to run, what to look
+at, and what a person working on the problem would conclude before deciding what to
+do next.
 
 You will use every tool in the repository on the same system:
 
@@ -18,7 +28,7 @@ You will use every tool in the repository on the same system:
 | `examples/gdb/run_gdb_heatbath.py` | Grow a GDB subspace round by round with heat-bath selection |
 | `examples/analysis/variance.py` | Measure how far a saved state is from the exact answer |
 | `examples/analysis/extrapolate.py` | Turn a series of states into one best estimate, with an error bar |
-| `examples/tpb/run_sqd_sbd.py` | The SQD loop, from quantum-sampled bitstrings (appendix) |
+| `examples/tpb/run_sqd_sbd.py` | The SQD loop, from quantum-sampled bitstrings (Part 9) |
 
 ## Before you start
 
@@ -86,9 +96,11 @@ $\binom{36}{27}^2 \approx 8.8 \times 10^{15}$ of them. The exact answer, full
 configuration interaction (FCI), diagonalizes the Hamiltonian over all of them. That
 is out of reach.
 
-The simplest approximation is a single determinant: the Hartree–Fock (HF) one, the
-lowest 27 orbitals filled for each spin. Its energy comes from one round of the
-heat-bath driver, whose first row diagonalizes the HF determinant alone:
+The simplest approximation is a single determinant. The obvious one fills the lowest
+27 orbitals for each spin; if the FCIDUMP's orbitals are Hartree–Fock (HF) orbitals,
+ordered by energy, that is the HF determinant. (What "orbitals" means here, and why
+the choice matters, comes up in Part 6.) Its energy comes from one round of the
+heat-bath driver, whose first row diagonalizes the starting determinant alone:
 
 ```bash
 cd $SBD/examples/gdb
@@ -96,9 +108,10 @@ python run_gdb_heatbath.py --device gpu --bit_length 62 --fcidump $FCIDUMP \
     --subspace-from hf --cutoffs 1e-3 --max_rounds 1
 ```
 
-**What we see.** Round 0, dimension 1: E_HF = −326.5243550095 Ha, in 0.2 s.
+**What we see.** Round 0, dimension 1: −326.5243550095 Ha, in 0.2 s.
 
-**What we take from it.** HF is an upper bound: the true energy is lower. The
+**What we take from it.** Any single determinant's energy is an upper bound: the true
+energy is lower. The
 difference is the *correlation energy*, and finding as much of it as possible is the
 whole problem. We do not know how large it is, so we need two things at every step:
 a better state, and a way to tell how far that state still is from the exact one.
@@ -129,7 +142,7 @@ mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 --bit_length 62
 ```
 
 **What we see.** Both report −326.6982518821 Ha, identical to every printed digit,
-and 174 mHa below E_HF. Davidson took 2.6 s for TPB and 0.24 s for GDB.
+and 174 mHa below the single determinant of Part 0. Davidson took 2.6 s for TPB and 0.24 s for GDB.
 
 **What we take from it.**
 
@@ -334,9 +347,11 @@ writes its own sorted part, and nothing is gathered onto one rank.
 
 **What we take from it.**
 
-- **One heat-bath round beats the whole TPB route:** −326.778 at 636 thousand
-  determinants, against −326.769 at 8.4 million in Part 3a. It adds only the
-  determinants that couple strongly to the state.
+- **One heat-bath round reaches about the energy of the whole Part 3a route** —
+  −326.778 at 636 thousand determinants, against −326.769 at 8.4 million — because it
+  adds individual determinants that couple strongly to the state, where TPB must add
+  every pairing of its strings. Which representation suits a subspace depends on where
+  it came from; the GDB list is the more flexible container.
 - **Types 2 and 3 chose exactly the same determinants here** — the same 636,338, to
   the same energy — but type 3, which ranks candidates from the integrals, took a
   third of the time. Do not assume they agree in general; at a different state or
@@ -354,7 +369,7 @@ writes its own sorted part, and nothing is gathered onto one rank.
 
 `run_gdb_heatbath.py` runs the Part 3b cycle as a *ladder*: rounds at one cutoff until
 the energy stops moving (`--energy_tol`, at most `--max_rounds`), then the next,
-smaller cutoff. It can start from HF alone, which tests the method without any
+smaller cutoff. It can start from a single determinant, which tests the method without any
 prepared subspace.
 
 A one-determinant start cannot be split across GPUs, so run the first rungs on one:
@@ -443,9 +458,10 @@ a failure; the next, smaller cutoff picks up where this one left off.
 
 **What we take from it.**
 
-- **From HF alone, heat-bath beats the shipped subspace** by 86 mHa (−326.7840 against
-  −326.6983), in under 4 minutes on one GPU. A subspace selected by coupling does better than one built for another
-  purpose, even starting from nothing.
+- **Starting from one determinant, the ladder went 86 mHa below the shipped subspace**
+  (−326.7840 against −326.6983) in under 4 minutes on one GPU. It needs no input
+  subspace at all, which also makes it a useful way to grow or refine one that came
+  from elsewhere.
 - **Checkpointing is cheap** next to a round, so there is little reason to run without it.
 - **A resume repeats one round on purpose:** SBD saves the state before expanding it,
   so the resumed run solves that state again (quickly, from its saved amplitudes) and
@@ -579,6 +595,37 @@ moves by about as much as E_var does between rungs.
 and it is not doing so. A ladder can keep producing lower energies while staying far
 from the answer. To know how far, we need an outside reference.
 
+### Background: active spaces and orbitals
+
+Two ideas are needed to make sense of what follows.
+
+**An active space is a model of the molecule.** The real cluster has hundreds of
+electrons in hundreds of orbitals. Most of them behave simply: core electrons stay put,
+and high-energy orbitals stay empty. An *active space* keeps only the electrons and
+orbitals where the interesting physics happens — here the iron 3d and sulfur 3p
+orbitals, 54 electrons in 36 orbitals — and folds everything else into fixed numbers.
+The FCIDUMP is that model, written down: the one- and two-electron integrals over the
+36 active orbitals. Solving it exactly (full CI) gives the *active-space energy*; the
+part folded away is a separate constant, the core energy, which these FCIDUMPs leave
+at zero.
+
+**The same model can be written in many sets of orbitals.** An orbital is a mixture of
+the molecule's basis functions, and any rotation that mixes the 36 active orbitals
+among themselves describes exactly the same physics. The exact energy is unchanged;
+what changes is the integrals, and how *compactly* the ground state can be written as a
+sum of determinants. In one set of orbitals a few thousand determinants may carry most
+of the state; in another, millions. That is why the choice of orbitals matters to every
+method here, all of which keep only a selection of determinants.
+
+Some common choices:
+
+- **Canonical Hartree–Fock orbitals**, ordered by energy: filling the lowest ones gives
+  the Hartree–Fock determinant, the best single determinant for a closed-shell state.
+- **Localized orbitals**, each sitting on one atom: easy to read chemically ("the 3d
+  orbitals of iron 2"), but with no energy ordering, so "the lowest 27" means nothing.
+- **Optimized orbitals**, rotated to make a particular state as compact as possible —
+  the subject of the next section but one.
+
 ### Checking the literature
 
 This active space — [Fe4S4(SCH3)4]²⁻, 54 electrons in 36 orbitals (Fe 3d and S 3p) —
@@ -709,6 +756,119 @@ The driver now flags any such round and warns.
 - **Compare with a reference when one exists,** and when none does, treat a variance
   that will not fall as the warning it is.
 
+**The paper behind it.** Li and Chan built this active space to study the low-energy
+spin states of iron–sulfur clusters (*J. Chem. Theory Comput.* **13**, 2681 (2017);
+building on Sharma et al., *Nature Chem.* **6**, 927 (2014)). Each iron carries several
+unpaired 3d electrons, and the irons' spins couple to each other through the sulfur
+atoms. In the ground state the coupling is *antiferromagnetic*: the spins on two irons
+point one way and on the other two the opposite way, adding up to zero overall. That is
+exactly what the broken-symmetry determinant encodes, and why it is close to the ground
+state while a closed-shell determinant is not. They used localized orbitals so that
+such a determinant can be written down directly, and solved the model with DMRG, a
+method that handles this kind of strongly correlated, nearly one-dimensional structure
+well. Their energy, and later more converged DMRG ones, are what we compare against.
+
+### Orbital optimization: the same determinants, better orbitals
+
+The broken-symmetry ladder chose its determinants in Li and Chan's orbitals. Those
+orbitals were not chosen with our particular state in mind. Can we rotate them so that
+the *same* determinants capture more of the ground state?
+
+**The idea.** The energy of a state can be computed from two small tables, its
+*reduced density matrices* (RDMs): the 1-RDM γ (36 × 36) says how electrons are spread
+over the orbitals, and the 2-RDM Γ (36⁴) how pairs of electrons are. With the
+integrals h and (pq|rs) from the FCIDUMP,
+
+$$E = \sum_{pq} h_{pq}\,\gamma_{pq} + \tfrac12 \sum_{pqrs} (pq|rs)\,\Gamma_{pqrs}.$$
+
+Rotating the orbitals by a matrix U changes the integrals, and so changes this number,
+while the RDMs describe the same physical state. An optimizer can therefore search over
+rotations U for the one that makes E lowest — a few hundred variables, solved in
+seconds. Then, in the new orbitals, re-diagonalize the same list of determinants: the
+coefficients adjust to the new basis, and the energy falls further. Repeat until it
+stops moving. This is the method of the qiskit-addon-sqd *optimize orbitals* guide,
+applied to our drivers; with a growing subspace in between, it is what the literature
+calls orbital-optimized selected CI.
+
+**How, with these tools.** Four steps, the first and last with our drivers:
+
+1. Solve the subspace with RDMs: `run_gdb_diag.py ... --detfiles LIST --rdm_output rdm.npz`.
+2. Find the rotation with [ffsim](https://github.com/qiskit-community/ffsim)
+   (`pip install ffsim`):
+
+   ```python
+   import numpy as np, ffsim
+   from pyscf import tools, ao2mo
+   d = tools.fcidump.read("orbitals_k.fcidump")
+   ham = ffsim.MolecularHamiltonian(d["H1"], ao2mo.restore(1, d["H2"], d["NORB"]), d["ECORE"])
+   r = np.load("rdm.npz")
+   rdm = ffsim.ReducedDensityMatrix(r["rdm1"], r["rdm2"])
+   print(rdm.expectation(ham))          # must equal the solve's energy: a check on the RDMs
+   U = ffsim.optimize_orbitals(rdm, ham)
+   print(rdm.rotated(U).expectation(ham))  # the same state in the new orbitals
+   ```
+
+3. Write the FCIDUMP in the new orbitals:
+
+   ```python
+   new = ham.rotated(U.T.conj())
+   tools.fcidump.from_integrals("orbitals_k+1.fcidump", new.one_body_tensor.real,
+                                ao2mo.restore(8, new.two_body_tensor.real, d["NORB"]),
+                                d["NORB"], d["NELEC"], nuc=new.constant, ms=0)
+   ```
+
+   The trace of the one-electron integrals must not change (−435.2879311575 here): a
+   rotation cannot change it.
+4. Re-solve the same list in the new FCIDUMP, with `--rdm_output` again for the next
+   step.
+
+**What we see.** The broken-symmetry 1e-4 state, 926,168 determinants, always the same
+list:
+
+| Orbitals | Same RDMs, rotated | Re-solved | Gain | Gap to DMRG |
+|---|---|---|---|---|
+| Li–Chan | — | −327.0844069 | — | 161 mHa |
+| optimized once | −327.1382841 | −327.1580851 | 74 mHa | 87 mHa |
+| twice | −327.1666279 | −327.1719190 | 14 mHa | 73 mHa |
+| three times | −327.1755060 | −327.1781436 | 6 mHa | 67 mHa |
+| four times | −327.1801616 | −327.1817703 | 4 mHa | 63 mHa |
+
+Each optimization took about 9 seconds on the CPU, each re-solve about 40 seconds on
+one GPU. The RDMs reproduced SBD's energy to all ten digits before every step.
+
+**What we take from it.**
+
+- **The orbitals were worth 97 mHa at a fixed dimension.** With under a million
+  determinants, the optimized orbitals reached 54 mHa below the 6.3-million-determinant
+  state in Li–Chan's orbitals. A better basis makes any fixed subspace — however it was
+  chosen — more effective.
+- **The gains shrink fast** — 74, 14, 6, 4 mHa — so the orbitals converge for *this*
+  list. The 63 mHa still missing needs more determinants, and more determinants would
+  in turn prefer slightly different orbitals: the two have to be grown together.
+- **Always check the RDMs first.** If their energy does not equal the solve's, the
+  rotation the optimizer finds is meaningless.
+
+### Growing and optimizing together
+
+Alternate the two: grow the subspace in the current orbitals, optimize the orbitals
+for the larger state, grow again. All of these run with the tools above; the heat-bath
+rounds take the determinant list through `--subspace-from files --detfiles`.
+
+| Step | Orbitals | Dimension | Energy (Ha) | Gap to DMRG |
+|---|---|---|---|---|
+| broken-symmetry state, 4 optimizations (above) | F4 | 926,168 | −327.1817703 | 58 mHa |
+| heat-bath at 3e-5, 4 GPUs, 5 rounds (7 min) | F4 | 2,789,768 | −327.2043403 | 35 mHa |
+| 2 more optimizations for that list | F6 | 2,789,768 | −327.2101559 | 30 mHa |
+| heat-bath at 1e-5, 8 GPUs, first round (7 min) | F6 | 10,054,592 | −327.2190979 | 21 mHa |
+
+Gaps are to Li and Chan's DMRG energy, −327.2396 Ha.
+
+The orbital steps get smaller as the subspace grows — 74 mHa on the first state, 2 and
+1 mHa on the larger one — because the orbitals are already close to right for it; the
+growth steps keep their value, since they add determinants the state needs. The
+1e-5 round needed 8 GPUs for memory: 10 million determinants took about 11 GB of host
+memory and 9 GB of GPU memory per rank.
+
 ### Going further from the broken-symmetry state
 
 Resume the broken-symmetry ladder on 4 GPUs with a smaller cutoff, as in Part 5:
@@ -744,16 +904,25 @@ gained about half the one before, and no energy rose.
 ## Part 7 — Extrapolating, and when not to
 
 As the subspace grows, PT2 shrinks toward zero while E_var approaches the exact
-energy, and close to convergence E_var is linear in PT2, with slope −1 (Burton and
-Loos, *J. Chem. Phys.* **160**, 104102 (2024)). Fitting a line to the last few states
-and reading it at PT2 = 0 gives the extrapolated energy:
+energy, and close to convergence E_var is linear in PT2 (Burton and Loos, *J. Chem.
+Phys.* **160**, 104102 (2024)). Fitting a line to the last few states and reading it at
+PT2 = 0 gives the extrapolated energy. The states must all be in the *same* orbitals,
+so save each with `--savename` from a solve in the final FCIDUMP (`run_gdb_diag.py
+--detfiles LIST --savename STATE-`, or the heat-bath driver's own `--savename`), then
+measure each with the energy that solve reported, and fit:
 
 ```bash
 cd $SBD/examples/analysis
-python extrapolate.py $WORK/bs/rung*-var.json
+for s in s926 s2789 s12732; do
+    mpirun -np 96 -x OMP_NUM_THREADS=1 python variance.py \
+        --fcidump $WORK/oo/orbitals_6.fcidump --state $WORK/oo/$s- --bit_length 62 \
+        --energy $(cat $WORK/oo/$s.energy) --batches 10 --json $WORK/oo/$s-var.json
+done
+python extrapolate.py $WORK/oo/s*-var.json
 ```
 
-With the two broken-symmetry rungs measured as in Part 6:
+**First, what an untrustworthy fit looks like.** The two broken-symmetry rungs in
+Li–Chan's orbitals:
 
 | Rung | Dimension | E_var (Ha) | Variance (Ha²) | PT2 (mHa) | E_var + PT2 (Ha) |
 |---|---|---|---|---|---|
@@ -762,42 +931,60 @@ With the two broken-symmetry rungs measured as in Part 6:
 
 ```
   Extrapolated energy:  -327.21508320 Ha
-  Slope: -3.7591  (E_var + PT2 corresponds to a slope of -1)
   NOTE: two states fix the line exactly, so there is no error estimate; add a state
-  NOTE: the slope is -3.8, steeper than -1: PT2 recovers only about 27% of the
-  energy still missing, so E_var + PT2 is well above this estimate; the
-  extrapolation needs states with smaller PT2 to be trusted
+  NOTE: the slope is -3.8, steeper than -1: ... add states with smaller PT2 before
+  trusting the extrapolation
 ```
 
-The extrapolated −327.215 Ha is about 30 mHa above the DMRG reference, much closer
-than either the last E_var (117 mHa above) or E_var + PT2 (94 mHa above). It points
-the right way. But the script is right not to vouch for it: two points give no error
-bar, and a slope of −3.8 says the states are not yet in the regime where the straight
-line is justified. A third, smaller-cutoff rung — about 35 million determinants at
-1e-5, which needs 8 GPUs for its memory — is the next step, and its PT2 would show
-whether the line is straightening out.
+Two points always lie on a line, so nothing here says whether the straight-line form
+holds; the PT2 values are large, and the result is unchecked. (On the upstream ladder
+of Part 5 the same fit is further off still: there PT2 was missing nine-tenths of the
+energy.)
 
-The same fit on the upstream ladder of Part 6 shows what an untrustworthy
-extrapolation looks like:
+**Then, a trustworthy one.** The three states of the grow-and-optimize run, all in the
+final orbitals:
 
-```bash
-python extrapolate.py $WORK/hb/rung*-var.json
+| State | Dimension | E_var (Ha) | Variance (Ha²) | PT2 (mHa) | E_var + PT2 (Ha) | Analysis |
+|---|---|---|---|---|---|---|
+| broken-symmetry list | 926,168 | −327.1855172 | 0.0207 | −15.9 ± 0.1 | −327.2014 | 13 min |
+| after 3e-5 | 2,789,768 | −327.2101559 | 0.0136 | −9.0 ± 0.1 | −327.2191 | 16 min |
+| after 1e-5 | 12,732,176 | −327.2208561 | 0.0097 | −6.0 ± 0.2 | −327.2268 | 19 min |
+
+```
+  Extrapolated energy:  -327.24215462 Ha  +- 8.75e-04 (fit)
+  Without the largest-PT2 state: -327.24206750 Ha (moves 0.09 mHa)
+  Slope: -3.5602  (E_var + PT2 corresponds to a slope of -1)
+  chi^2 per degree of freedom: 0.00
+  NOTE: the slope is -3.6, steeper than -1: PT2 recovers only about 28% of the
+  energy still missing, so E_var + PT2 sits well above the extrapolated energy. The
+  states lie on one line and the result is stable to dropping one, so the intercept
+  is usable; the slope tends to -1 only as PT2 goes to zero
 ```
 
-```
-  NOTE: the slope is -3.2, steeper than -1: PT2 recovers only about 31% of the
-  energy still missing, so E_var + PT2 is well above this estimate; the
-  extrapolation needs states with smaller PT2 to be trusted
-```
+Compare the first table's 926,168-determinant state: the *same* determinants, in
+optimized orbitals, have a third of the variance and half the PT2. Better orbitals made
+the whole series converge faster, and it is this series that lines up.
+
+**What we see.** The three states lie on one line over a fourteen-fold range of
+dimension; dropping the first moves the result by 0.09 mHa. The extrapolated energy,
+−327.242 ± 0.001 Ha, falls among the published DMRG values for this active space
+(−327.2396 from Li and Chan's release, −327.245 to −327.247 from later, larger DMRG
+calculations). Extrapolating against the variance instead
+(`extrapolate.py --x variance`) gives −327.254 ± 0.003, with more scatter; the gap
+between the two, about 12 mHa, is a fair measure of how much to trust either beyond
+its own error bar.
 
 **What we take from it.**
 
-- **The linear form holds only near convergence.** Far from it the points bend, and
-  linear fits underestimate the missing energy. A slope far from −1 is the sign.
-- **Use three or more states with small PT2,** and check the result moves little when
-  the state with the largest PT2 is dropped. `extrapolate.py` reports both.
-- **Report the extrapolated energy with its uncertainty,** and say how far the states
-  behind it were from convergence.
+- **The straight line has to be shown, not assumed.** Three or more states, all in the
+  same orbitals, lying on one line, and a result that hardly moves when one is dropped:
+  `extrapolate.py` reports both checks.
+- **A steep slope is not by itself a problem.** It means PT2 captures a steady fraction
+  of the missing energy; what matters is that the fraction is steady.
+- **Report the extrapolated energy with its uncertainty,** and with a second estimate
+  (against the variance) when you can, and say how far the states behind it were from
+  convergence: here, the best variational state was still 19 mHa above the
+  extrapolated value.
 
 ---
 
@@ -812,18 +999,23 @@ python extrapolate.py $WORK/hb/rung*-var.json
 | Heat-bath, lowest-27 seed, 3e-5 (Part 5) | upstream | 6,503,471 | −326.822 | 425 mHa |
 | Broken-symmetry seed, 1e-4 (Part 6) | Li–Chan | 926,168 | −327.084 | 163 mHa |
 | Broken-symmetry seed, 3e-5 (Part 6) | Li–Chan | 6,342,875 | −327.128 | ≈ 112 mHa |
-| Extrapolated, 2 points (Part 7) | Li–Chan | — | −327.215 (no error bar) | ≈ 30 mHa |
-| DMRG (literature) | Li–Chan | — | ≈ −327.24 to −327.247 | — |
+| + orbital optimization, same 926k determinants (Part 6) | optimized | 926,168 | −327.186 | ≈ 54 mHa |
+| + growth and re-optimization, 1e-5 (Part 6) | optimized | 12,732,176 | −327.221 | ≈ 19 mHa |
+| Extrapolated, 3 points (Part 7) | optimized | — | −327.242 ± 0.001 | within the DMRG range |
+| DMRG (literature) | Li–Chan | — | −327.2396 to −327.247 | — |
 
-The upstream and Li–Chan FCIDUMPs are the same active space in different orbitals, so
-energies of the same *method* are not comparable between them, but every line can be
-compared with the exact answer.
+The upstream, Li–Chan and optimized FCIDUMPs are the same active space in different
+orbitals, so every line can be compared with the exact answer, which they share. Gaps
+are to Li and Chan's DMRG energy, −327.2396 Ha.
 
-- **Selection by coupling** (heat-bath) gets far more energy per determinant than
-  completing a product space. Product spaces are where SQD's samples naturally live,
-  so this is the bar they have to clear.
-- **A good starting determinant is worth more than a larger subspace.** Here it was
-  worth more than six million determinants.
+- **How a subspace is represented matters.** A product space (TPB) is natural for
+  sampled α and β strings and solves very large dimensions quickly; a determinant list
+  (GDB) can hold exactly the determinants chosen, and lets a subspace grow one
+  determinant at a time.
+- **The starting point and the orbitals matter as much as the size.** A physically
+  sensible starting determinant, and orbitals optimized for the state, each gained more
+  than millions of extra determinants did — and both apply to a subspace from any
+  source.
 - **Every energy needs a measure of its quality,** and the measures have limits: PT2
   underestimated the missing energy tenfold on an unconverged state. The variance's
   refusal to fall was the honest signal.
@@ -840,14 +1032,21 @@ Which tool for which question:
 | How do I improve a subspace step by step? | `--carryover_*` output files, restarted by hand |
 | How do I get the best energy without preparing a subspace? | `run_gdb_heatbath.py` from a physically sensible determinant, checkpointed |
 | What is my best estimate, with an error bar? | `variance.py` per rung, then `extrapolate.py` — near convergence only |
-| I have bitstrings sampled on a quantum computer | `run_sqd_sbd.py` (Appendix A) |
+| I have bitstrings sampled on a quantum computer | `run_sqd_sbd.py` (Part 9) |
+| Can a subspace from one source be refined further? | `--detfiles` or `include_configurations`, then a heat-bath round or orbital optimization |
 
 ---
 
-## Appendix A — SQD from quantum samples
+## Part 9 — The same tools inside the SQD loop
 
-There are no quantum samples for this Fe4S4, so the SQD loop is shown on the bundled
-h2o counts; with your own counts file and FCIDUMP the commands are the same.
+In SQD, a quantum computer provides the configurations. `run_sqd_sbd.py` runs the
+loop from a counts file: configuration recovery corrects the samples, subsampling
+draws batches of them into subspaces, and SBD's TPB solver diagonalizes each batch.
+Everything above applies to the states it produces — saving them, measuring their
+variance and PT2, checkpointing and resuming, and refining them further.
+
+There are no samples for this Fe4S4 in the repository, so the loop is shown on the
+bundled h2o counts; with your own counts file and FCIDUMP the commands are the same.
 
 ```bash
 mkdir -p $WORK/sqd
@@ -873,10 +1072,17 @@ mpirun -np 4 python run_sqd_sbd.py … --max_dim 400 --resume_from $WORK/sqd/ckp
 - **At its cap, a resume cannot improve.** The resumed strings are always kept, so if
   they already fill `--max_dim`, nothing new can enter and every iteration repeats the
   same subspace. The driver warns about this; raise `--max_dim`.
-- **Judge the result as in Part 6:** `variance.py` on the `--savename` state, and
-  compare against a heat-bath run from HF at a similar dimension.
+- **Judge the result as in Parts 2 and 6:** `variance.py` on the `--savename` state, and
+  a literature reference where one exists.
+- **Combine the techniques.** A saved SQD state is a TPB state, so it can be refined
+  like the others. `sbd.analysis.load_state` reads it as full determinants, and
+  `sbd.to_strings` writes them as a file that `run_gdb_heatbath.py --subspace-from
+  strings` (or `run_gdb_diag.py --detfiles`) starts from; a GDB solve of that list with
+  `--rdm_output` gives the RDMs for orbital optimization as in Part 6. Going the other
+  way, configurations already known to matter can be put into every SQD subspace with
+  `include_configurations` (`--include_hf`, or a `--resume_from` checkpoint).
 
-## Appendix B — What each driver saves, and how to continue from it
+## Appendix A — What each driver saves, and how to continue from it
 
 | Driver | Saves | Continue with |
 |---|---|---|
@@ -885,7 +1091,7 @@ mpirun -np 4 python run_sqd_sbd.py … --max_dim 400 --resume_from $WORK/sqd/ckp
 | `run_gdb_heatbath.py` | `--checkpoint_prefix` every round, `--savename` at the end | `--resume_from_prefix` |
 | `run_sqd_sbd.py` | `--checkpoint_path` (strings, occupancies), `--savename` (best state) | `--resume_from` |
 
-## Appendix C — Traps
+## Appendix B — Traps
 
 - An energy from one FCIDUMP is not comparable with one from another, even for the
   same molecule.

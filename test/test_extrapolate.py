@@ -67,8 +67,15 @@ def test_two_points_say_there_is_no_error_bar():
 
 
 def test_a_steep_slope_is_flagged():
-    done = _run(*_points(-10.0, -3.0, [-0.1, -0.05, -0.02]))
+    done = _run(*_points(-10.0, -3.0, [-0.1, -0.05]))
     assert "steeper than -1" in done.stdout
+    assert "before trusting" in done.stdout
+
+
+def test_a_steep_but_straight_line_is_called_usable():
+    done = _run(*_points(-10.0, -3.0, [-0.1, -0.05, -0.02, -0.01]))
+    assert "steeper than -1" in done.stdout
+    assert "intercept is usable" in done.stdout
 
 
 def test_a_positive_pt2_is_flagged():
