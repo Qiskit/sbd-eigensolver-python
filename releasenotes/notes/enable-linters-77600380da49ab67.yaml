@@ -8,9 +8,3 @@ other:
 
     These environments set ``skip_install``, so neither compiles the extension
     and neither needs MPI or BLAS present.
-fixes:
-  - |
-    :func:`sbd.init` now chains the underlying ``ImportError`` when ``mpi4py``
-    is missing, so the original traceback is no longer discarded. Backend
-    loading does the same for the error that prevented an extension from
-    importing.
