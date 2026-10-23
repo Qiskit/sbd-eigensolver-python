@@ -359,6 +359,7 @@ TPB state loads only onto the α × β grid that wrote it — which is why every
 uses the same 4 × 2 grid; the driver checks.
 
 ```bash
+cd $SBD/examples/tpb
 for set in "t2 2 --carryover_ratio 0.02" "t3 3 --carryover_threshold 1e-2"; do
     read tag t knobs <<< "$set"
     tpb --adetfile $ALPHA --carryover_type $t $knobs \
@@ -438,6 +439,7 @@ Step 2, solve the expanded list, here on 4 GPUs to show the files do not tie you
 layout, and expand again:
 
 ```bash
+cd $SBD/examples/gdb
 gdb 4 --detfiles $(files $WORK/3b/r1-) --carryover_type 2 --heatbath_cutoff 1e-4 \
     --carryover_detfile $WORK/3b/r2- --savename $WORK/3b/r1-
 gdb 8 --detfiles $(files $WORK/3b/r2-) | grep -E "Ground state|Subspace dimension"
@@ -450,6 +452,7 @@ go onto 4 GPUs. The driver refuses rather than start from part of the state.
 The other two types, from the same upstream subspace:
 
 ```bash
+cd $SBD/examples/gdb
 gdb 8 --detfiles $DETS --carryover_type 3 --heatbath_cutoff 1e-4 --carryover_detfile $WORK/3b/t3-
 gdb 8 --detfiles $(files $WORK/3b/t3-) | grep -E "Ground state|Subspace dimension"
 gdb 8 --detfiles $DETS --carryover_type 1 --carryover_ratio 0.5 --carryover_detfile $WORK/3b/t1-
@@ -550,6 +553,7 @@ It holds round 2, the last one completed; round 3 was lost. Round 4 and 8 copies
 **Resume it**, into the same prefix:
 
 ```bash
+cd $SBD/examples/gdb
 gpus 1 python run_gdb_heatbath.py --device gpu --bit_length 62 \
     --fcidump $FCIDUMP --resume_from_prefix $WORK/hb/ck- \
     --checkpoint_prefix $WORK/hb/ck- --checkpoint_frequency 4 \
@@ -601,6 +605,7 @@ cutoff. New `--cutoffs` become further rungs after the checkpoint's, and the his
 is kept:
 
 ```bash
+cd $SBD/examples/gdb
 gpus 8 python run_gdb_heatbath.py --device gpu --b_comm_size 8 --bit_length 62 \
     --fcidump $FCIDUMP --resume_from_prefix $WORK/hb/ck- --cutoffs 3e-5 \
     --checkpoint_prefix $WORK/hb/ck- --savename $WORK/hb/rung2- --log $WORK/hb/ladder.json
@@ -839,6 +844,7 @@ gpus 1 python run_gdb_heatbath.py --device gpu --bit_length 62 \
 and, for comparison, the same ladder from the lowest-27 determinant:
 
 ```bash
+cd $SBD/examples/gdb
 gpus 1 python run_gdb_heatbath.py --device gpu --bit_length 62 \
     --fcidump $LICHAN --subspace-from hf --cutoffs 1e-3,1e-4 --savename $WORK/bs27/rung1-
 ```
@@ -1073,6 +1079,7 @@ Resume the broken-symmetry ladder on all 8 GPUs with a smaller cutoff, as in Par
 still in Li and Chan's orbitals:
 
 ```bash
+cd $SBD/examples/gdb
 hb --fcidump $LICHAN --resume_from_prefix $WORK/bs/ck- --cutoffs 3e-5 \
    --checkpoint_prefix $WORK/bs/ck- --savename $WORK/bs/rung2-
 ```
@@ -1137,6 +1144,7 @@ python extrapolate.py $WORK/oo/S1-var.json $WORK/oo/S2-var.json $WORK/oo/D-var.j
 Li–Chan's orbitals, measured the same way:
 
 ```bash
+cd $SBD/examples/analysis
 for r in rung1 rung2; do
     cpus python variance.py --fcidump $LICHAN --state $WORK/bs/$r- --bit_length 62 \
         --energy $(energy $WORK/bs/$r-) --batches 10 --json $WORK/bs/$r-var.json
@@ -1295,6 +1303,7 @@ subsampling, between the solves, run in Python on one core. Then resume, first w
 the same `--max_dim`, then a larger one:
 
 ```bash
+cd $SBD/examples/tpb
 sqd --max_dim 200 --resume_from $WORK/sqd/ckpt.json
 sqd --max_dim 400 --resume_from $WORK/sqd/ckpt.json
 ```
