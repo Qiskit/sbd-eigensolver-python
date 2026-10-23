@@ -110,8 +110,47 @@ python run_gdb_heatbath.py --device gpu --bit_length 62 --fcidump $FCIDUMP \
 
 **What we see.** Round 0, dimension 1: −326.5243550095 Ha, in 0.2 s.
 
+**Is this the Hartree–Fock energy?** Yes, here — but it is worth checking, because it
+depends on the orbitals. Hartree–Fock (HF) finds the single determinant with the lowest
+energy by optimizing the orbitals; in the resulting *canonical* orbitals, the Fock
+matrix — the average field each electron feels — is diagonal, and its diagonal (the
+orbital energies) is in ascending order. Both are easy to test from the FCIDUMP with
+PySCF: build the Fock matrix of the lowest-27 determinant, and run HF starting from it.
+
+```python
+import numpy as np
+from pyscf import gto, scf, ao2mo, tools
+
+d = tools.fcidump.read(FCIDUMP)                 # the path in $FCIDUMP
+n, nocc = d["NORB"], d["NELEC"] // 2
+mol = gto.M(verbose=0); mol.nelectron = d["NELEC"]; mol.incore_anyway = True
+mf = scf.RHF(mol)
+mf.get_hcore = lambda *a: d["H1"]
+mf.get_ovlp = lambda *a: np.eye(n)
+mf._eri = ao2mo.restore(8, d["H2"], n)
+mf.energy_nuc = lambda *a: d["ECORE"]           # the core energy (0 in these files)
+dm0 = np.diag([2.0] * nocc + [0.0] * (n - nocc))   # the lowest-27 determinant
+F = mf.get_fock(dm=dm0)
+print("max off-diagonal Fock element:", abs(F - np.diag(np.diag(F))).max())
+print("HF energy from that start:", mf.kernel(dm0=dm0))
+```
+
+For this FCIDUMP the off-diagonal Fock elements are below 10⁻⁶ and the orbital
+energies are ascending, and HF started from the lowest-27 determinant stays exactly
+where it is. So the orbitals are canonical HF orbitals, and −326.5243550 Ha is a
+Hartree–Fock energy.
+
+It is not the only one. The same active space is also distributed in a second set of
+canonical orbitals (in `~/samples/fe4s4` on the server used here, and quoted in the
+literature), whose lowest-27 determinant is also an HF solution, at −326.5474155 Ha,
+23 mHa lower. The HF equations can have several self-consistent solutions, especially
+for a strongly correlated system like this one; each is a valid starting point, but
+only one is the lowest. We stay with the upstream file throughout Parts 0–5, so this
+does not affect the comparisons there.
+
 **What we take from it.** Any single determinant's energy is an upper bound: the true
-energy is lower. The
+energy is lower. The HF energy is the best a single determinant can do in a given set
+of orbitals, and even the HF energy depends on which HF solution the orbitals come from. The
 difference is the *correlation energy*, and finding as much of it as possible is the
 whole problem. We do not know how large it is, so we need two things at every step:
 a better state, and a way to tell how far that state still is from the exact one.
@@ -783,8 +822,19 @@ $$E = \sum_{pq} h_{pq}\,\gamma_{pq} + \tfrac12 \sum_{pqrs} (pq|rs)\,\Gamma_{pqrs
 
 Rotating the orbitals by a matrix U changes the integrals, and so changes this number,
 while the RDMs describe the same physical state. An optimizer can therefore search over
-rotations U for the one that makes E lowest — a few hundred variables, solved in
-seconds. Then, in the new orbitals, re-diagonalize the same list of determinants: the
+rotations U for the one that makes E lowest. Everything involved is small:
+
+| Object | Size here |
+|---|---|
+| U, the orbital rotation | 36 × 36 (one per spatial orbital of the active space, the same for both spins), orthogonal: 36·35/2 = 630 free parameters |
+| one-electron integrals h, and the 1-RDM γ | 36 × 36 |
+| two-electron integrals (pq\|rs), and the 2-RDM Γ | 36⁴ ≈ 1.7 million |
+| the state ψ itself | one amplitude per determinant in the subspace: 926,168 here |
+
+The many-electron Hamiltonian, which would act on all 8.8 × 10¹⁵ determinants, is never
+built: the formula above needs only the integrals and the RDMs, so the search over 630
+parameters takes seconds. The rotation mixes only the 36 active orbitals among
+themselves, which is why it leaves the exact energy of the active space unchanged. Then, in the new orbitals, re-diagonalize the same list of determinants: the
 coefficients adjust to the new basis, and the energy falls further. Repeat until it
 stops moving. This is the method of the qiskit-addon-sqd *optimize orbitals* guide,
 applied to our drivers; with a growing subspace in between, it is what the literature
@@ -1047,6 +1097,15 @@ variance and PT2, checkpointing and resuming, and refining them further.
 
 There are no samples for this Fe4S4 in the repository, so the loop is shown on the
 bundled h2o counts; with your own counts file and FCIDUMP the commands are the same.
+
+**Check the energy against what the subspace must reach.** SBD's Davidson starts, by
+default, from the first determinant of the subspace in sorted order. In canonical HF
+orbitals that is the HF determinant, a good start. In other orbitals — localized or
+optimized ones, as in Part 6 — or in a subspace mixing strongly and weakly coupled
+strings, it can have no overlap with the ground state, and Davidson then converges to
+a higher state without any error. If you know a subspace contains a good state — for
+instance because it includes configurations whose own energy you have computed — check
+that the reported energy is at least that low.
 
 ```bash
 mkdir -p $WORK/sqd
