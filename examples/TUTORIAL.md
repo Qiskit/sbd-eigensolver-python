@@ -19,6 +19,44 @@ It is written for someone new to the area. Each step says what to run, what to l
 at, and what a person working on the problem would conclude before deciding what to
 do next.
 
+**Contents**
+
+- [Before you start](#before-you-start)
+- [Part 0 — The system, and why this is hard](#part-0--the-system-and-why-this-is-hard)
+- [Part 1 — A ready-made subspace, two ways](#part-1--a-ready-made-subspace-two-ways)
+- [Part 2 — How good is this state?](#part-2--how-good-is-this-state)
+- [Part 3a — Growing a product space by hand (TPB carryover)](#part-3a--growing-a-product-space-by-hand-tpb-carryover)
+- [Part 3b — Growing a determinant list by hand (GDB carryover)](#part-3b--growing-a-determinant-list-by-hand-gdb-carryover)
+- [Part 4 — Automating the cycle, and surviving interruptions](#part-4--automating-the-cycle-and-surviving-interruptions)
+- [Part 5 — Going further, on more GPUs](#part-5--going-further-on-more-gpus)
+- [Part 6 — How far are we from the right answer?](#part-6--how-far-are-we-from-the-right-answer)
+  - [Measuring our states](#measuring-our-states)
+  - [Background: active spaces and orbitals](#background-active-spaces-and-orbitals)
+  - [Checking the literature](#checking-the-literature)
+  - [A better starting point](#a-better-starting-point)
+  - [Orbital optimization: the same determinants, better orbitals](#orbital-optimization-the-same-determinants-better-orbitals)
+  - [Growing and optimizing together](#growing-and-optimizing-together)
+  - [Going further from the broken-symmetry state](#going-further-from-the-broken-symmetry-state)
+- [Part 7 — Extrapolating, and when not to](#part-7--extrapolating-and-when-not-to)
+- [Part 8 — What we learned](#part-8--what-we-learned)
+- [Part 9 — The same tools inside the SQD loop](#part-9--the-same-tools-inside-the-sqd-loop)
+  - [A different SQD policy: Trim SQD](#a-different-sqd-policy-trim-sqd)
+  - [Not yet: seeding SQD with a refined subspace](#not-yet-seeding-sqd-with-a-refined-subspace)
+- [Appendix A — What each driver saves, and how to continue from it](#appendix-a--what-each-driver-saves-and-how-to-continue-from-it)
+- [Appendix B — Traps](#appendix-b--traps)
+
+**How to read it.** The parts build on each other, from basics to depth:
+
+| If you want to … | Read |
+|---|---|
+| run SBD and know what its output means | Parts 0–2 |
+| grow a subspace, by hand or automatically, and run long jobs safely | Parts 3–5 |
+| understand what limits the result, and judge how close it is to exact | Parts 6–7 |
+| use these tools with SQD | Part 9 (after Parts 0–2) |
+
+Part 8 summarizes. The appendices are references: what each driver saves, and the
+traps met along the way.
+
 You will use every tool in the repository on the same system:
 
 | Tool | What it does here |
@@ -44,31 +82,42 @@ build (the `gpu` backend). The numbers in this tutorial come from one server:
 
 Your timings will differ; what matters is how they compare from step to step.
 
-**Using the machine well.** Most steps use 4 MPI ranks, one GPU each. Two habits make
-a large difference:
+**Where the work runs.** Each step below says which part of the machine it uses:
 
-- **Give each rank all of its CPU cores**, `OMP_NUM_THREADS` = cores ÷ ranks (here
-  96 ÷ 4 = 24). Several steps do substantial work on the CPU even in a GPU run, and
-  with 8 threads per rank instead of 24 a heat-bath round took twice as long.
-- **Bind each rank to its own cores and a GPU near them.** The commands below show
-  `mpirun -np 4 …`; on this server each rank was started through a small wrapper
-  script that sets `CUDA_VISIBLE_DEVICES` and the CPU affinity per rank. Use your
-  site's equivalent (`srun --gpus-per-task=1 --cpu-bind=cores`, say).
+| Work | Runs on | Programming model |
+|---|---|---|
+| Davidson diagonalization (TPB and GDB) | GPUs, one per MPI rank | MPI across GPUs |
+| heat-bath expansion (choosing new determinants) | CPU cores | MPI + OpenMP, no GPU version |
+| variance and PT2 (`variance.py`) | CPU cores | MPI, best with one thread per rank |
+| orbital optimization (ffsim) | CPU, one process | NumPy/SciPy |
+| SQD's configuration recovery and subsampling | CPU, one process | Python |
 
-Set these once:
+So a GPU run still does much of its work on the CPU, and needs its cores as well as its
+GPUs. Every MPI rank should get its share of the cores and be bound to them.
+
+**Set up once.** These commands assume MPICH (its launcher takes `-bind-to` and
+`-genv`); SBD gives MPI rank *i* GPU *i* by itself. Two shell functions hold the launch
+rules, so every later command can be pasted as it stands: `gpus N cmd` runs `cmd` on N
+GPU ranks, each bound to its share of the cores, and `cpus cmd` runs it on every core,
+one rank per core. On another machine, set `CORES` and `NGPU`; under a scheduler,
+redefine the two functions with your site's launcher (`srun --gpus-per-task=1
+--cpu-bind=cores`, say).
 
 ```bash
-export SBD=~/path/to/sbd-eigensolver-python
+export SBD=~/sqd-onboard/sw/sbd-eigensolver-python          # this repository
 export UP=$SBD/vendor/sbd-upstream/apps
 export FCIDUMP=$UP/chemistry_tpb_selected_basis_diagonalization/fcidump_Fe4S4.txt
 export ALPHA=$UP/chemistry_tpb_selected_basis_diagonalization/AlphaDets.txt
 G=$UP/chemistry_gdb_selected_basis_diagonalization
 export DETS=$G/det0.txt,$G/det1.txt,$G/det2.txt,$G/det3.txt
-export WORK=/path/on/a/shared/filesystem/fe4s4      # every rank must see it
+export WORK=$HOME/fe4s4-tutorial                              # every rank must see it
+export CORES=96 NGPU=8
 mkdir -p $WORK
+gpus() { local n=$1; shift; mpirun -np $n -bind-to core:$((CORES/n)) -genv OMP_NUM_THREADS $((CORES/n)) "$@"; }
+cpus() { mpirun -np $CORES -bind-to core:1 -genv OMP_NUM_THREADS 1 "$@"; }
 ```
 
-Four rules apply throughout. Each one has caught real runs:
+Four habits apply throughout. Each one has caught real runs:
 
 - **Use one FCIDUMP for everything.** An FCIDUMP fixes the orbitals as well as the
   molecule. Two FCIDUMPs of the same molecule in different orbitals give different
@@ -78,8 +127,8 @@ Four rules apply throughout. Each one has caught real runs:
   whatever reads them later must be told the same value.
 - **Create output directories first.** The drivers check, and stop with an error if a
   directory is missing, because SBD itself would lose the file without saying so.
-- **Launch with your site's MPI binding.** `mpirun -np 4 python …` is shown; on a
-  cluster, use the launcher and CPU/GPU binding your site recommends.
+- **Bind ranks to cores.** Unbound, every rank's threads compete for every core: on
+  this server one heat-bath expansion took 1.7 times as long without `-bind-to`.
 
 ---
 
@@ -104,9 +153,11 @@ heat-bath driver, whose first row diagonalizes the starting determinant alone:
 
 ```bash
 cd $SBD/examples/gdb
-python run_gdb_heatbath.py --device gpu --bit_length 62 --fcidump $FCIDUMP \
+gpus 1 python run_gdb_heatbath.py --device gpu --bit_length 62 --fcidump $FCIDUMP \
     --subspace-from hf --cutoffs 1e-3 --max_rounds 1
 ```
+
+A single determinant cannot be split across GPUs, so this runs on one.
 
 **What we see.** Round 0, dimension 1: −326.5243550095 Ha, in 0.2 s.
 
@@ -117,11 +168,13 @@ matrix — the average field each electron feels — is diagonal, and its diagon
 orbital energies) is in ascending order. Both are easy to test from the FCIDUMP with
 PySCF: build the Fock matrix of the lowest-27 determinant, and run HF starting from it.
 
-```python
+```bash
+cat > $WORK/hf_check.py <<'EOF'
+import os
 import numpy as np
 from pyscf import gto, scf, ao2mo, tools
 
-d = tools.fcidump.read(FCIDUMP)                 # the path in $FCIDUMP
+d = tools.fcidump.read(os.environ["FCIDUMP"])
 n, nocc = d["NORB"], d["NELEC"] // 2
 mol = gto.M(verbose=0); mol.nelectron = d["NELEC"]; mol.incore_anyway = True
 mf = scf.RHF(mol)
@@ -133,7 +186,11 @@ dm0 = np.diag([2.0] * nocc + [0.0] * (n - nocc))   # the lowest-27 determinant
 F = mf.get_fock(dm=dm0)
 print("max off-diagonal Fock element:", abs(F - np.diag(np.diag(F))).max())
 print("HF energy from that start:", mf.kernel(dm0=dm0))
+EOF
+python $WORK/hf_check.py
 ```
+
+This is a small calculation, in one process on the CPU.
 
 For this FCIDUMP the off-diagonal Fock elements are below 10⁻⁶ and the orbital
 energies are ascending, and HF started from the lowest-27 determinant stays exactly
@@ -163,12 +220,12 @@ Upstream SBD ships a subspace for this FCIDUMP: 244 α strings in `AlphaDets.txt
 (the TPB example), and the same subspace written out as 59,536 = 244 × 244 full
 determinants in `det0–3.txt` (the GDB example).
 
-**TPB**, on a 2 × 2 grid of GPUs:
+**TPB**, on all 8 GPUs as a 4 × 2 grid (α strings split four ways, β two):
 
 ```bash
 cd $SBD/examples/tpb
-mpirun -np 4 python run_sbd_diag.py --device gpu \
-    --adet_comm_size 2 --bdet_comm_size 2 --bit_length 20 --tolerance 1e-6 \
+gpus 8 python run_sbd_diag.py --device gpu \
+    --adet_comm_size 4 --bdet_comm_size 2 --bit_length 20 --tolerance 1e-6 \
     --fcidump $FCIDUMP --adetfile $ALPHA
 ```
 
@@ -176,12 +233,14 @@ mpirun -np 4 python run_sbd_diag.py --device gpu \
 
 ```bash
 cd $SBD/examples/gdb
-mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 --bit_length 62 \
+gpus 8 python run_gdb_diag.py --device gpu --b_comm_size 8 --bit_length 62 \
     --tolerance 1e-6 --fcidump $FCIDUMP --detfiles $DETS
 ```
 
+Both run Davidson on the GPUs, split over MPI ranks.
+
 **What we see.** Both report −326.6982518821 Ha, identical to every printed digit,
-and 174 mHa below the single determinant of Part 0. Davidson took 2.6 s for TPB and 0.24 s for GDB.
+and 174 mHa below the single determinant of Part 0. Each takes seconds.
 
 **What we take from it.**
 
@@ -202,34 +261,37 @@ Save the state, then measure it:
 ```bash
 mkdir -p $WORK/p2
 cd $SBD/examples/gdb
-mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 --bit_length 62 \
+gpus 8 python run_gdb_diag.py --device gpu --b_comm_size 8 --bit_length 62 \
     --tolerance 1e-6 --fcidump $FCIDUMP --detfiles $DETS --savename $WORK/p2/up-
 
 cd $SBD/examples/analysis
-mpirun -np 96 -x OMP_NUM_THREADS=1 python variance.py \
+cpus python variance.py \
     --fcidump $FCIDUMP --state $WORK/p2/up- --bit_length 62 \
     --energy -326.6982518821 --batches 10 --json $WORK/p2/up-var.json
 ```
 
 `--savename` writes the determinants and their amplitudes, one file per GPU.
-`variance.py` runs on CPU cores only, and prefers many ranks with one thread each, so
-it uses all 96 cores as 96 ranks. `--energy` skips recomputing an energy we already
-know.
+`variance.py` runs on CPU cores only — it has no GPU version — and is fastest with one
+MPI rank per core, which is what `cpus` does. It does not need the state's layout: the
+eight files are spread evenly over all its ranks. `--energy` skips recomputing an
+energy we already know.
 
 **What we see.**
 
 ```
 Dimension:     59,536
-Variance:      7.524358e-02  +- 4.76e-04  Ha^2
-PT2:           -6.671114e-02  +- 5.49e-04  Ha
+Variance:      7.485474e-02  +- 4.36e-04  Ha^2
+PT2:           -6.641513e-02  +- 5.65e-04  Ha
 E_var:         -326.6982518821  Ha
-E_var + PT2:   -326.7649630228  +- 5.49e-04  Ha
-Elapsed:       328.0 s
+E_var + PT2:   -326.7646670154  +- 5.65e-04  Ha
 ```
 
-The analysis took 5.5 minutes, against 0.8 s for the diagonalization that produced the
-state. That is normal: it expands every sampled determinant into all its excitations,
-which for 54 electrons in 36 orbitals is tens of thousands each.
+Your numbers will differ slightly, within the ± values: the method samples at random,
+and `--seed` fixes the samples only for a given number of ranks.
+
+The analysis took minutes, against about a second for the diagonalization that
+produced the state. That is normal: it expands every sampled determinant into all its
+excitations, tens of thousands each for 54 electrons in 36 orbitals, on CPU cores.
 
 **What we take from it.**
 
@@ -262,13 +324,19 @@ the upstream 244 strings and count the strings it writes:
 ```bash
 mkdir -p $WORK/3a
 cd $SBD/examples/tpb
-mpirun -np 4 python run_sbd_diag.py --device gpu \
-    --adet_comm_size 2 --bdet_comm_size 2 --bit_length 20 --tolerance 1e-6 \
-    --fcidump $FCIDUMP --adetfile $ALPHA \
-    --carryover_type 2 --carryover_ratio 0.02 \
-    --carryover_adetfile $WORK/3a/t2-s1-alpha.txt --savename $WORK/3a/t2-s1-
-wc -l < $WORK/3a/t2-s1-alpha.txt
+tpb() { gpus 8 python run_sbd_diag.py --device gpu --adet_comm_size 4 --bdet_comm_size 2 \
+            --bit_length 20 --tolerance 1e-6 --fcidump $FCIDUMP "$@"; }
+for set in "1 --carryover_ratio 0.5" "2 --carryover_ratio 0.02" "2 --carryover_ratio 0.05" \
+           "2 --carryover_ratio 0.1" "3 --carryover_threshold 1e-2" "3 --carryover_threshold 1e-3"; do
+    t=${set%% *}; tag=$(echo "$set" | tr -d ' .-')
+    tpb --adetfile $ALPHA --carryover_type $t ${set#* } --carryover_adetfile $WORK/3a/probe-$tag.txt \
+        | grep -E "Carryover determinants|truncated weight in carry-over for alpha|percentage of wf"
+    echo "  $set: $(wc -l < $WORK/3a/probe-$tag.txt) strings"
+done
 ```
+
+The `tpb` function fixes what every TPB run here shares: all 8 GPUs as a 4 × 2 grid,
+and the same FCIDUMP and settings.
 
 | Setting | Strings kept (weight left out) | Strings written | Next subspace |
 |---|---|---|---|
@@ -284,31 +352,38 @@ The single excitations do the growing: 4 strings become 844, because each has 27
 smallest useful setting makes the next subspace 12 times larger. We continue with the
 two at a sensible size, type 2 at ratio 0.02 and type 3 at 1e-2.
 
-Step 2, restart from the carryover, with the saved state as Davidson's starting
-vector. SBD matches each saved string to the new list, so amplitudes carry over
-for the strings kept and start at zero for the new ones. A saved TPB state loads only
-onto the α × β grid that wrote it; the driver checks.
+Each step restarts from the previous carryover, with the saved state as Davidson's
+starting vector (`--loadname`). SBD matches each saved string to the new list, so
+amplitudes carry over for the strings kept and start at zero for the new ones. A saved
+TPB state loads only onto the α × β grid that wrote it — which is why every run here
+uses the same 4 × 2 grid; the driver checks.
 
 ```bash
-mpirun -np 4 python run_sbd_diag.py --device gpu \
-    --adet_comm_size 2 --bdet_comm_size 2 --bit_length 20 --tolerance 1e-6 \
-    --fcidump $FCIDUMP --adetfile $WORK/3a/t2-s1-alpha.txt --loadname $WORK/3a/t2-s1- \
-    --carryover_type 2 --carryover_ratio 0.02 \
-    --carryover_adetfile $WORK/3a/t2-s2-alpha.txt --savename $WORK/3a/t2-s2-
+for set in "t2 2 --carryover_ratio 0.02" "t3 3 --carryover_threshold 1e-2"; do
+    read tag t knobs <<< "$set"
+    tpb --adetfile $ALPHA --carryover_type $t $knobs \
+        --carryover_adetfile $WORK/3a/$tag-s1-alpha.txt --savename $WORK/3a/$tag-s1- | grep "Ground state"
+    tpb --adetfile $WORK/3a/$tag-s1-alpha.txt | grep -E "Ground state|davidson"          # cold start
+    tpb --adetfile $WORK/3a/$tag-s1-alpha.txt --loadname $WORK/3a/$tag-s1- \
+        --carryover_type $t $knobs \
+        --carryover_adetfile $WORK/3a/$tag-s2-alpha.txt --savename $WORK/3a/$tag-s2- | grep -E "Ground state|davidson"
+    tpb --adetfile $WORK/3a/$tag-s2-alpha.txt --loadname $WORK/3a/$tag-s2- | grep -E "Ground state|davidson"
+done
 ```
-
-Run it once without `--loadname` too, to see what the saved state is worth as a
-starting vector. Then do the same with type 3 at 1e-2.
 
 **What we see.**
 
-| Run | α strings | Dimension (strings²) | Energy (Ha) | Davidson |
-|---|---|---|---|---|
-| Part 1 | 244 | 59,536 | −326.6982519 | 5.1 s |
-| type 2, step 2 (from 844 strings) | 844 | 712,336 | −326.7167843 | 7.4 s |
-| type 2, step 3 (from 2,906 strings) | 2,906 | 8,444,836 | −326.7685459 | 55 s |
-| type 3, step 2 (from 452 strings) | 452 | 204,304 | −326.7074213 | 1.2 s |
-| type 3, step 3 | 452 | 204,304 | −326.7074213 | 0.2 s |
+| Run | α strings | Dimension (strings²) | Energy (Ha) |
+|---|---|---|---|
+| Part 1 | 244 | 59,536 | −326.6982519 |
+| type 2, step 2 (from 844 strings) | 844 | 712,336 | −326.7167843 |
+| type 2, step 3 (from 2,906 strings) | 2,906 | 8,444,836 | −326.7685459 |
+| type 3, step 2 (from 452 strings) | 452 | 204,304 | −326.7074213 |
+| type 3, step 3 | 452 | 204,304 | −326.7074213 |
+
+The 8.4-million-determinant solve is where the GPUs earn their keep: the α × β product
+is formed on the fly across the 4 × 2 grid, so its memory and its work both split
+eight ways.
 
 **What we take from it.**
 
@@ -323,7 +398,7 @@ starting vector. Then do the same with type 3 at 1e-2.
 - **Type 3 stalls at once.** Its second step carried over exactly the 452 strings it
   started from, so a third step repeats the second. At this threshold, the strings
   above it and their singles are already all there: a fixed point.
-- **`--loadname` hardly helped** (7.4 s against 7.9 s cold). The saved state covers
+- **`--loadname` hardly helped** (compare the cold and loaded Davidson times). The saved state covers
   only the strings that were kept, a small part of the new list, so it is a poor
   starting vector. It pays off when restarting on the same or a slightly larger
   subspace, not after a carryover that rebuilds most of it.
@@ -344,46 +419,55 @@ The expanded list includes the determinants it grew from, so it is the next subs
 `--carryover_detfile` writes it as sorted determinant files, and prints the
 `--detfiles` list for the next run.
 
-Step 1, one heat-bath round from the upstream subspace:
+Step 1, one heat-bath round from the upstream subspace, on all 8 GPUs:
 
 ```bash
 mkdir -p $WORK/3b
 cd $SBD/examples/gdb
-mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 --bit_length 62 \
-    --tolerance 1e-6 --fcidump $FCIDUMP --detfiles $DETS \
-    --carryover_type 2 --heatbath_cutoff 1e-4 \
+gdb() { local n=$1; shift; gpus $n python run_gdb_diag.py --device gpu --b_comm_size $n \
+            --bit_length 62 --tolerance 1e-6 --fcidump $FCIDUMP "$@"; }
+files() { ls $1*.txt | paste -sd,; }
+gdb 8 --detfiles $DETS --carryover_type 2 --heatbath_cutoff 1e-4 \
     --carryover_detfile $WORK/3b/r1- --savename $WORK/3b/r0-
 ```
 
-Step 2, solve the expanded list, here on 2 GPUs to show the files do not tie you to a
-layout. Give it the `--detfiles` list step 1 printed:
+The expansion runs on the CPU cores of all eight ranks, then the expanded list is
+sorted across them and written as eight files, each rank writing its own.
+
+Step 2, solve the expanded list, here on 4 GPUs to show the files do not tie you to a
+layout, and expand again:
 
 ```bash
-mpirun -np 2 python run_gdb_diag.py --device gpu --b_comm_size 2 --bit_length 62 \
-    --tolerance 1e-6 --fcidump $FCIDUMP --detfiles $(ls $WORK/3b/r1-0*.txt | paste -sd,) \
-    --carryover_type 2 --heatbath_cutoff 1e-4 \
+gdb 4 --detfiles $(files $WORK/3b/r1-) --carryover_type 2 --heatbath_cutoff 1e-4 \
     --carryover_detfile $WORK/3b/r2- --savename $WORK/3b/r1-
+gdb 8 --detfiles $(files $WORK/3b/r2-) | grep -E "Ground state|Subspace dimension"
 ```
 
 `--loadname $WORK/3b/r0-` would start Davidson from step 1's state, but SBD can load
-a saved GDB state only onto at least as many shards as it has files: 4 files cannot
-go onto 2 GPUs. The driver refuses rather than start from part of the state.
+a saved GDB state only onto at least as many shards as it has files: 8 files cannot
+go onto 4 GPUs. The driver refuses rather than start from part of the state.
 
-Then repeat step 1 with `--carryover_type 3`, and with `--carryover_type 1
---carryover_ratio 0.5`, to compare.
+The other two types, from the same upstream subspace:
+
+```bash
+gdb 8 --detfiles $DETS --carryover_type 3 --heatbath_cutoff 1e-4 --carryover_detfile $WORK/3b/t3-
+gdb 8 --detfiles $(files $WORK/3b/t3-) | grep -E "Ground state|Subspace dimension"
+gdb 8 --detfiles $DETS --carryover_type 1 --carryover_ratio 0.5 --carryover_detfile $WORK/3b/t1-
+gdb 8 --detfiles $(files $WORK/3b/t1-) | grep -E "Ground state|Subspace dimension"
+```
 
 **What we see.**
 
-| Run | GPUs | Dimension | Energy (Ha) | Expansion |
-|---|---|---|---|---|
-| Part 1 (upstream subspace) | 4 | 59,536 | −326.6982519 | — |
-| one round, type 2, cutoff 1e-4 | 4 | 636,338 | −326.7781205 | 2.6 s |
-| two rounds, type 2 | 2 | 806,932 | −326.7848825 | 31 s |
-| one round, type 3, cutoff 1e-4 | 4 | 636,338 | −326.7781205 | 0.8 s |
-| type 1, ratio 0.5 | 4 | 29,768 | −326.6978787 | — |
+| Run | Dimension | Energy (Ha) |
+|---|---|---|
+| Part 1 (upstream subspace) | 59,536 | −326.6982519 |
+| one round, type 2, cutoff 1e-4 | 636,338 | −326.7781205 |
+| two rounds, type 2 | 806,932 | −326.7848825 |
+| one round, type 3, cutoff 1e-4 | 636,338 | −326.7781205 |
+| type 1, ratio 0.5 | 29,768 | −326.6978787 |
 
-Writing the carryover took 0.3 s for 636 thousand determinants: each GPU's rank
-writes its own sorted part, and nothing is gathered onto one rank.
+Writing the carryover takes a fraction of a second: each rank writes its own sorted
+part, and nothing is gathered onto one rank.
 
 **What we take from it.**
 
@@ -393,8 +477,8 @@ writes its own sorted part, and nothing is gathered onto one rank.
   every pairing of its strings. Which representation suits a subspace depends on where
   it came from; the GDB list is the more flexible container.
 - **Types 2 and 3 chose exactly the same determinants here** — the same 636,338, to
-  the same energy — but type 3, which ranks candidates from the integrals, took a
-  third of the time. Do not assume they agree in general; at a different state or
+  the same energy — but type 3, which ranks candidates from the integrals, expanded
+  several times faster. Do not assume they agree in general; at a different state or
   cutoff they need not.
 - **Type 1 halves the subspace for 0.4 mHa.** Half of the shipped determinants carried
   almost none of the energy: pruning is cheap here, but it does not improve anything.
@@ -417,13 +501,14 @@ A one-determinant start cannot be split across GPUs, so run the first rungs on o
 ```bash
 mkdir -p $WORK/hb
 cd $SBD/examples/gdb
-OMP_NUM_THREADS=96 python run_gdb_heatbath.py --device gpu --bit_length 62 \
+gpus 1 python run_gdb_heatbath.py --device gpu --bit_length 62 \
     --fcidump $FCIDUMP --subspace-from hf --cutoffs 1e-3,1e-4 \
     --checkpoint_prefix $WORK/hb/ck- --checkpoint_frequency 4 \
     --savename $WORK/hb/rung1- --log $WORK/hb/ladder.json
 ```
 
-One rank here, so it gets all 96 cores: the expansion between rounds runs on them.
+One rank here, so `gpus 1` gives it all 96 cores: each round solves on the GPU, then
+expands the state on the CPU cores, which is most of a round's time.
 
 ```
   rung round    dimension             energy           dE    secs   save
@@ -465,7 +550,7 @@ It holds round 2, the last one completed; round 3 was lost. Round 4 and 8 copies
 **Resume it**, into the same prefix:
 
 ```bash
-OMP_NUM_THREADS=96 python run_gdb_heatbath.py --device gpu --bit_length 62 \
+gpus 1 python run_gdb_heatbath.py --device gpu --bit_length 62 \
     --fcidump $FCIDUMP --resume_from_prefix $WORK/hb/ck- \
     --checkpoint_prefix $WORK/hb/ck- --checkpoint_frequency 4 \
     --savename $WORK/hb/rung1- --log $WORK/hb/ladder.json
@@ -490,7 +575,7 @@ OMP_NUM_THREADS=96 python run_gdb_heatbath.py --device gpu --bit_length 62 \
 
 The same ladder run without interruption ends at the same place, 726,599
 determinants and −326.7840263718 Ha, identical to every digit. The interruption cost
-one repeated round, about 30 s, and saving cost 0.05 s in all.
+one repeated round, and saving a fraction of a second in all.
 
 The rung stopped at `--max_rounds 8` rather than because the energy settled: its
 last round still gained 24 μHa, above `--energy_tol` (10 μHa). That is a budget, not
@@ -499,7 +584,7 @@ a failure; the next, smaller cutoff picks up where this one left off.
 **What we take from it.**
 
 - **Starting from one determinant, the ladder went 86 mHa below the shipped subspace**
-  (−326.7840 against −326.6983) in under 4 minutes on one GPU. It needs no input
+  (−326.7840 against −326.6983) in a few minutes on one GPU. It needs no input
   subspace at all, which also makes it a useful way to grow or refine one that came
   from elsewhere.
 - **Checkpointing is cheap** next to a round, so there is little reason to run without it.
@@ -511,11 +596,12 @@ a failure; the next, smaller cutoff picks up where this one left off.
 
 ## Part 5 — Going further, on more GPUs
 
-Now the subspace is large enough to split. Resume on 4 GPUs and add a smaller cutoff.
-New `--cutoffs` become further rungs after the checkpoint's, and the history is kept:
+Now the subspace is large enough to split. Resume on all 8 GPUs and add a smaller
+cutoff. New `--cutoffs` become further rungs after the checkpoint's, and the history
+is kept:
 
 ```bash
-mpirun -np 4 python run_gdb_heatbath.py --device gpu --b_comm_size 4 --bit_length 62 \
+gpus 8 python run_gdb_heatbath.py --device gpu --b_comm_size 8 --bit_length 62 \
     --fcidump $FCIDUMP --resume_from_prefix $WORK/hb/ck- --cutoffs 3e-5 \
     --checkpoint_prefix $WORK/hb/ck- --savename $WORK/hb/rung2- --log $WORK/hb/ladder.json
 ```
@@ -537,29 +623,27 @@ mpirun -np 4 python run_gdb_heatbath.py --device gpu --b_comm_size 4 --bit_lengt
   End:   dim 6503471, E = -326.8217505170
 ```
 
-The 726,599-determinant state from one GPU loaded onto four and was solved again in
-21 s. The first round at the new cutoff did most of the work: 33 mHa, and a subspace
-almost 7 times larger. After that each round gained about half the previous one, and
-the rung ran out of rounds (24 minutes) while still gaining 36 μHa a round.
-
-Repeat with `--cutoffs 1e-5` (saving as `rung3-`), and further if time allows. Each
-rung costs several times the one before.
+The 726,599-determinant state from one GPU loaded onto eight and was solved again.
+The first round at the new cutoff did most of the work: 33 mHa, and a subspace almost
+7 times larger. After that each round gained about half the previous one, and the rung
+ran out of rounds while still gaining 36 μHa a round. Each rung costs several times the
+one before.
 
 If you try the Part 4 command on 4 GPUs directly, it stops at once: a one-determinant
 seed leaves three GPUs with nothing, and the GPU solver cannot run with an empty shard.
 
 **What we see, over the whole ladder.**
 
-| Rung (cutoff) | GPUs | Final dimension | Energy (Ha) | Rounds | Time |
-|---|---|---|---|---|---|
-| 1e-3 | 1 | 13,236 | −326.7147680 | 6 | 4 s |
-| 1e-4 | 1 | 726,599 | −326.7840264 | 8 | 3.5 min |
-| 3e-5 | 4 | 6,503,471 | −326.8217505 | 8 | 24 min |
+| Rung (cutoff) | GPUs | Final dimension | Energy (Ha) | Rounds |
+|---|---|---|---|---|
+| 1e-3 | 1 | 13,236 | −326.7147680 | 6 |
+| 1e-4 | 1 | 726,599 | −326.7840264 | 8 |
+| 3e-5 | 8 | 6,503,471 | −326.8217505 | 8 |
 
 **What we take from it.**
 
 - **Each smaller cutoff still lowers the energy,** by less each time and at much higher
-  cost: 69 mHa, then 38 mHa, for 9 times the dimension and 7 times the time per rung.
+  cost: 69 mHa, then 38 mHa, each for about nine times the dimension.
   The returns are diminishing, but nothing here tells us where they stop.
 - **Most of each round is the expansion, not the solve** — see below — and the
   expansion runs on CPU cores.
@@ -568,40 +652,24 @@ seed leaves three GPUs with nothing, and the GPU solver cannot run with an empty
   can put most of a heat-bath subspace on one GPU: after one expansion of the
   upstream subspace, 52% of it landed on GPU 0, and the solve was 1.5× slower.
 
-**A limit we cannot remove from here.** At 5 million determinants, one round took
-139 s on 4 GPUs with 24 threads each: 1 s of Davidson, 14 s of setup, and **115 s of
-heat-bath expansion**. The expansion is SBD's CPU code, with no GPU version, so it
-sets the pace of the whole ladder:
-
-| Layout (5M-determinant round) | Expansion | Round |
-|---|---|---|
-| 4 GPUs × 8 threads | 254 s | 286 s |
-| 4 GPUs × 24 threads | 115 s | 139 s |
-| 8 GPUs × 12 threads | 117 s | 147 s |
-
-It depends on how many CPU cores you give it, not on the GPU count: 8 GPUs bought
-nothing over 4. Three times the threads gave 2.2× the speed, so it does not scale
-perfectly either. For this ladder, 4 GPUs and every core is the efficient layout.
+**Where the time goes.** In a round at millions of determinants, the Davidson solve on
+the GPUs takes seconds; the heat-bath expansion on the CPU cores takes minutes. The
+expansion is SBD's MPI + OpenMP code, with no GPU version, so it sets the pace of the
+ladder. Its speed follows the number of CPU cores it gets, not the number of GPUs: one
+5-million-determinant round expanded in about the same time on 4 GPUs with 24 threads
+each as on 8 with 12, and twice as slowly with only 8 threads per rank. Two things
+follow: give every rank all its cores, and, on a cluster, more nodes speed the
+expansion up, since it is MPI-parallel.
 
 **When more GPUs do help: memory.** At 6 million determinants each rank used about
 12 GB of host memory and 9 GB of GPU memory, growing roughly in proportion to the
 dimension. On 80 GB GPUs that puts the ceiling for 4 GPUs near 50 million
 determinants; beyond it, spread the subspace over 8 (`--b_comm_size 8`), which halves
-each GPU's share. `--max_dim` stops the ladder before a round would exceed a size you
-choose, rather than failing partway through it.
-
-That is exactly what happened at the next cutoff. With `--cutoffs 1e-5 --max_dim
-30000000` on 4 GPUs, the first round expanded the 6.5-million-determinant state to
-35.4 million and stopped:
-
-```
-  stopping: dimension 35425914 exceeds --max_dim 30000000
-```
-
-The check can only happen after the expansion, since that is what decides the size,
-so the 5 minutes it took were spent and the expanded list was not kept. Rerun the
-rung with more GPUs and a larger cap; the expansion is repeated, but nothing else is
-lost, because the checkpoint still holds the last completed round.
+each GPU's share — which is why these commands use all eight. `--max_dim` stops the
+ladder before a round would exceed a size you choose, rather than failing partway
+through it. The check can only happen after the expansion, since that is what decides
+the size: a stopped round has spent its expansion, but the checkpoint still holds the
+last completed round, so a rerun with a larger cap loses nothing else.
 
 ---
 
@@ -613,19 +681,24 @@ First, ask the states themselves, as in Part 2:
 
 ```bash
 cd $SBD/examples/analysis
+energy() { python -c "import json; print(json.load(open('$1.json'))['energy'])"; }
 for r in rung1 rung2; do
-    E=$(python -c "import json; print(json.load(open('$WORK/hb/$r-.json'))['energy'])")
-    mpirun -np 96 -x OMP_NUM_THREADS=1 python variance.py \
-        --fcidump $FCIDUMP --state $WORK/hb/$r- --bit_length 62 \
-        --energy $E --batches 10 --json $WORK/hb/$r-var.json
+    cpus python variance.py --fcidump $FCIDUMP --state $WORK/hb/$r- --bit_length 62 \
+        --energy $(energy $WORK/hb/$r-) --batches 10 --json $WORK/hb/$r-var.json
 done
 ```
 
-| State | Dimension | E_var (Ha) | Variance (Ha²) | PT2 (mHa) | E_var + PT2 (Ha) | Analysis time |
-|---|---|---|---|---|---|---|
-| Upstream subspace (Part 2) | 59,536 | −326.6982519 | 0.0752 | −66.7 ± 0.5 | −326.7650 | 5.5 min |
-| Rung 1e-4 | 726,599 | −326.7840264 | 0.0689 | −45.0 ± 0.4 | −326.8290 | 16 min |
-| Rung 3e-5 | 6,503,471 | −326.8217505 | 0.0626 | −35.7 ± 0.9 | −326.8575 | 23 min |
+The heat-bath driver records each saved state's energy beside it, in `PREFIX.json`;
+`energy` reads it back.
+
+| State | Dimension | E_var (Ha) | Variance (Ha²) | PT2 (mHa) | E_var + PT2 (Ha) |
+|---|---|---|---|---|---|
+| Upstream subspace (Part 2) | 59,536 | −326.6982519 | 0.0749 | −66.4 ± 0.6 | −326.7647 |
+| Rung 1e-4 | 726,599 | −326.7840264 | 0.0689 | −45.0 ± 0.4 | −326.8290 |
+| Rung 3e-5 | 6,503,471 | −326.8217505 | 0.0626 | −35.7 ± 0.9 | −326.8575 |
+
+Each analysis took longer than the one before — minutes to tens of minutes on the 96
+cores — growing with the size of the state.
 
 **What we see.** PT2 shrinks as the subspace grows, but slowly, and the variance
 barely moves: 110 times more determinants took it from 0.075 to 0.063 Ha². E_var + PT2
@@ -680,6 +753,16 @@ Is ours the same problem? Download their FCIDUMP and compare:
 
 ```bash
 curl -L -o $WORK/lichan_fe4s4 https://raw.githubusercontent.com/zhendongli2008/Active-space-model-for-Iron-Sulfur-Clusters/main/Fe2S2_and_Fe4S4/Fe4S4/fe4s4
+export LICHAN=$WORK/lichan_fe4s4
+python - <<'EOF'
+import os
+import numpy as np
+from pyscf import tools
+for path in (os.environ["FCIDUMP"], os.environ["LICHAN"]):
+    d = tools.fcidump.read(path, verbose=0)
+    print(f"{os.path.basename(path)}: NORB={d['NORB']} NELEC={d['NELEC']} "
+          f"trace(h)={np.trace(d['H1']):.10f}")
+EOF
 ```
 
 Both files have the same 222,111 two-electron integrals and, to 10 digits, the same
@@ -724,7 +807,9 @@ spin — a spin-down electron on Fe1 (orbital 2) and a spin-up one on Fe3 (orbit
 determinant as one string of 72 characters, each orbital's β then α bit, highest
 orbital first:
 
-```python
+```bash
+python - <<'EOF'
+import os
 n = 36
 fe = {1: range(2, 7), 2: range(7, 12), 3: range(24, 29), 4: range(29, 34)}  # Fe 3d, 1-based
 d = {p for shell in fe.values() for p in shell}
@@ -734,7 +819,8 @@ beta = set(both) | set(fe[3]) | set(fe[4]) | {2}                # 27 spin-down
 assert len(alpha) == len(beta) == 27
 det = "".join(("1" if p in beta else "0") + ("1" if p in alpha else "0")
               for p in range(n, 0, -1))
-open("bs_seed.txt", "w").write(det + "\n")
+open(os.path.join(os.environ["WORK"], "bs_seed.txt"), "w").write(det + "\n")
+EOF
 ```
 
 Its energy is −326.2938406288 Ha, the second row of the table above. Which two irons
@@ -743,14 +829,21 @@ little: putting it in the first 3d orbital of Fe2 or Fe4 instead gave energies 6
 35 mHa higher. Grow from the lowest:
 
 ```bash
+mkdir -p $WORK/bs $WORK/bs27
 cd $SBD/examples/gdb
-OMP_NUM_THREADS=96 python run_gdb_heatbath.py --device gpu --bit_length 62 \
-    --fcidump $WORK/lichan_fe4s4 --subspace-from strings --strings-file $WORK/bs_seed.txt \
+gpus 1 python run_gdb_heatbath.py --device gpu --bit_length 62 \
+    --fcidump $LICHAN --subspace-from strings --strings-file $WORK/bs_seed.txt \
     --cutoffs 1e-3,1e-4 --checkpoint_prefix $WORK/bs/ck- --savename $WORK/bs/rung1-
 ```
 
-and, for comparison, the same ladder from the lowest-27 determinant
-(`--subspace-from hf`).
+and, for comparison, the same ladder from the lowest-27 determinant:
+
+```bash
+gpus 1 python run_gdb_heatbath.py --device gpu --bit_length 62 \
+    --fcidump $LICHAN --subspace-from hf --cutoffs 1e-3,1e-4 --savename $WORK/bs27/rung1-
+```
+
+Both start from one determinant, so both run on one GPU.
 
 **What we see.** Same Hamiltonian, same ladder, same GPU:
 
@@ -843,37 +936,71 @@ stops moving. This is the method of the qiskit-addon-sqd *optimize orbitals* gui
 applied to our drivers; with a growing subspace in between, it is what the literature
 calls orbital-optimized selected CI.
 
-**How, with these tools.** Four steps, the first and last with our drivers:
+**How, with these tools.** Each cycle is three steps: solve the determinant list with
+RDMs, on the GPUs; find the rotation and write the FCIDUMP in the new orbitals, with
+[ffsim](https://github.com/qiskit-community/ffsim) on the CPU (`pip install ffsim`);
+then the next cycle solves the same list in the new FCIDUMP. Two small scripts do the
+non-SBD parts. `export.py` writes a saved state's determinants as a `--detfiles` list;
+`rotate.py` checks the RDMs, optimizes the orbitals and writes the rotated FCIDUMP:
 
-1. Solve the subspace with RDMs: `run_gdb_diag.py ... --detfiles LIST --rdm_output rdm.npz`.
-2. Find the rotation with [ffsim](https://github.com/qiskit-community/ffsim)
-   (`pip install ffsim`):
+```bash
+mkdir -p $WORK/oo
+cat > $WORK/export.py <<'EOF'
+"""Write a saved GDB state's determinants as one --detfiles text file."""
+import sys
+import sbd
+from sbd import analysis
+sbd.init(device="cpu")
+state = analysis.load_state(sys.argv[1], norb=36, bit_length=62)
+with open(sys.argv[2], "w") as f:
+    f.write("\n".join(sbd.to_strings(state.det, 62, 72)) + "\n")
+print(len(state.det), "determinants ->", sys.argv[2])
+EOF
+cat > $WORK/rotate.py <<'EOF'
+"""Optimize the orbitals for a state's RDMs; write the FCIDUMP in the new orbitals."""
+import sys
+import numpy as np
+import ffsim
+from pyscf import tools, ao2mo
+src, rdm_file, dst, energy = sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4])
+d = tools.fcidump.read(src, verbose=0)
+n = d["NORB"]
+ham = ffsim.MolecularHamiltonian(d["H1"], ao2mo.restore(1, d["H2"], n), d["ECORE"])
+r = np.load(rdm_file)
+rdm = ffsim.ReducedDensityMatrix(r["rdm1"], r["rdm2"])
+e = rdm.expectation(ham)
+assert abs(e - energy) < 1e-6, f"RDM energy {e} does not match the solve's {energy}"
+U = ffsim.optimize_orbitals(rdm, ham)
+print(f"same RDMs: {e:.10f} -> {rdm.rotated(U).expectation(ham):.10f} in the new orbitals")
+new = ham.rotated(U.T.conj())
+h1 = new.one_body_tensor.real
+assert abs(np.trace(h1) - np.trace(d["H1"])) < 1e-8      # a rotation cannot change it
+tools.fcidump.from_integrals(dst, h1, ao2mo.restore(8, new.two_body_tensor.real, n),
+                             n, d["NELEC"], nuc=new.constant, ms=0)
+EOF
+```
 
-   ```python
-   import numpy as np, ffsim
-   from pyscf import tools, ao2mo
-   d = tools.fcidump.read("orbitals_k.fcidump")
-   ham = ffsim.MolecularHamiltonian(d["H1"], ao2mo.restore(1, d["H2"], d["NORB"]), d["ECORE"])
-   r = np.load("rdm.npz")
-   rdm = ffsim.ReducedDensityMatrix(r["rdm1"], r["rdm2"])
-   print(rdm.expectation(ham))          # must equal the solve's energy: a check on the RDMs
-   U = ffsim.optimize_orbitals(rdm, ham)
-   print(rdm.rotated(U).expectation(ham))  # the same state in the new orbitals
-   ```
+`rotate.py` refuses to go on if the RDMs do not reproduce the solve's energy: if they
+do not, the rotation it finds means nothing. Now four cycles on the broken-symmetry
+1e-4 state, always the same 926,168 determinants, on all 8 GPUs:
 
-3. Write the FCIDUMP in the new orbitals:
-
-   ```python
-   new = ham.rotated(U.T.conj())
-   tools.fcidump.from_integrals("orbitals_k+1.fcidump", new.one_body_tensor.real,
-                                ao2mo.restore(8, new.two_body_tensor.real, d["NORB"]),
-                                d["NORB"], d["NELEC"], nuc=new.constant, ms=0)
-   ```
-
-   The trace of the one-electron integrals must not change (−435.2879311575 here): a
-   rotation cannot change it.
-4. Re-solve the same list in the new FCIDUMP, with `--rdm_output` again for the next
-   step.
+```bash
+cd $SBD/examples/gdb
+python $WORK/export.py $WORK/bs/rung1- $WORK/oo/list926.txt
+cp $LICHAN $WORK/oo/orbitals_0.fcidump
+solve() {  # solve FCIDUMP LIST RDM-FILE -> prints and returns the energy
+    gpus 8 python run_gdb_diag.py --device gpu --b_comm_size 8 --bit_length 62 \
+        --tolerance 1e-8 --fcidump $1 --detfiles $2 --rdm_output $3 \
+        | grep "Ground state energy" | awk '{print $4}'
+}
+for k in 0 1 2 3; do
+    e=$(solve $WORK/oo/orbitals_$k.fcidump $WORK/oo/list926.txt $WORK/oo/rdm_$k.npz)
+    echo "orbitals $k: $e"
+    python $WORK/rotate.py $WORK/oo/orbitals_$k.fcidump $WORK/oo/rdm_$k.npz \
+        $WORK/oo/orbitals_$((k+1)).fcidump $e
+done
+solve $WORK/oo/orbitals_4.fcidump $WORK/oo/list926.txt $WORK/oo/rdm_4.npz
+```
 
 **What we see.** The broken-symmetry 1e-4 state, 926,168 determinants, always the same
 list:
@@ -886,8 +1013,9 @@ list:
 | three times | −327.1755060 | −327.1781436 | 6 mHa | 67 mHa |
 | four times | −327.1801616 | −327.1817703 | 4 mHa | 63 mHa |
 
-Each optimization took about 9 seconds on the CPU, each re-solve about 40 seconds on
-one GPU. The RDMs reproduced SBD's energy to all ten digits before every step.
+Each optimization takes seconds on the CPU; each re-solve, seconds on the GPUs. The
+RDMs reproduced SBD's energy to all ten digits before every step, and are the same on
+one GPU or eight.
 
 **What we take from it.**
 
@@ -905,56 +1033,48 @@ one GPU. The RDMs reproduced SBD's energy to all ten digits before every step.
 
 Alternate the two: grow the subspace in the current orbitals, optimize the orbitals
 for the larger state, grow again. Each growth step is a heat-bath run started from the
-current determinant list, and each optimization step is the four-step cycle above.
-Write a saved state's determinants out as a `--detfiles` list with `sbd.analysis` and
-`sbd.to_strings`:
-
-```python
-import sbd
-from sbd import analysis
-sbd.init(device="cpu")
-s = analysis.load_state("STATE-", norb=36, bit_length=62)    # a --savename prefix
-open("list.txt", "w").write("\n".join(sbd.to_strings(s.det, 62, 72)) + "\n")
-```
-
-Then grow from it in the current orbitals (`orbitals_4.fcidump` after the four cycles
-above), optimize twice more for the larger list, and grow again in the new orbitals,
-on 8 GPUs for the memory:
+current determinant list (`--subspace-from files`), and each optimization step is the
+cycle above:
 
 ```bash
 cd $SBD/examples/gdb
-mpirun -np 4 python run_gdb_heatbath.py --device gpu --b_comm_size 4 --bit_length 62 \
-    --fcidump orbitals_4.fcidump --subspace-from files --detfiles list.txt \
-    --cutoffs 3e-5 --max_rounds 5 --savename $WORK/oo/A-
-#   ... write $WORK/oo/A- out as listA.txt, two optimization cycles -> orbitals_6.fcidump
-mpirun -np 8 python run_gdb_heatbath.py --device gpu --b_comm_size 8 --bit_length 62 \
-    --fcidump orbitals_6.fcidump --subspace-from files --detfiles listA.txt \
-    --cutoffs 1e-5 --max_rounds 3 --max_dim 50000000 --savename $WORK/oo/D-
+hb() { gpus 8 python run_gdb_heatbath.py --device gpu --b_comm_size 8 --bit_length 62 "$@"; }
+hb --fcidump $WORK/oo/orbitals_4.fcidump --subspace-from files --detfiles $WORK/oo/list926.txt \
+   --cutoffs 3e-5 --max_rounds 5 --savename $WORK/oo/A-
+python $WORK/export.py $WORK/oo/A- $WORK/oo/listA.txt
+for k in 4 5; do
+    e=$(solve $WORK/oo/orbitals_$k.fcidump $WORK/oo/listA.txt $WORK/oo/rdmA_$k.npz)
+    echo "list A in orbitals $k: $e"
+    python $WORK/rotate.py $WORK/oo/orbitals_$k.fcidump $WORK/oo/rdmA_$k.npz \
+        $WORK/oo/orbitals_$((k+1)).fcidump $e
+done
+hb --fcidump $WORK/oo/orbitals_6.fcidump --subspace-from files --detfiles $WORK/oo/listA.txt \
+   --cutoffs 1e-5 --max_rounds 3 --max_dim 50000000 --savename $WORK/oo/D-
 ```
 
 | Step | Orbitals | Dimension | Energy (Ha) | Gap to DMRG |
 |---|---|---|---|---|
-| broken-symmetry state, 4 optimizations (above) | F4 | 926,168 | −327.1817703 | 58 mHa |
-| heat-bath at 3e-5, 4 GPUs, 5 rounds (7 min) | F4 | 2,789,768 | −327.2043403 | 35 mHa |
-| 2 more optimizations for that list | F6 | 2,789,768 | −327.2101559 | 30 mHa |
-| heat-bath at 1e-5, 8 GPUs, first round (7 min) | F6 | 10,054,592 | −327.2190979 | 21 mHa |
+| broken-symmetry state, 4 optimizations (above) | `orbitals_4` | 926,168 | −327.1817703 | 58 mHa |
+| heat-bath at 3e-5, 5 rounds | `orbitals_4` | 2,789,768 | −327.2043403 | 35 mHa |
+| 2 more optimizations for that list | `orbitals_6` | 2,789,768 | −327.2101559 | 30 mHa |
+| heat-bath at 1e-5, 3 rounds | `orbitals_6` | 12,732,176 | −327.2208561 | 19 mHa |
 
 Gaps are to Li and Chan's DMRG energy, −327.2396 Ha.
 
 The orbital steps get smaller as the subspace grows — 74 mHa on the first state, 2 and
 1 mHa on the larger one — because the orbitals are already close to right for it; the
-growth steps keep their value, since they add determinants the state needs. The
-1e-5 round needed 8 GPUs for memory: 10 million determinants took about 11 GB of host
-memory and 9 GB of GPU memory per rank.
+growth steps keep their value, since they add determinants the state needs. The 1e-5
+rung needs all 8 GPUs for its memory: at 10 million determinants each rank held about
+11 GB of host memory and 9 GB of GPU memory.
 
 ### Going further from the broken-symmetry state
 
-Resume the broken-symmetry ladder on 4 GPUs with a smaller cutoff, as in Part 5:
+Resume the broken-symmetry ladder on all 8 GPUs with a smaller cutoff, as in Part 5,
+still in Li and Chan's orbitals:
 
 ```bash
-mpirun -np 4 python run_gdb_heatbath.py --device gpu --b_comm_size 4 --bit_length 62 \
-    --fcidump $WORK/lichan_fe4s4 --resume_from_prefix $WORK/bs/ck- --cutoffs 3e-5 \
-    --checkpoint_prefix $WORK/bs/ck- --savename $WORK/bs/rung2-
+hb --fcidump $LICHAN --resume_from_prefix $WORK/bs/ck- --cutoffs 3e-5 \
+   --checkpoint_prefix $WORK/bs/ck- --savename $WORK/bs/rung2-
 ```
 
 **What we see.**
@@ -987,30 +1107,42 @@ Phys.* **160**, 104102 (2024)). Fitting a line to the last few states and readin
 PT2 = 0 gives the extrapolated energy. The states must all be in the *same* orbitals.
 Here those are the final ones, `orbitals_6.fcidump`: the 1e-5 run above saved its
 state in them already (`$WORK/oo/D-`), and the two smaller lists are solved in them
-and saved first:
+and saved first, each with its energy beside it:
 
 ```bash
 cd $SBD/examples/gdb
-mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 --bit_length 62 \
-    --tolerance 1e-8 --fcidump orbitals_6.fcidump --detfiles list.txt --savename $WORK/oo/S1-
-mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 --bit_length 62 \
-    --tolerance 1e-8 --fcidump orbitals_6.fcidump --detfiles listA.txt --savename $WORK/oo/S2-
+F6=$WORK/oo/orbitals_6.fcidump
+for s in "S1 list926" "S2 listA"; do
+    read tag list <<< "$s"
+    gpus 8 python run_gdb_diag.py --device gpu --b_comm_size 8 --bit_length 62 \
+        --tolerance 1e-8 --fcidump $F6 --detfiles $WORK/oo/$list.txt --savename $WORK/oo/$tag- \
+        | grep "Ground state energy" | awk '{print $4}' > $WORK/oo/$tag.energy
+done
+echo "$(energy $WORK/oo/D-)" > $WORK/oo/D.energy
 ```
 
-Then measure each, giving the energy its solve reported, and fit:
+Then measure each on all the cores, and fit:
 
 ```bash
 cd $SBD/examples/analysis
 for s in S1 S2 D; do
-    mpirun -np 96 -x OMP_NUM_THREADS=1 python variance.py \
-        --fcidump orbitals_6.fcidump --state $WORK/oo/$s- --bit_length 62 \
-        --energy ENERGY_OF_$s --batches 10 --json $WORK/oo/$s-var.json
+    cpus python variance.py --fcidump $F6 --state $WORK/oo/$s- --bit_length 62 \
+        --energy $(cat $WORK/oo/$s.energy) --batches 10 --json $WORK/oo/$s-var.json
 done
 python extrapolate.py $WORK/oo/S1-var.json $WORK/oo/S2-var.json $WORK/oo/D-var.json
+python extrapolate.py $WORK/oo/S1-var.json $WORK/oo/S2-var.json $WORK/oo/D-var.json --x variance
 ```
 
 **First, what an untrustworthy fit looks like.** The two broken-symmetry rungs in
-Li–Chan's orbitals:
+Li–Chan's orbitals, measured the same way:
+
+```bash
+for r in rung1 rung2; do
+    cpus python variance.py --fcidump $LICHAN --state $WORK/bs/$r- --bit_length 62 \
+        --energy $(energy $WORK/bs/$r-) --batches 10 --json $WORK/bs/$r-var.json
+done
+python extrapolate.py $WORK/bs/rung1-var.json $WORK/bs/rung2-var.json
+```
 
 | Rung | Dimension | E_var (Ha) | Variance (Ha²) | PT2 (mHa) | E_var + PT2 (Ha) |
 |---|---|---|---|---|---|
@@ -1032,11 +1164,11 @@ energy.)
 **Then, a trustworthy one.** The three states of the grow-and-optimize run, all in the
 final orbitals:
 
-| State | Dimension | E_var (Ha) | Variance (Ha²) | PT2 (mHa) | E_var + PT2 (Ha) | Analysis |
-|---|---|---|---|---|---|---|
-| broken-symmetry list | 926,168 | −327.1855172 | 0.0207 | −15.9 ± 0.1 | −327.2014 | 13 min |
-| after 3e-5 | 2,789,768 | −327.2101559 | 0.0136 | −9.0 ± 0.1 | −327.2191 | 16 min |
-| after 1e-5 | 12,732,176 | −327.2208561 | 0.0097 | −6.0 ± 0.2 | −327.2268 | 19 min |
+| State | Dimension | E_var (Ha) | Variance (Ha²) | PT2 (mHa) | E_var + PT2 (Ha) |
+|---|---|---|---|---|---|
+| broken-symmetry list (S1) | 926,168 | −327.1855172 | 0.0207 | −15.9 ± 0.1 | −327.2014 |
+| after 3e-5 (S2) | 2,789,768 | −327.2101559 | 0.0136 | −9.0 ± 0.1 | −327.2191 |
+| after 1e-5 (D) | 12,732,176 | −327.2208561 | 0.0097 | −6.0 ± 0.2 | −327.2268 |
 
 ```
   Extrapolated energy:  -327.24215462 Ha  +- 8.75e-04 (fit)
@@ -1151,18 +1283,20 @@ that the reported energy is at least that low.
 ```bash
 mkdir -p $WORK/sqd
 cd $SBD/examples/tpb
-mpirun -np 4 python run_sqd_sbd.py --device gpu \
-    --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt --counts count_dict_h2o.json \
-    --adet_comm_size 2 --bdet_comm_size 2 --bit_length 20 \
-    --max_iterations 3 --num_batches 2 --max_dim 200 \
-    --checkpoint_path $WORK/sqd/ckpt.json --savename $WORK/sqd/h2o-
+export H2O=$SBD/vendor/sbd-upstream/data/h2o/fcidump.txt
+sqd() { gpus 8 python run_sqd_sbd.py --device gpu --fcidump $H2O --counts count_dict_h2o.json \
+            --adet_comm_size 4 --bdet_comm_size 2 --bit_length 20 \
+            --max_iterations 3 --num_batches 2 "$@" | grep -E "Iteration|Batch|WARNING|Total energy|State saved"; }
+sqd --max_dim 200 --checkpoint_path $WORK/sqd/ckpt.json --savename $WORK/sqd/h2o-
 ```
 
-Then resume, first with the same `--max_dim`, then a larger one:
+Each iteration solves its batches with SBD on all 8 GPUs; configuration recovery and
+subsampling, between the solves, run in Python on one core. Then resume, first with
+the same `--max_dim`, then a larger one:
 
 ```bash
-mpirun -np 4 python run_sqd_sbd.py … --max_dim 200 --resume_from $WORK/sqd/ckpt.json
-mpirun -np 4 python run_sqd_sbd.py … --max_dim 400 --resume_from $WORK/sqd/ckpt.json
+sqd --max_dim 200 --resume_from $WORK/sqd/ckpt.json
+sqd --max_dim 400 --resume_from $WORK/sqd/ckpt.json
 ```
 
 **What we take from it.**
@@ -1189,7 +1323,9 @@ only the best batch each iteration, it trims every batch to its highest-weight s
 pools the survivors, and diagonalizes the pool. The subspace stays small as the number
 of samples grows. With SBD as the solver, on the bundled h2o counts:
 
-```python
+```bash
+cd $SBD/examples/tpb
+gpus 1 python - <<'EOF'
 import json
 from functools import partial
 from pyscf import tools, ao2mo
@@ -1198,7 +1334,7 @@ from qiskit_addon_sqd.fermion import diagonalize_fermionic_hamiltonian, Standard
 from qiskit_addon_sqd.trim import TrimPolicy
 from sbd.sbd_solver import solve_sci_batch
 
-fcidump = "../../vendor/sbd-upstream/data/h2o/fcidump.txt"
+fcidump = "../../vendor/sbd-upstream/data/h2o/fcidump.txt"   # run from examples/tpb
 d = tools.fcidump.read(fcidump)
 norb, nel = d["NORB"], d["NELEC"]
 counts = json.load(open("count_dict_h2o.json"))
@@ -1212,12 +1348,16 @@ for policy in (StandardPolicy(), TrimPolicy(trim_ratio=0.5, max_strings_per_trim
         sci_solver=solver, symmetrize_spin=True, seed=24, policy=policy)
     print(type(policy).__name__, r.energy + d["ECORE"],
           len(r.sci_state.ci_strs_a), "x", len(r.sci_state.ci_strs_b))
+EOF
 ```
 
-| Policy | Final subspace | Energy (Ha) | Time |
-|---|---|---|---|
-| `StandardPolicy` | 275 × 275 = 75,625 | −76.2359466 | 1.7 s |
-| `TrimPolicy(trim_ratio=0.5, max_strings_per_trim=250)` | 114 × 114 = 12,996 | −76.2205299 | 0.9 s |
+This is the addon's loop driven from Python, in one process, with SBD solving on one
+GPU.
+
+| Policy | Final subspace | Energy (Ha) |
+|---|---|---|
+| `StandardPolicy` | 275 × 275 = 75,625 | −76.2359466 |
+| `TrimPolicy(trim_ratio=0.5, max_strings_per_trim=250)` | 114 × 114 = 12,996 | −76.2205299 |
 
 Trim SQD's final subspace is six times smaller, 15 mHa higher in energy. Its settings
 trade the two; compare policies at matched subspace size to tell them apart, and use
