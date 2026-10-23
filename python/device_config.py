@@ -10,8 +10,7 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""
-Device configuration helper for SBD Python bindings.
+"""Device configuration helper for SBD Python bindings.
 
 This module provides utilities to easily switch between CPU and GPU execution
 without changing user code.
@@ -22,9 +21,8 @@ import subprocess
 
 
 class DeviceConfig:
-    """
-    Helper class to configure CPU vs GPU execution for SBD calculations.
-    
+    """Helper class to configure CPU vs GPU execution for SBD calculations.
+
     Usage::
 
         from sbd.device_config import DeviceConfig
@@ -36,13 +34,12 @@ class DeviceConfig:
 
         results = solve_sci_batch(..., device_config=device)
     """
-    
+
     def __init__(self, device: str = 'cpu',
                  use_precalculated_dets: bool = True,
                  max_memory_gb: int = -1,
                  use_gpu: bool | None = None):
-        """
-        Initialize device configuration.
+        """Initialize device configuration.
 
         Args:
             device: Backend device key — 'cpu', 'gpu' (NVHPC Thrust,
@@ -62,11 +59,10 @@ class DeviceConfig:
         self.use_gpu = device != 'cpu'
         self.use_precalculated_dets = use_precalculated_dets
         self.max_memory_gb = max_memory_gb
-    
+
     @classmethod
     def auto(cls, max_memory_gb: int = -1) -> 'DeviceConfig':
-        """
-        Auto-detect the best available backend and use it.
+        """Auto-detect the best available backend and use it.
 
         Chooses among the backends that were actually built, not merely the
         hardware present, so an AMD host or a CPU-only build is never handed a
@@ -115,7 +111,7 @@ class DeviceConfig:
     @classmethod
     def gpu(cls, use_precalculated_dets: bool = True,
             max_memory_gb: int = -1) -> 'DeviceConfig':
-        """Force NVHPC Thrust GPU execution. **NVIDIA only.**
+        """Force NVHPC Thrust GPU execution (**NVIDIA only**).
 
         Requires SBD compiled with THRUST (the ``_core_gpu_thrust`` extension,
         i.e. ``SBD_BUILD_BACKEND=gpu``, or the default ``auto``).
@@ -169,7 +165,7 @@ class DeviceConfig:
             DeprecationWarning, stacklevel=2,
         )
         return cls.gpu_omp(max_memory_gb=max_memory_gb)
-    
+
     # Cached detection results (None = not yet checked)
     _cuda_cache: bool | None = None
     _hip_cache: bool | None = None
@@ -216,10 +212,9 @@ class DeviceConfig:
         except Exception:
             cls._hip_cache = False
         return cls._hip_cache
-    
+
     def apply(self, sbd_config) -> None:
-        """
-        Apply device configuration to an SBD TPB_SBD configuration object.
+        """Apply device configuration to an SBD TPB_SBD configuration object.
 
         Args:
             sbd_config: sbd.TPB_SBD configuration object
@@ -238,8 +233,9 @@ class DeviceConfig:
                       "backend module — likely a CPU/OMP-offload build "
                       "loaded under device='gpu'. Numerics still run on "
                       "the selected backend.")
-    
+
     def __repr__(self) -> str:
+        """Return a readable representation of the configuration."""
         if self.device == 'cpu':
             return "DeviceConfig(CPU)"
         return (f"DeviceConfig(device={self.device!r}, "
@@ -248,9 +244,8 @@ class DeviceConfig:
 
 
 def get_device_info() -> dict:
-    """
-    Get information about available compute devices.
-    
+    """Get information about available compute devices.
+
     Returns:
         Dictionary with device information
     """
@@ -261,7 +256,7 @@ def get_device_info() -> dict:
         'gpu_type': None,
         'gpu_count': 0
     }
-    
+
     if info['cuda_available']:
         info['gpu_available'] = True
         info['gpu_type'] = 'CUDA'
@@ -271,7 +266,7 @@ def get_device_info() -> dict:
                 capture_output=True, text=True, timeout=2,
             )
             if result.returncode == 0:
-                info['gpu_count'] = len([l for l in result.stdout.split('\n') if l.strip()])
+                info['gpu_count'] = len([ln for ln in result.stdout.split('\n') if ln.strip()])
         except Exception:
             pass
 
@@ -292,7 +287,7 @@ def get_device_info() -> dict:
                 info['gpu_count'] = len(set(ids))
         except Exception:
             pass
-    
+
     return info
 
 

@@ -56,7 +56,7 @@ def parse_args():
         description='Quantum chemistry calculation with CPU/GPU support',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    
+
     # Device selection
     parser.add_argument('--device',
                        choices=['auto', 'cpu',
@@ -68,7 +68,7 @@ def parse_args():
                             'gpu-omp (nvc++ OpenMP target offload) | auto. '
                             'gpu-nvhpc-omp / gpu-nvidia-omp are deprecated '
                             'aliases for gpu-omp.')
-    
+
     # Input files
     parser.add_argument('--fcidump', default='../../vendor/sbd-upstream/data/h2o/fcidump.txt',
                        help='Path to FCIDUMP file')
@@ -84,7 +84,7 @@ def parse_args():
                        help='Load initial wavefunction from file')
     parser.add_argument('--savename', default='',
                        help='Save final wavefunction to file')
-    
+
     # MPI communicator sizes
     parser.add_argument('--adet_comm_size', type=int, default=1,
                        help='Alpha determinant communicator size')
@@ -92,7 +92,7 @@ def parse_args():
                        help='Beta determinant communicator size')
     parser.add_argument('--task_comm_size', type=int, default=1,
                        help='Helper communicator size')
-    
+
     # Diagonalization method and convergence
     parser.add_argument('--method', type=int, default=0, choices=[0, 1, 2, 3],
                        help='Diagonalization method: 0=Davidson, 1=Davidson+Ham, 2=Lanczos, 3=Lanczos+Ham')
@@ -104,7 +104,7 @@ def parse_args():
                        help='Convergence tolerance')
     parser.add_argument('--max_time', type=float, default=1e10,
                        help='Maximum time in seconds')
-    
+
     # Initialization and options
     parser.add_argument('--init', type=int, default=0,
                        help='Starting vector. 0 puts unit weight on the FIRST '
@@ -147,11 +147,11 @@ def parse_args():
                        help='Carryover ratio')
     parser.add_argument('--carryover_threshold', '--threshold', type=float, default=0.0, dest='threshold',
                        help='Carryover threshold')
-    
+
     # Determinant representation
     parser.add_argument('--bit_length', type=int, default=20,
                        help='Bit length for determinant representation')
-    
+
     # Output options
     parser.add_argument('--dump_matrix_form_wf', default='',
                        help='Filename to dump wavefunction in matrix form')
@@ -162,13 +162,13 @@ def parse_args():
     parser.add_argument('--max_memory_gb_for_determinants', '--gpu-memory', type=int, default=-1,
                        dest='max_memory_gb_for_determinants',
                        help='Maximum GPU memory in GB for determinants (-1=auto, GPU only)')
-    
+
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    
+
     # Import sbd — auto-initializes on first use, but we call init()
     # explicitly here to set the default device from --device flag.
     import sbd
@@ -178,14 +178,14 @@ def main():
 
     rank = sbd.get_rank()
     size = sbd.get_world_size()
-    
+
     if rank == 0:
         print("="*70)
         print("SBD Simplified API - Chemistry Calculation")
         print("="*70)
         sbd.print_info()
         print()
-    
+
     # Configure calculation
     config = sbd.TPB_SBD()
     config.max_it = args.max_it
@@ -211,12 +211,12 @@ def main():
         config.use_precalculated_dets = bool(args.use_precalculated_dets)
     if hasattr(config, 'max_memory_gb_for_determinants'):
         config.max_memory_gb_for_determinants = args.max_memory_gb_for_determinants
-    
+
     if rank == 0:
         print("Configuration:")
         print(f"  Device: {sbd.get_device()}")
         print(f"  Communication: {sbd.get_comm_backend()}")
-        print(f"  Method: Davidson")
+        print("  Method: Davidson")
         print(f"  Max iterations: {config.max_it}")
         print(f"  Tolerance: {config.eps}")
         print(f"  MPI ranks: {size}")
@@ -231,7 +231,7 @@ def main():
                   f"requires task x adet x bdet x helper == ranks exactly, so this "
                   f"will abort in TaskCommunicator with 'MPI Size of twister is not "
                   f"a square of a integer'. Use a multiple of {_grid} ranks.")
-        print(f"\nInput files:")
+        print("\nInput files:")
         print(f"  FCIDUMP: {args.fcidump}")
         print(f"  Alpha dets: {args.adetfile}")
         print()

@@ -334,7 +334,7 @@ def test_gdb_rejects_a_task_split(backend, h2o):
 @pytest.fixture(scope="module")
 def h2o_product(backend, h2o):
     """The truncated product basis, packed and globally sorted."""
-    fcidump, norb, _, alpha = h2o
+    _, norb, _, alpha = h2o
     strings = [_interleave(a, b) for a, b in itertools.product(alpha, alpha)]
     packed = sbd.sort_bitarray_array(
         sbd.from_strings(strings, BIT_LENGTH, 2 * norb)
@@ -350,7 +350,7 @@ def test_from_strings_matches_the_per_determinant_form(backend, h2o):
     determinant, which issue #31 measures as a real cost at tens of thousands of
     strings. It is only worth having if it is the same function, hence this.
     """
-    fcidump, norb, _, alpha = h2o
+    _, norb, _, alpha = h2o
     strings = [_interleave(a, b) for a, b in itertools.product(alpha[:6], alpha[:6])]
     bulk = sbd.from_strings(strings, BIT_LENGTH, 2 * norb)
     one_by_one = [backend.from_string(s, BIT_LENGTH, 2 * norb) for s in strings]
@@ -661,7 +661,7 @@ print("ENERGY", repr(result["energy"]), "DIM", result["global_dim"])
     assert completed.returncode == 0, (
         f"subprocess failed:\n{completed.stdout[-2000:]}\n{completed.stderr[-2000:]}"
     )
-    line = [l for l in completed.stdout.splitlines() if l.startswith("ENERGY")]
+    line = [ln for ln in completed.stdout.splitlines() if ln.startswith("ENERGY")]
     assert line, f"no energy reported:\n{completed.stdout[-2000:]}"
     _, energy, _, dim = line[-1].split()
     assert int(dim) == 59536

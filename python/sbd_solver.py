@@ -10,8 +10,7 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""
-SBD solver wrapper compatible with qiskit-addon-sqd interface.
+"""SBD solver wrapper compatible with qiskit-addon-sqd interface.
 
 This module provides functions that wrap the SBD (Selected Basis Diagonalization)
 library to be compatible with the qiskit-addon-sqd diagonalize_fermionic_hamiltonian
@@ -20,11 +19,10 @@ interface, similar to how qiskit-addon-dice-solver works.
 
 from __future__ import annotations
 
-import tempfile
 import shutil
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from collections.abc import Sequence
-from typing import Callable
 
 import numpy as np
 from mpi4py import MPI
@@ -80,8 +78,7 @@ def solve_sci(
     device_config=None,
     fcidump_path: str | Path | None = None,
 ) -> SCIResult:
-    """
-    Diagonalize Hamiltonian in subspace defined by CI strings using SBD.
+    """Diagonalize Hamiltonian in subspace defined by CI strings using SBD.
 
     Args:
         ci_strings: Pair (strings_a, strings_b) of CI string arrays.
@@ -158,8 +155,7 @@ def _solve_sci_core(
     device_config=None,
     ecore_offset: float = 0.0,
 ) -> SCIResult:
-    """
-    Inner diagonalization kernel that operates on a pre-loaded FCIDUMP object.
+    """Inner diagonalization kernel that operates on a pre-loaded FCIDUMP object.
 
     Separated from solve_sci so that solve_sci_batch can write and load
     the FCIDUMP only once and reuse it across all batches.
@@ -522,8 +518,7 @@ def solve_sci_batch(
     device_config=None,
     fcidump_path: str | Path | None = None,
 ) -> list[SCIResult]:
-    """
-    Diagonalize Hamiltonian in multiple subspaces using SBD.
+    """Diagonalize Hamiltonian in multiple subspaces using SBD.
 
     The FCIDUMP file is loaded once and reused across all batches.
 
@@ -784,9 +779,9 @@ def create_sbd_solver(
     clean_temp_dir: bool = True,
     device_config=None,
 ) -> Callable:
-    """
-    Create a configured SBD solver function for use with
-    diagonalize_fermionic_hamiltonian.
+    """Create a configured SBD solver function.
+
+    The result is suitable for use with ``diagonalize_fermionic_hamiltonian``.
 
     Example:
         >>> from functools import partial

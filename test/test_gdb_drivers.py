@@ -33,6 +33,7 @@ driver's reading or sharding is at fault, not the diagonalization.
 
 from __future__ import annotations
 
+import itertools
 import json
 import pathlib
 import re
@@ -228,7 +229,7 @@ def test_heatbath_ladder_grows_and_lowers_the_energy(tmp_path):
     energies = [entry["energy"] for entry in rounds]
     assert dims == sorted(dims), f"subspace shrank across rounds: {dims}"
     assert dims[-1] > dims[0], f"expansion added nothing: {dims}"
-    for before, after in zip(energies, energies[1:]):
+    for before, after in itertools.pairwise(energies):
         assert after <= before + 1e-10, f"energy rose across a round: {energies}"
 
 

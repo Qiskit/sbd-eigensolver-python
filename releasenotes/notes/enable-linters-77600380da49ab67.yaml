@@ -1,0 +1,10 @@
+---
+other:
+  - |
+    The repository now runs ``ruff check``, a copyright-header check
+    (``ruff check --preview --select CPY001``) and ``reno lint`` in CI, through
+    new ``style`` and ``lint`` tox environments. Run ``tox -e style`` to apply
+    the automatic fixes and ``tox -e lint`` for a non-destructive check.
+
+    These environments set ``skip_install``, so neither compiles the extension
+    and neither needs MPI or BLAS present.

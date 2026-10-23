@@ -63,6 +63,18 @@ notebook-dependencies = [
     "pyscf>=2.9",
 ]
 
+[dependency-groups]
+# The linters live in dependency groups rather than optional-dependencies: they are
+# never installed alongside the package (the lint envs set `skip_install`), so there is
+# no reason to publish them as extras in the wheel metadata.
+style = [
+    "ruff==0.16.9",
+]
+lint = [
+    {include-group = "style"},
+    "reno>=4.1",
+]
+
 [project.urls]
 Homepage = "https://github.com/Qiskit/sbd-eigensolver-python"
 Documentation = "https://github.com/Qiskit/sbd-eigensolver-python"
@@ -75,6 +87,86 @@ Issues = "https://github.com/Qiskit/sbd-eigensolver-python/issues"
 packages = ["sbd"]
 package-dir = {sbd = "python"}
 zip-safe = false
+
+[tool.ruff]
+line-length = 100
+src = ["python", "test"]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "I",   # isort
+    "E",   # pycodestyle
+    "W",   # pycodestyle
+    "D",   # pydocstyle
+    "F",   # pyflakes
+    "RUF", # ruff
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "B",   # flake8-bugbear
+    "A",   # flake8-builtins
+]
+ignore = [
+    "E501", # line too long
+]
+
+[tool.ruff.lint.extend-per-file-ignores]
+"test/**.py" = [
+    "D",  # pydocstyle
+]
+"docs/**/*" = [
+    "E402", # module level import not at top of file
+    "D",    # pydocstyle
+]
+# The examples are written to be read top to bottom, so their helpers carry an
+# explanatory comment rather than a docstring, and the prose uses the same
+# mathematical symbols (alpha, the minus sign, the multiplication sign) as the
+# surrounding discussion.
+"examples/**/*" = [
+    "D",      # pydocstyle
+    "I001",   # unsorted-imports: see the isort note below
+    "RUF001", # ambiguous unicode character in string
+    "RUF003", # ambiguous unicode character in comment
+    "SIM102", # collapsible if: the nesting mirrors the explanation
+]
+# `i, j, k, l` is the FCIDUMP two-electron integral index order, so `l` here is
+# the name the file format uses rather than an ambiguous identifier.
+"python/sbd_solver.py" = [
+    "E741", # ambiguous variable name
+]
+# `__all__` is grouped by topic with comments, which sorting would flatten.
+"python/__init__.py" = [
+    "RUF022", # `__all__` is not sorted
+]
+
+[tool.ruff.lint.isort]
+# The package directory is `python/` but it imports as `sbd` (see
+# `[tool.setuptools] package-dir`), so isort cannot infer that `sbd` is ours and
+# would otherwise group it with the third-party imports.
+#
+# This makes `sbd` its own import group, which isort separates with a blank line.
+# That is what we want in `python/` and `test/`, but in the examples it splits
+# short function-local blocks like `from mpi4py import MPI` next to `import sbd`
+# for no gain, so `I001` is ignored for `examples/` above.
+known-first-party = ["sbd"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-copyright]
+notice-rgx = """
+# This code is a Qiskit project.
+#
+# \\(C\\) Copyright IBM \\d{4}((,\\s)\\d{4})*\\.
+#
+# This code is licensed under the Apache License, Version 2\\.0\\. You may
+# obtain a copy of this license in the LICENSE\\.txt file in the root directory
+# of this source tree or at http\\:\\/\\/www\\.apache\\.org\\/licenses\\/LICENSE\\-2\\.0\\.
+#
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals\\.
+"""
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
