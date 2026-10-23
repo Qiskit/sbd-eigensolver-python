@@ -317,8 +317,9 @@ starting vector. Then do the same with type 3 at 1e-2.
   60 thousand to 8.4 million in two steps. TPB cannot add a determinant without its
   whole row and column of pairings.
 - **For all that size, the gain is modest:** 70 mHa at 8.4 million determinants. Most
-  of the new pairings matter little — the cost of the product structure, and the
-  reason to try a list that can grow one determinant at a time.
+  of the new pairings matter little — the cost of the product structure. The next part
+  does the same cycle with a determinant list, which can grow one determinant at a
+  time.
 - **Type 3 stalls at once.** Its second step carried over exactly the 452 strings it
   started from, so a third step repeats the second. At this threshold, the strings
   above it and their singles are already all there: a fixed point.
@@ -834,7 +835,9 @@ rotations U for the one that makes E lowest. Everything involved is small:
 The many-electron Hamiltonian, which would act on all 8.8 × 10¹⁵ determinants, is never
 built: the formula above needs only the integrals and the RDMs, so the search over 630
 parameters takes seconds. The rotation mixes only the 36 active orbitals among
-themselves, which is why it leaves the exact energy of the active space unchanged. Then, in the new orbitals, re-diagonalize the same list of determinants: the
+themselves, which is why it leaves the exact energy of the active space unchanged.
+
+Then, in the new orbitals, re-diagonalize the same list of determinants: the
 coefficients adjust to the new basis, and the energy falls further. Repeat until it
 stops moving. This is the method of the qiskit-addon-sqd *optimize orbitals* guide,
 applied to our drivers; with a growing subspace in between, it is what the literature
@@ -901,8 +904,33 @@ one GPU. The RDMs reproduced SBD's energy to all ten digits before every step.
 ### Growing and optimizing together
 
 Alternate the two: grow the subspace in the current orbitals, optimize the orbitals
-for the larger state, grow again. All of these run with the tools above; the heat-bath
-rounds take the determinant list through `--subspace-from files --detfiles`.
+for the larger state, grow again. Each growth step is a heat-bath run started from the
+current determinant list, and each optimization step is the four-step cycle above.
+Write a saved state's determinants out as a `--detfiles` list with `sbd.analysis` and
+`sbd.to_strings`:
+
+```python
+import sbd
+from sbd import analysis
+sbd.init(device="cpu")
+s = analysis.load_state("STATE-", norb=36, bit_length=62)    # a --savename prefix
+open("list.txt", "w").write("\n".join(sbd.to_strings(s.det, 62, 72)) + "\n")
+```
+
+Then grow from it in the current orbitals (`orbitals_4.fcidump` after the four cycles
+above), optimize twice more for the larger list, and grow again in the new orbitals,
+on 8 GPUs for the memory:
+
+```bash
+cd $SBD/examples/gdb
+mpirun -np 4 python run_gdb_heatbath.py --device gpu --b_comm_size 4 --bit_length 62 \
+    --fcidump orbitals_4.fcidump --subspace-from files --detfiles list.txt \
+    --cutoffs 3e-5 --max_rounds 5 --savename $WORK/oo/A-
+#   ... write $WORK/oo/A- out as listA.txt, two optimization cycles -> orbitals_6.fcidump
+mpirun -np 8 python run_gdb_heatbath.py --device gpu --b_comm_size 8 --bit_length 62 \
+    --fcidump orbitals_6.fcidump --subspace-from files --detfiles listA.txt \
+    --cutoffs 1e-5 --max_rounds 3 --max_dim 50000000 --savename $WORK/oo/D-
+```
 
 | Step | Orbitals | Dimension | Energy (Ha) | Gap to DMRG |
 |---|---|---|---|---|
@@ -956,19 +984,29 @@ gained about half the one before, and no energy rose.
 As the subspace grows, PT2 shrinks toward zero while E_var approaches the exact
 energy, and close to convergence E_var is linear in PT2 (Burton and Loos, *J. Chem.
 Phys.* **160**, 104102 (2024)). Fitting a line to the last few states and reading it at
-PT2 = 0 gives the extrapolated energy. The states must all be in the *same* orbitals,
-so save each with `--savename` from a solve in the final FCIDUMP (`run_gdb_diag.py
---detfiles LIST --savename STATE-`, or the heat-bath driver's own `--savename`), then
-measure each with the energy that solve reported, and fit:
+PT2 = 0 gives the extrapolated energy. The states must all be in the *same* orbitals.
+Here those are the final ones, `orbitals_6.fcidump`: the 1e-5 run above saved its
+state in them already (`$WORK/oo/D-`), and the two smaller lists are solved in them
+and saved first:
+
+```bash
+cd $SBD/examples/gdb
+mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 --bit_length 62 \
+    --tolerance 1e-8 --fcidump orbitals_6.fcidump --detfiles list.txt --savename $WORK/oo/S1-
+mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 --bit_length 62 \
+    --tolerance 1e-8 --fcidump orbitals_6.fcidump --detfiles listA.txt --savename $WORK/oo/S2-
+```
+
+Then measure each, giving the energy its solve reported, and fit:
 
 ```bash
 cd $SBD/examples/analysis
-for s in s926 s2789 s12732; do
+for s in S1 S2 D; do
     mpirun -np 96 -x OMP_NUM_THREADS=1 python variance.py \
-        --fcidump $WORK/oo/orbitals_6.fcidump --state $WORK/oo/$s- --bit_length 62 \
-        --energy $(cat $WORK/oo/$s.energy) --batches 10 --json $WORK/oo/$s-var.json
+        --fcidump orbitals_6.fcidump --state $WORK/oo/$s- --bit_length 62 \
+        --energy ENERGY_OF_$s --batches 10 --json $WORK/oo/$s-var.json
 done
-python extrapolate.py $WORK/oo/s*-var.json
+python extrapolate.py $WORK/oo/S1-var.json $WORK/oo/S2-var.json $WORK/oo/D-var.json
 ```
 
 **First, what an untrustworthy fit looks like.** The two broken-symmetry rungs in
@@ -1051,6 +1089,7 @@ its own error bar.
 | Broken-symmetry seed, 3e-5 (Part 6) | Li–Chan | 6,342,875 | −327.128 | ≈ 112 mHa |
 | + orbital optimization, same 926k determinants (Part 6) | optimized | 926,168 | −327.186 | ≈ 54 mHa |
 | + growth and re-optimization, 1e-5 (Part 6) | optimized | 12,732,176 | −327.221 | ≈ 19 mHa |
+| same state, E_var + PT2 (Part 7) | optimized | — | −327.227 | ≈ 13 mHa |
 | Extrapolated, 3 points (Part 7) | optimized | — | −327.242 ± 0.001 | within the DMRG range |
 | DMRG (literature) | Li–Chan | — | −327.2396 to −327.247 | — |
 
@@ -1082,8 +1121,10 @@ Which tool for which question:
 | How do I improve a subspace step by step? | `--carryover_*` output files, restarted by hand |
 | How do I get the best energy without preparing a subspace? | `run_gdb_heatbath.py` from a physically sensible determinant, checkpointed |
 | What is my best estimate, with an error bar? | `variance.py` per rung, then `extrapolate.py` — near convergence only |
-| I have bitstrings sampled on a quantum computer | `run_sqd_sbd.py` (Part 9) |
-| Can a subspace from one source be refined further? | `--detfiles` or `include_configurations`, then a heat-bath round or orbital optimization |
+| How do I make a fixed subspace more effective? | orbital optimization: `--rdm_output`, then ffsim (Part 6) |
+| I have bitstrings sampled on a quantum computer | `run_sqd_sbd.py`, or the addon's loop with SBD as the solver (Part 9) |
+| How do I keep SQD's subspace small as samples grow? | the addon's `TrimPolicy` with SBD as the solver (Part 9) |
+| Can a subspace from one source be refined further? | `--detfiles`, then a heat-bath round or orbital optimization |
 
 ---
 
@@ -1137,9 +1178,66 @@ mpirun -np 4 python run_sqd_sbd.py … --max_dim 400 --resume_from $WORK/sqd/ckp
   like the others. `sbd.analysis.load_state` reads it as full determinants, and
   `sbd.to_strings` writes them as a file that `run_gdb_heatbath.py --subspace-from
   strings` (or `run_gdb_diag.py --detfiles`) starts from; a GDB solve of that list with
-  `--rdm_output` gives the RDMs for orbital optimization as in Part 6. Going the other
-  way, configurations already known to matter can be put into every SQD subspace with
-  `include_configurations` (`--include_hf`, or a `--resume_from` checkpoint).
+  `--rdm_output` gives the RDMs for orbital optimization as in Part 6.
+
+### A different SQD policy: Trim SQD
+
+The addon's loop is not tied to this driver. It takes any solver with the right
+signature, and SBD's `solve_sci_batch` is one, so the addon's own features run on SBD
+unchanged. One is *Trim SQD* (`qiskit_addon_sqd.trim.TrimPolicy`): instead of keeping
+only the best batch each iteration, it trims every batch to its highest-weight strings,
+pools the survivors, and diagonalizes the pool. The subspace stays small as the number
+of samples grows. With SBD as the solver, on the bundled h2o counts:
+
+```python
+import json
+from functools import partial
+from pyscf import tools, ao2mo
+from qiskit.primitives import BitArray
+from qiskit_addon_sqd.fermion import diagonalize_fermionic_hamiltonian, StandardPolicy
+from qiskit_addon_sqd.trim import TrimPolicy
+from sbd.sbd_solver import solve_sci_batch
+
+fcidump = "../../vendor/sbd-upstream/data/h2o/fcidump.txt"
+d = tools.fcidump.read(fcidump)
+norb, nel = d["NORB"], d["NELEC"]
+counts = json.load(open("count_dict_h2o.json"))
+bits = BitArray.from_counts(counts, num_bits=2 * norb)
+solver = partial(solve_sci_batch, sbd_config={"eps": 1e-8, "bit_length": 20},
+                 fcidump_path=fcidump)
+for policy in (StandardPolicy(), TrimPolicy(trim_ratio=0.5, max_strings_per_trim=250)):
+    r = diagonalize_fermionic_hamiltonian(
+        d["H1"], ao2mo.restore(1, d["H2"], norb), bits, samples_per_batch=300,
+        norb=norb, nelec=(nel // 2, nel // 2), num_batches=5, max_iterations=5,
+        sci_solver=solver, symmetrize_spin=True, seed=24, policy=policy)
+    print(type(policy).__name__, r.energy + d["ECORE"],
+          len(r.sci_state.ci_strs_a), "x", len(r.sci_state.ci_strs_b))
+```
+
+| Policy | Final subspace | Energy (Ha) | Time |
+|---|---|---|---|
+| `StandardPolicy` | 275 × 275 = 75,625 | −76.2359466 | 1.7 s |
+| `TrimPolicy(trim_ratio=0.5, max_strings_per_trim=250)` | 114 × 114 = 12,996 | −76.2205299 | 0.9 s |
+
+Trim SQD's final subspace is six times smaller, 15 mHa higher in energy. Its settings
+trade the two; compare policies at matched subspace size to tell them apart, and use
+`variance.py` on the saved states to see how close each is to converged. The addon's
+[Trim SQD guide](https://qiskit.github.io/qiskit-addon-sqd/guides/trim_sqd.html)
+explains the method.
+
+### Not yet: seeding SQD with a refined subspace
+
+A natural next step is to give SQD a head start: carry the strings of a refined state
+— the broken-symmetry, orbital-optimized state of Part 6, say — into every subspace
+through `include_configurations` (a `--resume_from` checkpoint written from that
+state), and let the samples add to it. The strings do get in; the obstacle is the
+solver's start. With the default start, the first sorted determinant, Davidson can
+converge on a state confined to the sampled strings and report its energy, far above
+what the included strings alone give; a random start (`init 1`) avoids that here, but
+on canonical h2o it converges to a higher state instead. The robust choice is to start
+Davidson on a chosen determinant, which SBD supports but this package does not yet
+expose to Python, so this workflow is not shown. Until it is, check any SQD energy with
+included configurations against the energy of those configurations alone.
 
 ## Appendix A — What each driver saves, and how to continue from it
 
@@ -1159,3 +1257,5 @@ mpirun -np 4 python run_sqd_sbd.py … --max_dim 400 --resume_from $WORK/sqd/ckp
 - `variance.py` runs on CPU; give it many ranks with one thread each.
 - PT2 is a rough guide while it is large; trust extrapolations only once it is small.
 - SQD resumed at `--max_dim` stays where it was.
+- SBD's default Davidson start is the first sorted determinant: fine in canonical HF
+  orbitals, unreliable in others. Check an energy against what the subspace must reach.
