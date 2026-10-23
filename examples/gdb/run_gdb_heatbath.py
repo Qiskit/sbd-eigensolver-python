@@ -825,15 +825,17 @@ def main():
             save_start = time.perf_counter()
             if can_save:
                 last_round = this_round
+            # The same record goes beside a --savename state as beside a checkpoint:
+            # its energy, dimension and ladder position, for whatever reads it later.
+            record = dict(this_round, cutoffs=cutoffs, history=history,
+                          bit_length=args.bit_length, fcidump=args.fcidump)
             if can_save and args.checkpoint:
-                record = dict(this_round, cutoffs=cutoffs, history=history,
-                              bit_length=args.bit_length, fcidump=args.fcidump)
                 promote_state(scratch, args.checkpoint, comm, extra=record)
                 count = len(history)
                 if args.checkpoint_frequency and count % args.checkpoint_frequency == 0:
                     copy_state(args.checkpoint, f"{args.checkpoint}_r{count:04d}-", comm)
             elif can_save and args.savename:
-                promote_state(scratch, args.savename, comm)
+                promote_state(scratch, args.savename, comm, extra=record)
             save_seconds = None
             if can_save:
                 save_seconds = comm.allreduce(time.perf_counter() - save_start, op=MPI.MAX)

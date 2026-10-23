@@ -520,3 +520,16 @@ def test_heatbath_resumes_from_the_previous_state_after_an_interrupted_save(tmp_
     assert first["energy"] == pytest.approx(record["energy"], abs=1e-8)
     assert not list(tmp_path.glob("ck-.prev-*")), "the previous state was not cleaned up"
     assert (tmp_path / "ck-.json").exists()
+
+
+def test_heatbath_savename_records_the_energy_beside_the_state(tmp_path):
+    """--savename alone, without a checkpoint, still writes PREFIX.json with the energy."""
+    _require(H2O_DIR / "h2o-1em3-alpha.txt")
+    final, log = tmp_path / "final-", tmp_path / "ladder.json"
+    _assert_ok(_run("run_gdb_heatbath.py", [
+        *_h2o_ladder(), "--cutoffs", "1e-3", "--max_rounds", "2",
+        "--savename", str(final), "--log", str(log),
+    ]))
+    record = json.loads((tmp_path / "final-.json").read_text())
+    assert record["energy"] == pytest.approx(json.loads(log.read_text())["rounds"][-1]["energy"],
+                                             abs=1e-10)

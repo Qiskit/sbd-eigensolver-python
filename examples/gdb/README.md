@@ -157,7 +157,7 @@ Saving and resuming — see [Saving, checkpointing and resuming](#saving-checkpo
 
 | Parameter | What it controls | Default |
 |---|---|---|
-| `--savename PREFIX` | Save the last completed round's state (determinants and amplitudes), `PREFIX000000.bin` …, one file per shard, for `../analysis/variance.py` | none |
+| `--savename PREFIX` | Save the last completed round's state (determinants and amplitudes), `PREFIX000000.bin` …, one file per shard, for `../analysis/variance.py`, and `PREFIX.json` with its energy, dimension and ladder position | none |
 | `--checkpoint_prefix PREFIX` | After every round, save that round's state as above plus `PREFIX.json` (ladder position and history). Only the latest round is kept | none |
 | `--checkpoint_frequency N` | Also keep a copy of every `N`th round's checkpoint, as `PREFIX_rNNNN-` | `0` (none) |
 | `--resume_from_prefix PREFIX` | Start from a checkpoint (or any GDB state saved with `savename`) instead of `--subspace-from` | none |
