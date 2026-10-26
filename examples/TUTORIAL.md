@@ -197,18 +197,16 @@ energies are ascending, and HF started from the lowest-27 determinant stays exac
 where it is. So the orbitals are canonical HF orbitals, and −326.5243550 Ha is a
 Hartree–Fock energy.
 
-It is not the only one. The same active space is also distributed in a second set of
-canonical orbitals (in `~/samples/fe4s4` on the server used here, and quoted in the
-literature), whose lowest-27 determinant is also an HF solution, at −326.5474155 Ha,
-23 mHa lower. The HF equations can have several self-consistent solutions, especially
-for a strongly correlated system like this one; each is a valid starting point, but
-only one is the lowest. We stay with the upstream file throughout Parts 0–5, so this
-does not affect the comparisons there.
+It is not the only one. An FCIDUMP fixes one set of orbitals, and the same active
+space can be written in others. The HF equations can have several self-consistent
+solutions, especially for a strongly correlated system like this one, and orbitals
+from a different solution can give a lower HF energy than this file's. We stay with
+the upstream file throughout Parts 0–5, so this does not affect the comparisons there.
 
 **What we take from it.** Any single determinant's energy is an upper bound: the true
 energy is lower. The HF energy is the best a single determinant can do in a given set
-of orbitals, and even the HF energy depends on which HF solution the orbitals come from. The
-difference is the *correlation energy*, and finding as much of it as possible is the
+of orbitals, and the HF energy itself depends on which HF solution the orbitals come
+from. The difference is the *correlation energy*, and finding as much of it as possible is the
 whole problem. We do not know how large it is, so we need two things at every step:
 a better state, and a way to tell how far that state still is from the exact one.
 
