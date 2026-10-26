@@ -494,8 +494,9 @@ part, and nothing is gathered onto one rank.
 
 `run_gdb_heatbath.py` runs the Part 3b cycle as a *ladder*: rounds at one cutoff until
 the energy stops moving (`--energy_tol`, at most `--max_rounds`), then the next,
-smaller cutoff. It can start from a single determinant, which tests the method without any
-prepared subspace.
+smaller cutoff. Each round is a type 2 heat-bath expansion, as in Part 3b;
+`--carryover_type 3` selects the integral-driven variant. It can start from a single
+determinant, which tests the method without any prepared subspace.
 
 A one-determinant start cannot be split across GPUs, so run the first rungs on one:
 
