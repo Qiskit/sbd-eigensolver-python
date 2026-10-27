@@ -4,9 +4,8 @@ features:
     Davidson can now start from a chosen determinant instead of SBD's default, the
     first determinant of the subspace in sorted order. Davidson only reaches states
     its start overlaps with, so a poor start converges, without any error, on a
-    higher state: a subspace whose first sorted determinant lies in a symmetry
-    sector the ground state does not touch reports an energy 27 Ha too high in the
-    new test. Upstream SBD already supports the explicit start; it is now exposed:
+    higher state. Upstream SBD already supports the explicit start; it is now
+    exposed:
 
     - ``TPB_SBD`` has ``initial_adeterminant_bitstring`` and
       ``initial_bdeterminant_bitstring``, and ``GDB_SBD`` has

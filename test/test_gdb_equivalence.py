@@ -234,6 +234,40 @@ def test_gdb_rejects_lanczos_methods(backend, h2o):
         _gdb_energy(backend, fcidump, product, norb, method=2)
 
 
+def test_an_explicit_start_on_hartree_fock_gives_the_default_energy(backend, h2o):
+    """The initial-determinant fields reach SBD, in both solvers.
+
+    In these canonical orbitals the first determinant in sorted order is
+    Hartree-Fock, the default start, so starting there explicitly must give the same
+    energy. That the fields take effect at all is checked by the missing-start test
+    below.
+    """
+    fcidump, norb, _, alpha = h2o
+    hf = alpha[0]
+    product = [_interleave(a, b) for a, b in itertools.product(alpha, alpha)]
+
+    tpb = _tpb_energy(backend, fcidump, alpha, norb)
+    assert _tpb_energy(backend, fcidump, alpha, norb, initial_adeterminant_bitstring=hf,
+                       initial_bdeterminant_bitstring=hf) == pytest.approx(tpb, abs=1e-9)
+    assert _gdb_energy(backend, fcidump, product, norb,
+                       initial_determinant_bitstring=_interleave(hf, hf)) == pytest.approx(
+                           tpb, abs=1e-9)
+
+
+def test_an_explicit_start_outside_the_subspace_is_refused(backend, h2o):
+    """A start that is not in the subspace raises rather than falling back."""
+    fcidump, norb, _, alpha = h2o
+    outside = "1" * 5 + "0" * (norb - 5)          # five electrons, top orbitals
+    assert outside not in alpha
+    product = [_interleave(a, b) for a, b in itertools.product(alpha, alpha)]
+
+    with pytest.raises(ValueError, match="not present"):
+        _tpb_energy(backend, fcidump, alpha, norb, initial_adeterminant_bitstring=outside)
+    with pytest.raises(ValueError, match="not present"):
+        _gdb_energy(backend, fcidump, product, norb,
+                    initial_determinant_bitstring=_interleave(outside, outside))
+
+
 @pytest.mark.slow
 def test_gdb_reproduces_the_published_h2o_energy(backend, h2o):
     """The full interleave reproduces the energy published for this alpha list.
