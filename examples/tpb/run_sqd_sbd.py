@@ -42,6 +42,7 @@ Multi-node note:
 import argparse
 import json
 import re
+import sys
 import time
 from functools import partial
 from pathlib import Path
@@ -450,6 +451,18 @@ def main():
                   "(a checkpoint written under --sbd_carryover_type != 0 holds "
                   "SBD's carryover, not the whole solved subspace)")
     include_configurations = (include_a, include_b) if (include_a or include_b) else None
+    if rank == 0 and args.max_dim and include_configurations:
+        # include_configurations are always kept, so at --max_dim they take the whole
+        # budget: no sampled or recovered string can enter, and every iteration
+        # re-solves the same subspace. Easy to hit by resuming a run that had reached
+        # its cap.
+        kept = max(len(set(include_a)), len(set(include_b)))
+        if kept >= args.max_dim:
+            print(f"WARNING: {len(set(include_a))} alpha / {len(set(include_b))} beta "
+                  f"strings are carried in as include_configurations, already at "
+                  f"--max_dim {args.max_dim}: no new strings can enter, so every "
+                  f"iteration will repeat the same subspace. Raise --max_dim to let "
+                  f"the loop improve on it.\n", flush=True)
 
     if args.counts:
         bit_array = load_counts_as_bitarray(args.counts, norb * 2)
@@ -651,5 +664,59 @@ def main():
         pass
 
 
+def _let_output_through():
+    """Pause before MPI_Abort, so the messages just written reach the launcher.
+
+    Abort kills every rank at once, this one included, and output a rank has
+    flushed can still be lost on the way to mpirun: without a pause, the error that
+    explains the abort went missing in one run in four or five.
+    """
+    import time
+    time.sleep(0.5)
+
+
+def run():
+    """Run main(); on a failure on ANY rank, abort the whole MPI job.
+
+    A rank that fails while the others wait in a collective would otherwise
+    leave the job hanging until its time limit. The failing rank prints its own
+    error, tagged with its rank, since it may not be rank 0.
+    """
+    try:
+        code = main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] interrupted\n")
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            _let_output_through()
+            world.Abort(130)
+        return 130
+    except BaseException:
+        import traceback
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] unhandled error:\n"
+                         + traceback.format_exc())
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            _let_output_through()
+            world.Abort(1)
+        raise
+    if code:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        if world.Get_size() > 1:
+            sys.stderr.write(f"[rank {world.Get_rank()}] exiting with status "
+                             f"{code}; aborting the MPI job\n")
+            sys.stderr.flush()
+            _let_output_through()
+            world.Abort(code)
+    return code
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(run())

@@ -488,6 +488,7 @@ def main():
 
     history = []
     previous_energy = None      # for the displayed dE, continuous across rungs
+    warned_rise = False
     stop_reason = "ladder complete"
 
     for rung, cutoff in enumerate(cutoffs):
@@ -528,10 +529,23 @@ def main():
 
             energy = result["energy"]
             delta = None if previous_energy is None else energy - previous_energy
+            # Variational: a round's subspace contains the previous one, so its energy
+            # can only fall. A rise means the solve stopped on a higher state.
+            # (Not with --heatbath_truncation, which can shrink the subspace.)
+            rose = (delta is not None and delta > RISE_TOL
+                    and not args.heatbath_truncation)
             if rank == 0:
                 shown = "" if delta is None else f"{delta:+.6f}"
                 print(f"  {rung:>4} {round_index:>5} {dim:>12} {energy:>18.10f} "
-                      f"{shown:>12} {elapsed:>7.1f}", flush=True)
+                      f"{shown:>12} {elapsed:>7.1f}"
+                      + ("  << ROSE" if rose else ""), flush=True)
+                if rose and not warned_rise:
+                    print("  WARNING: the energy rose although the subspace grew. The "
+                          "energy of a larger subspace can only be lower, so that solve "
+                          "did not find its lowest state, and these energies are not "
+                          "trustworthy. Tighten --tolerance or raise --iteration.",
+                          flush=True)
+                    warned_rise = True
             # Only the seed round can be a no-op; after that the subspace contains
             # its own excitation neighbours.
             if (rank == 0 and rung == 0 and round_index == 0 and dim > 1
@@ -543,7 +557,7 @@ def main():
             history.append({
                 "rung": rung, "cutoff": cutoff, "round": round_index,
                 "dimension": dim, "energy": energy,
-                "delta_energy": delta, "seconds": elapsed,
+                "delta_energy": delta, "seconds": elapsed, "rose": rose,
             })
 
             grown = result["carryover_det"]
@@ -578,6 +592,10 @@ def main():
     return _finish(args, history, stop_reason, rank)
 
 
+# A re-solve of the same subspace can move by roundoff; anything larger is a real rise.
+RISE_TOL = 1e-6
+
+
 def _finish(args, history, stop_reason, rank):
     """Print the summary and optionally write the series."""
     if rank != 0:
@@ -596,6 +614,9 @@ def _finish(args, history, stop_reason, rank):
           f"{sum(h['seconds'] for h in history):.1f} s total")
     print("  The energy is variational, so it must not rise: a positive gain means "
           "the subspace shrank or a round failed to converge.")
+    rises = sum(1 for h in history if h.get("rose"))
+    if rises:
+        print(f"  WARNING: the energy rose in {rises} round(s); see the warning above.")
     if args.log:
         with open(args.log, "w", encoding="utf-8") as handle:
             json.dump({"stop_reason": stop_reason, "rounds": history}, handle,
@@ -604,5 +625,59 @@ def _finish(args, history, stop_reason, rank):
     return 0
 
 
+def _let_output_through():
+    """Pause before MPI_Abort, so the messages just written reach the launcher.
+
+    Abort kills every rank at once, this one included, and output a rank has
+    flushed can still be lost on the way to mpirun: without a pause, the error that
+    explains the abort went missing in one run in four or five.
+    """
+    import time
+    time.sleep(0.5)
+
+
+def run():
+    """Run main(); on a failure on ANY rank, abort the whole MPI job.
+
+    A rank that fails while the others wait in a collective would otherwise
+    leave the job hanging until its time limit. The failing rank prints its own
+    error, tagged with its rank, since it may not be rank 0.
+    """
+    try:
+        code = main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] interrupted\n")
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            _let_output_through()
+            world.Abort(130)
+        return 130
+    except BaseException:
+        import traceback
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] unhandled error:\n"
+                         + traceback.format_exc())
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            _let_output_through()
+            world.Abort(1)
+        raise
+    if code:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        if world.Get_size() > 1:
+            sys.stderr.write(f"[rank {world.Get_rank()}] exiting with status "
+                             f"{code}; aborting the MPI job\n")
+            sys.stderr.flush()
+            _let_output_through()
+            world.Abort(code)
+    return code
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

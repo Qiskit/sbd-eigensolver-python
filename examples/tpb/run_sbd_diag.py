@@ -178,6 +178,35 @@ def main():
 
     rank = sbd.get_rank()
     size = sbd.get_world_size()
+
+    # SBD writes the state without checking that its file opened, so a missing
+    # directory would lose the save while the run reports success. Checked by
+    # every rank: each one writes its own file there.
+    import os
+    if args.savename and not os.path.isdir(os.path.dirname(os.path.abspath(args.savename))):
+        print(f"[rank {rank}] ERROR: --savename {args.savename!r}: directory "
+              f"{os.path.dirname(os.path.abspath(args.savename))!r} does not exist; "
+              f"create it first", file=sys.stderr, flush=True)
+        return 1
+    if args.loadname:
+        # SBD's TPB loader opens one file per alpha x beta block. It loads a state onto
+        # a grid of any shape with at most as many blocks as there are files, but with
+        # more it calls MPI_Abort with exit status 0, which looks like success.
+        count = 0
+        while os.path.exists(f"{args.loadname}{count:06d}"):
+            count += 1
+        grid = args.adet_comm_size * args.bdet_comm_size
+        if count == 0:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r}: no saved state "
+                  f"({args.loadname}000000 ...)", file=sys.stderr, flush=True)
+            return 1
+        if grid > count:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r} has {count} file(s) "
+                  f"but the grid --adet_comm_size x --bdet_comm_size has {grid} blocks: "
+                  f"SBD loads a saved TPB state only onto a grid of at most {count} "
+                  f"blocks. Use a smaller grid, or leave out --loadname.",
+                  file=sys.stderr, flush=True)
+            return 1
     
     if rank == 0:
         print("="*70)
@@ -328,10 +357,11 @@ def main():
         return_code = 1
 
     except Exception as e:
-        if rank == 0:
-            print(f"\n✗ Error during calculation: {e}")
-            import traceback
-            traceback.print_exc()
+        # Printed by the rank that failed, which need not be rank 0: run() then aborts
+        # the job, so this is the only report of what went wrong.
+        import traceback
+        print(f"\n[rank {rank}] ✗ Error during calculation: {e}", file=sys.stderr)
+        traceback.print_exc()
         return_code = 1
 
     finally:
@@ -342,5 +372,60 @@ def main():
 
     return return_code
 
+
+def _let_output_through():
+    """Pause before MPI_Abort, so the messages just written reach the launcher.
+
+    Abort kills every rank at once, this one included, and output a rank has
+    flushed can still be lost on the way to mpirun: without a pause, the error that
+    explains the abort went missing in one run in four or five.
+    """
+    import time
+    time.sleep(0.5)
+
+
+def run():
+    """Run main(); on a failure on ANY rank, abort the whole MPI job.
+
+    A rank that fails while the others wait in a collective would otherwise
+    leave the job hanging until its time limit. The failing rank prints its own
+    error, tagged with its rank, since it may not be rank 0.
+    """
+    try:
+        code = main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] interrupted\n")
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            _let_output_through()
+            world.Abort(130)
+        return 130
+    except BaseException:
+        import traceback
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] unhandled error:\n"
+                         + traceback.format_exc())
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            _let_output_through()
+            world.Abort(1)
+        raise
+    if code:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        if world.Get_size() > 1:
+            sys.stderr.write(f"[rank {world.Get_rank()}] exiting with status "
+                             f"{code}; aborting the MPI job\n")
+            sys.stderr.flush()
+            _let_output_through()
+            world.Abort(code)
+    return code
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

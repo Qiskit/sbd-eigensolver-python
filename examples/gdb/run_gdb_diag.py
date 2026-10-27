@@ -63,6 +63,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 import time
 
@@ -348,6 +349,34 @@ def main():
     size = sbd.get_world_size()
     device = sbd.get_device()
 
+    # SBD writes the state without checking that its file opened, so a missing
+    # directory would lose the save while the run reports success. Checked by
+    # every rank: each one writes its own file there.
+    if args.savename and not os.path.isdir(os.path.dirname(os.path.abspath(args.savename))):
+        print(f"[rank {rank}] ERROR: --savename {args.savename!r}: directory "
+              f"{os.path.dirname(os.path.abspath(args.savename))!r} does not exist; "
+              f"create it first", file=sys.stderr, flush=True)
+        return 1
+    if args.loadname:
+        # SBD reads file b of a saved state onto b_comm position b, then passes what
+        # does not belong there around the ring; files past b_comm_size are never
+        # read. Davidson would then start from part of the state -- the right answer,
+        # slower, and without a word -- so say so instead.
+        count = 0
+        while os.path.exists(f"{args.loadname}{count:06d}.bin"):
+            count += 1
+        if count == 0:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r}: no saved state "
+                  f"({args.loadname}000000.bin ...)", file=sys.stderr, flush=True)
+            return 1
+        if count > args.b_comm_size:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r} has {count} files "
+                  f"but --b_comm_size is {args.b_comm_size}: SBD loads a saved state "
+                  f"only onto at least as many shards as it has files, and would start "
+                  f"from part of it. Use --b_comm_size {count} or more, or leave out "
+                  f"--loadname.", file=sys.stderr, flush=True)
+            return 1
+
     if rank == 0:
         print("=" * 70)
         print("SBD GDB - general determinant basis, in memory")
@@ -564,5 +593,59 @@ def main():
     return 0
 
 
+def _let_output_through():
+    """Pause before MPI_Abort, so the messages just written reach the launcher.
+
+    Abort kills every rank at once, this one included, and output a rank has
+    flushed can still be lost on the way to mpirun: without a pause, the error that
+    explains the abort went missing in one run in four or five.
+    """
+    import time
+    time.sleep(0.5)
+
+
+def run():
+    """Run main(); on a failure on ANY rank, abort the whole MPI job.
+
+    A rank that fails while the others wait in a collective would otherwise
+    leave the job hanging until its time limit. The failing rank prints its own
+    error, tagged with its rank, since it may not be rank 0.
+    """
+    try:
+        code = main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] interrupted\n")
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            _let_output_through()
+            world.Abort(130)
+        return 130
+    except BaseException:
+        import traceback
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        sys.stderr.write(f"[rank {world.Get_rank()}] unhandled error:\n"
+                         + traceback.format_exc())
+        sys.stderr.flush()
+        if world.Get_size() > 1:
+            _let_output_through()
+            world.Abort(1)
+        raise
+    if code:
+        from mpi4py import MPI
+        world = MPI.COMM_WORLD
+        if world.Get_size() > 1:
+            sys.stderr.write(f"[rank {world.Get_rank()}] exiting with status "
+                             f"{code}; aborting the MPI job\n")
+            sys.stderr.flush()
+            _let_output_through()
+            world.Abort(code)
+    return code
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())
