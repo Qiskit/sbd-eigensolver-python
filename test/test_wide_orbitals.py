@@ -26,14 +26,17 @@ the int64 limit (63 | 64) and the packed-word boundaries at the default bit_leng
 20 (19 | 20, 39 | 40), and a monotone embedding preserves both the string order and
 PySCF's sign convention, so the comparison is elementwise.
 
-Each backend runs in a **subprocess**: ``det_vector``'s word count is fixed for the
-life of a process, and it differs from what the rest of the suite uses; and the CPU
-and OpenMP-offload modules must not share one either. Backends not built are skipped.
+The solve runs in a **subprocess**: ``det_vector``'s word count is fixed for the
+life of a process, and it differs from what the rest of the suite uses. It tests the
+backend ``SBD_TEST_DEVICE`` names, like the rest of the suite (cpu when unset), and
+skips one that is not built. ``tox -e py`` runs it on one rank; ``tox -e mpi`` runs it
+on two.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -115,41 +118,75 @@ print("RESULT", json.dumps({
 """
 
 
-def _run_script(device, launcher=()):
+def _device(device_config):
+    """The backend to test: ``SBD_TEST_DEVICE``, as the rest of the suite uses, else cpu.
+
+    ``device_config`` (conftest) reads that variable and skips a backend that is not
+    built. When it is unset this uses cpu rather than the build's own default:
+    resolving that would load a backend into this process, which the subprocess
+    below exists to avoid.
+    """
+    return device_config.device if device_config is not None else "cpu"
+
+
+def _require_dependencies():
     pytest.importorskip("pyscf", reason="pyscf builds the reference Hamiltonian")
     pytest.importorskip("qiskit_addon_sqd.fermion", reason="qiskit-addon-sqd provides solve_sci")
-    available = sbd.available_backends()
-    if device not in available:
-        pytest.skip(f"backend {device!r} was not built; available: {available}")
+
+
+def _run_script(device, launcher=()):
+    # Started from inside an MPI job (the mpi test), the inner launcher would see the
+    # outer job's process-manager variables and try to join it. Give it a clean start.
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("PMI_", "PMIX_", "OMPI_", "MPI_LOCAL"))}
     return subprocess.run(
         [*launcher, sys.executable, "-c", SCRIPT, device, str(NORB), json.dumps(POSITIONS)],
-        capture_output=True, text=True, timeout=900 if not launcher else 300,
+        capture_output=True, text=True, timeout=900 if not launcher else 300, env=env,
     )
 
 
-@pytest.mark.parametrize("device", ["cpu", "gpu", "gpu-omp"])
-def test_solve_sci_past_63_orbitals(device):
-    """SBD reproduces an embedded molecule's FCI state at 70 orbitals, on each backend."""
-    _check_result(_run_script(device))
+def test_solve_sci_past_63_orbitals_standalone(device_config):
+    """SBD reproduces an embedded molecule's FCI state at 70 orbitals."""
+    _require_dependencies()
+    _check_result(_run_script(_device(device_config)))
 
 
-@pytest.mark.parametrize("device", ["cpu", "gpu", "gpu-omp"])
-def test_solve_sci_past_63_orbitals_on_two_ranks(device):
+@pytest.mark.mpi
+def test_solve_sci_past_63_orbitals_mpi(device_config):
     """The same on two ranks, splitting the alpha strings between them.
 
     Only rank 0 converts the solved strings back to CI strings, so before the fix
     only rank 0 raised (#70). Under run_sqd_sbd.py the other rank then waited for
     it forever; the timeout makes a hang like that a failure instead.
+
+    The 70-orbital solve needs more words per determinant than the rest of the
+    suite, and SBD fixes that count per process, so it cannot run in the ranks of
+    this job. Rank 0 starts a separate two-rank job instead, and every rank checks
+    the result it reports.
     """
-    mpirun = shutil.which("mpirun") or shutil.which("mpiexec")
-    if mpirun is None:
-        pytest.skip("no mpirun or mpiexec on PATH")
-    try:
-        completed = _run_script(device, launcher=(mpirun, "-n", "2"))
-    except subprocess.TimeoutExpired:
-        pytest.fail("the two-rank run did not finish: one rank is likely waiting on "
-                    "another that raised")
-    assert _check_result(completed)["ranks"] == 2
+    from mpi4py import MPI
+
+    comm = MPI.COMM_WORLD
+    # Every rank skips together, before rank 0 alone starts the job: a skip raised on
+    # rank 0 only would leave the other ranks waiting in the broadcast below.
+    _require_dependencies()
+    device = _device(device_config)
+    outcome = None
+    if comm.Get_rank() == 0:
+        mpirun = shutil.which("mpirun") or shutil.which("mpiexec")
+        if mpirun is None:
+            outcome = "skip: no mpirun or mpiexec on PATH"
+        else:
+            try:
+                outcome = _run_script(device, launcher=(mpirun, "-n", "2"))
+            except subprocess.TimeoutExpired:
+                outcome = ("fail: the two-rank run did not finish: one rank is likely "
+                           "waiting on another that raised")
+    outcome = comm.bcast(outcome, root=0)
+    if isinstance(outcome, str):
+        kind, message = outcome.split(": ", 1)
+        (pytest.skip if kind == "skip" else pytest.fail)(message)
+    assert _check_result(outcome)["ranks"] == 2
 
 
 def _check_result(completed):
@@ -191,3 +228,30 @@ def test_ci_string_dtype_matches_the_addon():
         matrix[0, 0] = True
         addon = counts.bitstring_matrix_to_integers(matrix).dtype
         assert (addon == object) == (_ci_string_dtype(norb) is object), norb
+
+
+@pytest.mark.parametrize("norb", [24, 63, 64, 70])
+def test_enlarge_driver_unpacks_strings_at_any_width(norb):
+    """``run_sqd_enlarge_subspace_sbd.ints_to_bool_columns`` inverts the addon's packing.
+
+    That driver unpacks the CI strings ``solve_sci`` returns, so it has to follow the
+    same width rule: a uint64 array cannot hold the Python ints it gets from 64
+    orbitals on.
+    """
+    counts = pytest.importorskip("qiskit_addon_sqd.counts")
+    import importlib.util
+    import pathlib
+
+    path = (pathlib.Path(__file__).resolve().parents[1]
+            / "examples" / "tpb" / "run_sqd_enlarge_subspace_sbd.py")
+    spec = importlib.util.spec_from_file_location("run_sqd_enlarge_subspace_sbd", path)
+    driver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(driver)
+
+    rng = np.random.default_rng(norb)
+    matrix = np.zeros((20, norb), dtype=bool)
+    for row in matrix:
+        row[rng.choice(norb, size=5, replace=False)] = True
+    matrix[0, 0] = True                       # leftmost column: the highest orbital
+    strings = counts.bitstring_matrix_to_integers(matrix)
+    np.testing.assert_array_equal(driver.ints_to_bool_columns(strings, norb), matrix)

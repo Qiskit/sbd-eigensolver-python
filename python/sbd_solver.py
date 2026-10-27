@@ -208,20 +208,18 @@ def _solve_sci_core(
         # Placeholder: only rank 0 is given the energy and the wavefunction. With
         # skip_wf there is no SCIState to stand in, so carry an empty carryover
         # instead -- a result with neither field satisfies no caller, and
-        # qiskit-addon-sqd rejects it outright.
-        placeholder = (
-            {"carryover": (np.array([], dtype=np.int64), np.array([], dtype=np.int64))}
-            if skip_wf
-            else {}
-        )
+        # qiskit-addon-sqd rejects it outright. The empty arrays take the dtype rank 0's
+        # strings have, so a caller comparing ranks sees one type.
+        empty = np.array([], dtype=_ci_string_dtype(norb))
+        placeholder = {"carryover": (empty, empty.copy())} if skip_wf else {}
         return SCIResult(
             0.0,
             None
             if skip_wf
             else SCIState(
                 amplitudes=np.empty((0, 0), dtype=np.float64),
-                ci_strs_a=np.array([], dtype=np.int64),
-                ci_strs_b=np.array([], dtype=np.int64),
+                ci_strs_a=empty.copy(),
+                ci_strs_b=empty.copy(),
                 norb=norb,
                 nelec=nelec,
             ),
@@ -714,7 +712,7 @@ def _to_alpha_first_signs(amplitudes, strings_a, strings_b, norb, block_elements
         block_elements: Rows are converted in blocks of about this many elements, so
             the temporary sign matrix stays bounded at large subspaces.
     """
-    occupied_b = _occupations(strings_b, norb).astype(np.int32)
+    occupied_b = _occupations(strings_b, norb)
     occupied_a = _occupations(strings_a, norb)
     # alpha electrons in orbitals strictly above p, kept only as a parity
     above_a = ((np.cumsum(occupied_a[:, ::-1], axis=1)[:, ::-1] - occupied_a) & 1).astype(np.int32)
@@ -744,17 +742,18 @@ def _ci_string_dtype(norb: int):
 
 
 def _occupations(ci_strings, norb: int) -> np.ndarray:
-    """``(n, norb)`` 0/1 int64 array: bit ``p`` of each CI string, at any ``norb``.
+    """``(n, norb)`` 0/1 int32 array: bit ``p`` of each CI string, at any ``norb``.
 
-    Shifting an int64 array works only below 64 orbitals. From 64 on the strings are
-    Python ints, so they are split into 63-bit chunks first and each chunk is
-    shifted as int64.
+    The shift needs int64, and works on an int64 array only below 64 orbitals. From
+    64 on the strings are Python ints, so they are split into 63-bit chunks first and
+    each chunk is shifted as int64. The result is 0/1, so it is returned as int32:
+    half the memory, and sums of it stay below ``norb``.
     """
     strings = np.asarray(ci_strings)
     if norb < 64:
         orbitals = np.arange(norb, dtype=np.int64)
-        return (strings.astype(np.int64)[:, None] >> orbitals) & 1
-    out = np.empty((len(strings), norb), dtype=np.int64)
+        return ((strings.astype(np.int64)[:, None] >> orbitals) & 1).astype(np.int32)
+    out = np.empty((len(strings), norb), dtype=np.int32)
     mask = (1 << 63) - 1
     for start in range(0, norb, 63):
         width = min(63, norb - start)

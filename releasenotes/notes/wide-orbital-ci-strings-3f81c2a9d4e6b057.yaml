@@ -12,3 +12,8 @@ fixes:
     changes below 64 orbitals. Under MPI the error was raised on rank 0 only, so
     ``examples/tpb/run_sqd_sbd.py`` hung instead of exiting. See `#70
     <https://github.com/Qiskit/sbd-eigensolver-python/issues/70>`__.
+  - |
+    ``examples/tpb/run_sqd_enlarge_subspace_sbd.py`` now works with 64 or more
+    spatial orbitals too. Unpacking CI strings into occupation bits went through a
+    uint64 array, which cannot hold the Python ints ``solve_sci`` returns at that
+    width, and raised the same ``OverflowError``.

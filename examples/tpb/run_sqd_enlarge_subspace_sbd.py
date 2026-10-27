@@ -225,8 +225,12 @@ def ints_to_bool_columns(ci_ints, norb):
 
     Matches bitstring_matrix_to_integers's own convention (leftmost column is
     the MSB: result = sum_i matrix[:,i] * 2^(norb-1-i)), verified against it
-    directly rather than assumed.
+    directly rather than assumed. Like it, works at any width: from 64 orbitals on
+    the strings are Python ints, which a uint64 array cannot hold.
     """
+    if norb >= 64:
+        return np.array([[(int(x) >> (norb - 1 - i)) & 1 for i in range(norb)]
+                         for x in ci_ints], dtype=bool).reshape(len(ci_ints), norb)
     ci_ints = np.asarray(ci_ints, dtype=np.uint64)
     bits = np.zeros((len(ci_ints), norb), dtype=bool)
     for i in range(norb):
@@ -245,7 +249,8 @@ def enlarge_via_singles(ci_strs_a, ci_strs_b, amplitudes, norb, threshold,
     and converts the augmented rows back to unique alpha/beta ci_str ints.
 
     Returns:
-        (new_alpha_ints, new_beta_ints): sorted, deduplicated int64 arrays.
+        (new_alpha_ints, new_beta_ints): sorted, deduplicated arrays, int64 below
+        64 orbitals and Python ints from 64 on, as bitstring_matrix_to_integers.
 
         Superset of the *dominant* input strings only. Row 0 of `transitions`
         is the identity, so everything fed in comes back -- but strings whose
