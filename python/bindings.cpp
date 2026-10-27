@@ -306,6 +306,17 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                       "Initialization method")
         .def_readwrite("seed", &sbd::tpb::SBD::seed,
                       "Seed for the random initial vector (init = 1)")
+        .def_readwrite("initial_adeterminant_bitstring",
+                      &sbd::tpb::SBD::initial_adeterminant_bitstring,
+                      "Start Davidson with unit weight on this alpha string (NORB "
+                      "characters, rightmost = orbital 0) times "
+                      "initial_bdeterminant_bitstring, instead of the init policy. "
+                      "Empty (the default) uses init. Each string must occur exactly "
+                      "once in its list, or the solve raises ValueError")
+        .def_readwrite("initial_bdeterminant_bitstring",
+                      &sbd::tpb::SBD::initial_bdeterminant_bitstring,
+                      "Beta half of the explicit start. Empty uses the alpha string "
+                      "for beta; it cannot be set without the alpha one")
         .def_readwrite("do_shuffle", &sbd::tpb::SBD::do_shuffle,
                       "Shuffle determinants flag")
         .def_readwrite("do_rdm", &sbd::tpb::SBD::do_rdm,
@@ -373,6 +384,13 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                       "Initialization method")
         .def_readwrite("seed", &sbd::gdb::SBD::seed,
                       "Seed for the initial vector")
+        .def_readwrite("initial_determinant_bitstring",
+                      &sbd::gdb::SBD::initial_determinant_bitstring,
+                      "Start Davidson with unit weight on this full determinant "
+                      "(2*NORB characters, alpha and beta interleaved as in "
+                      "from_strings), instead of the init policy. Empty (the default) "
+                      "uses init. It must occur exactly once across all shards, or "
+                      "the solve raises ValueError")
         // do_shuffle is deliberately NOT exposed, for the same reason as
         // h_comm_size: GDB declares the field (gdb/sbdiag.h:25), parses it from
         // argv (:94) and copies it into a local (:219), then never reads it

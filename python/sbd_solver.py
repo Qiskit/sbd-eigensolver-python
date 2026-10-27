@@ -79,6 +79,7 @@ def solve_sci(
     clean_temp_dir: bool = True,
     device_config=None,
     fcidump_path: str | Path | None = None,
+    initial_determinant: tuple[int, int] | None = None,
 ) -> SCIResult:
     """
     Diagonalize Hamiltonian in subspace defined by CI strings using SBD.
@@ -101,6 +102,13 @@ def solve_sci(
             When None (default), rank 0 writes a regenerated FCIDUMP into
             ``temp_dir`` and every rank opens that file, which requires
             ``temp_dir`` to be shared for multi-node runs.
+        initial_determinant: ``(alpha, beta)`` CI strings, as integers, to start
+            Davidson from instead of SBD's default (the first determinant in sorted
+            order, or a random vector with ``init=1``). Both must be in this
+            subspace: a missing one raises ``ValueError`` rather than falling back
+            to the default start. Use it when the subspace contains a known good
+            state -- included configurations, say -- whose leading determinant is
+            not the one SBD would start from.
 
     Returns:
         The diagonalization result as SCIResult.
@@ -137,6 +145,7 @@ def solve_sci(
             fcidump=fcidump,
             device_config=device_config,
             ecore_offset=ecore_offset,
+            initial_determinant=initial_determinant,
         )
     finally:
         if clean_temp_dir and owns_sbd_dir and mpi_rank == 0:
@@ -157,6 +166,7 @@ def _solve_sci_core(
     fcidump,
     device_config=None,
     ecore_offset: float = 0.0,
+    initial_determinant: tuple[int, int] | None = None,
 ) -> SCIResult:
     """
     Inner diagonalization kernel that operates on a pre-loaded FCIDUMP object.
@@ -170,6 +180,8 @@ def _solve_sci_core(
     # overridden by the caller), and the determinants must be packed with the
     # same value the C++ engine will use to interpret them.
     sbd_data = _create_sbd_config(sbd_config, backend, device_config)
+    if initial_determinant is not None:
+        _set_initial_determinant(sbd_data, initial_determinant, strings_a, strings_b, norb)
 
     # ``SCIResult.carryover`` must be ordered by DESCENDING MARGINAL WEIGHT: the loop
     # takes a solver's carryover as given (fermion.py, ``_select_carryover`` returns it
@@ -519,6 +531,7 @@ def solve_sci_batch(
     clean_temp_dir: bool = True,
     device_config=None,
     fcidump_path: str | Path | None = None,
+    initial_determinant: tuple[int, int] | None = None,
 ) -> list[SCIResult]:
     """
     Diagonalize Hamiltonian in multiple subspaces using SBD.
@@ -543,6 +556,13 @@ def solve_sci_batch(
             When None (default), rank 0 writes a regenerated FCIDUMP into
             ``temp_dir`` and every rank opens that file, which requires
             ``temp_dir`` to be shared for multi-node runs.
+        initial_determinant: ``(alpha, beta)`` CI strings, as integers, to start
+            Davidson from instead of SBD's default (the first determinant in sorted
+            order, or a random vector with ``init=1``). Both must be in every
+            batch's subspace: a missing one raises ``ValueError`` rather than falling back
+            to the default start. Use it when the subspace contains a known good
+            state -- included configurations, say -- whose leading determinant is
+            not the one SBD would start from.
 
     Returns:
         List of SCIResult for each batch.
@@ -578,6 +598,7 @@ def solve_sci_batch(
                 fcidump=fcidump,
                 device_config=device_config,
                 ecore_offset=ecore_offset,
+                initial_determinant=initial_determinant,
             )
             for ci_strs in ci_strings
         ]
@@ -669,6 +690,30 @@ def _read_fcidump_ecore(fcidump_path):
                 if i == j == k == l == 0:
                     return val
     return 0.0
+
+
+def _set_initial_determinant(sbd_data, initial_determinant, strings_a, strings_b, norb):
+    """Point SBD's Davidson start at one alpha x beta determinant of the subspace.
+
+    SBD refuses a string that is not in its list, but only once the solve is under
+    way, as a ValueError naming neither the string nor the batch. Checking here
+    first gives an error that does both, and is raised on every rank alike, since
+    every rank holds the whole subspace. SBD's own check stays as the backstop.
+    """
+    alpha, beta = (int(s) for s in initial_determinant)
+    for name, string, strings in (("alpha", alpha, strings_a), ("beta", beta, strings_b)):
+        if string < 0 or string >= 1 << norb:
+            raise ValueError(
+                f"initial_determinant {name} string {string} does not fit {norb} orbitals")
+        if not any(int(s) == string for s in strings):
+            raise ValueError(
+                f"initial_determinant {name} string {string} "
+                f"({format(string, f'0{norb}b')}) is not in this subspace's "
+                f"{len(strings)} {name} strings, so Davidson cannot start from it. "
+                "Include it in the subspace, or leave initial_determinant unset to "
+                "use SBD's default start.")
+    sbd_data.initial_adeterminant_bitstring = format(alpha, f"0{norb}b")
+    sbd_data.initial_bdeterminant_bitstring = format(beta, f"0{norb}b")
 
 
 def _ci_strings_to_sbd_dets(

@@ -116,6 +116,16 @@ def parse_args():
                        help='Seed for --init 1, ignored otherwise (default matches '
                             "upstream's). Vary it to check whether a result depends "
                             'on where the solver started; the energy should not')
+    parser.add_argument('--initial_adet', '--initial_adeterminant_bitstring', default='',
+                       dest='initial_adet', metavar='BITS',
+                       help='Start from unit weight on this alpha string (NORB '
+                            'characters, as in --adetfile) times --initial_bdet, '
+                            'instead of --init. Use it when the first determinant is a '
+                            'poor start: Davidson can only reach states it overlaps. '
+                            'It must be in the alpha list, or the run stops')
+    parser.add_argument('--initial_bdet', '--initial_bdeterminant_bitstring', default='',
+                       dest='initial_bdet', metavar='BITS',
+                       help='Beta half of the start. Default: the --initial_adet string')
     parser.add_argument('--shuffle', '--do_shuffle', type=int, default=0, dest='do_shuffle',
                        help='Shuffle determinants loaded from --adetfile before '
                             'mirroring/deriving beta from them (0=no, 1-4=yes, '
@@ -163,7 +173,10 @@ def parse_args():
                        dest='max_memory_gb_for_determinants',
                        help='Maximum GPU memory in GB for determinants (-1=auto, GPU only)')
     
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.initial_bdet and not args.initial_adet:
+        parser.error("--initial_bdet needs --initial_adet")
+    return args
 
 
 def main():
@@ -195,6 +208,8 @@ def main():
     config.max_time = args.max_time
     config.init = args.init
     config.seed = args.seed
+    config.initial_adeterminant_bitstring = args.initial_adet
+    config.initial_bdeterminant_bitstring = args.initial_bdet
     config.do_shuffle = args.do_shuffle
     config.do_rdm = 1 if args.rdm_output else 0
     config.bit_length = args.bit_length
