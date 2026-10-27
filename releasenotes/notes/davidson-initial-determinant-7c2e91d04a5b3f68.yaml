@@ -8,8 +8,6 @@ features:
     sector the ground state does not touch reports an energy 27 Ha too high in the
     new test. Upstream SBD already supports the explicit start; it is now exposed:
 
-    - :func:`sbd.sbd_solver.solve_sci` and :func:`sbd.sbd_solver.solve_sci_batch`
-      take ``initial_determinant=(alpha, beta)``, as CI-string integers.
     - ``TPB_SBD`` has ``initial_adeterminant_bitstring`` and
       ``initial_bdeterminant_bitstring``, and ``GDB_SBD`` has
       ``initial_determinant_bitstring``.
@@ -17,5 +15,4 @@ features:
       and ``examples/gdb/run_gdb_diag.py`` takes ``--initial_det``.
 
     The determinant must be in the subspace. If it is not, the solve raises
-    ``ValueError`` rather than falling back to the default start; ``solve_sci``
-    checks this before calling SBD, so the message names the missing string.
+    ``ValueError`` on every rank rather than falling back to the default start.

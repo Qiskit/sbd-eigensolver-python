@@ -49,8 +49,6 @@ from pyscf import ao2mo, gto, scf, symm
 from pyscf.tools import fcidump
 from qiskit_addon_sqd import fermion
 import sbd
-from sbd.device_config import DeviceConfig
-from sbd.sbd_solver import solve_sci
 
 device, workdir = sys.argv[1], sys.argv[2]
 sbd.init(device=device)
@@ -93,17 +91,26 @@ default_sector = sym(int(sa[0])) ^ sym(int(sb[0]))
 weight = sum(float(abs(amps[i, j]) ** 2) for i, a in enumerate(sa) for j, b in enumerate(sb)
              if sym(int(a)) ^ sym(int(b)) == default_sector)
 
-cfg = {"eps": 1e-10, "max_it": 300, "bit_length": 20}
-dc = DeviceConfig(device=device)
-tpb_default = solve_sci((sa, sb), h1, eri, n, (5, 5), sbd_config=cfg, device_config=dc).energy
-tpb_explicit = solve_sci((sa, sb), h1, eri, n, (5, 5), sbd_config=cfg, device_config=dc,
-                         initial_determinant=(hf, hf)).energy
-try:
-    solve_sci((sa, sb), h1, eri, n, (5, 5), sbd_config=cfg, device_config=dc,
-              initial_determinant=(hf, decoy))
-    tpb_missing = None
-except ValueError as exc:
-    tpb_missing = str(exc)
+path = workdir + "/fcidump.txt"
+fcidump.from_integrals(path, h1, eri, n, (5, 5), nuc=0.0)
+backend = sbd.get_backend(device)
+bits = lambda s: format(int(s), f"0{n}b")
+# One bit_length for both solvers: each fixes the words per half string and per
+# full determinant for the life of the process, from the bit_length it is given.
+
+# TPB: the alpha x beta product, as run_sbd_diag.py runs it.
+adet = backend.sort_bitarray([backend.from_string(bits(s), 20, n) for s in sa])
+bdet = backend.sort_bitarray([backend.from_string(bits(s), 20, n) for s in sb])
+tpb = {}
+for label, start in (("default", ("", "")), ("explicit", (bits(hf), bits(hf))),
+                     ("missing", (bits(hf), bits(decoy)))):
+    conf = backend.TPB_SBD()
+    conf.eps, conf.max_it, conf.bit_length = 1e-10, 300, 20
+    conf.initial_adeterminant_bitstring, conf.initial_bdeterminant_bitstring = start
+    try:
+        tpb[label] = sbd.tpb_diag(backend.LoadFCIDump(path), adet, bdet, conf)["energy"]
+    except ValueError as exc:
+        tpb[label] = str(exc)
 
 # GDB: the same subspace as a list of interleaved full determinants.
 def full(a, b):
@@ -115,12 +122,6 @@ def full(a, b):
             bits[2 * n - 1 - (2 * p + 1)] = "1"
     return "".join(bits)
 
-path = workdir + "/fcidump.txt"
-fcidump.from_integrals(path, h1, eri, n, (5, 5), nuc=0.0)
-backend = sbd.get_backend(device)
-# The same bit_length as the TPB solves above: SBD fixes the number of words per
-# determinant for the life of the process, and 26 bits at 20 per word is 2 words
-# for both.
 det = sbd.from_strings(sorted({full(int(a), int(b)) for a in sa for b in sb},
                               key=lambda s: int(s, 2)), 20, 2 * n)
 gdb = {}
@@ -137,9 +138,9 @@ print("RESULT", json.dumps({
     "backend": backend.__name__,
     "reference": ref.energy,
     "default_sector_weight": weight,
-    "tpb_default": tpb_default,
-    "tpb_explicit": tpb_explicit,
-    "tpb_missing": tpb_missing,
+    "tpb_default": tpb["default"],
+    "tpb_explicit": tpb["explicit"],
+    "tpb_missing": tpb["missing"],
     "gdb_default": gdb["default"],
     "gdb_explicit": gdb["explicit"],
     "gdb_missing": gdb["missing"],
@@ -151,7 +152,7 @@ print("RESULT", json.dumps({
 def test_explicit_start_finds_the_state_the_default_start_misses(device, tmp_path):
     """The default start lands 27 Ha high on this subspace; (HF, HF) gives PySCF's energy."""
     pytest.importorskip("pyscf", reason="pyscf builds the Hamiltonian and the reference")
-    pytest.importorskip("qiskit_addon_sqd.fermion", reason="qiskit-addon-sqd provides solve_sci")
+    pytest.importorskip("qiskit_addon_sqd.fermion", reason="qiskit-addon-sqd computes the reference")
     available = sbd.available_backends()
     if device not in available:
         pytest.skip(f"backend {device!r} was not built; available: {available}")
@@ -178,27 +179,6 @@ def test_explicit_start_finds_the_state_the_default_start_misses(device, tmp_pat
     assert r["gdb_explicit"] == pytest.approx(r["reference"], abs=1e-8)
 
     # A start that is not in the subspace fails rather than falling back.
-    assert r["tpb_missing"] is not None and "not in this subspace" in r["tpb_missing"]
+    assert isinstance(r["tpb_missing"], str) and "not present" in r["tpb_missing"]
     assert isinstance(r["gdb_missing"], str) and "not present" in r["gdb_missing"]
 
-
-def test_initial_determinant_is_checked_before_the_solve():
-    """A string outside the subspace, or too wide for norb, raises with the string named."""
-    import numpy as np
-
-    from sbd.sbd_solver import _set_initial_determinant
-
-    class Config:
-        initial_adeterminant_bitstring = ""
-        initial_bdeterminant_bitstring = ""
-
-    strings = np.array([0b0011, 0b0101, 0b0110])
-    config = Config()
-    _set_initial_determinant(config, (0b0101, 0b0011), strings, strings, 4)
-    assert config.initial_adeterminant_bitstring == "0101"
-    assert config.initial_bdeterminant_bitstring == "0011"
-
-    with pytest.raises(ValueError, match=r"beta string 9 \(1001\) is not in"):
-        _set_initial_determinant(Config(), (0b0101, 0b1001), strings, strings, 4)
-    with pytest.raises(ValueError, match="does not fit 4 orbitals"):
-        _set_initial_determinant(Config(), (1 << 4, 0b0011), strings, strings, 4)
