@@ -1319,8 +1319,10 @@ sqd --max_dim 400 --resume_from $WORK/sqd/ckpt.json
 - **Combine the techniques.** A saved SQD state is a TPB state, so it can be refined
   like the others. `sbd.analysis.load_state` reads it as full determinants, and
   `sbd.to_strings` writes them as a file that `run_gdb_heatbath.py --subspace-from
-  strings` (or `run_gdb_diag.py --detfiles`) starts from; a GDB solve of that list with
-  `--rdm_output` gives the RDMs for orbital optimization as in Part 6.
+  strings` (or `run_gdb_diag.py --detfiles`) starts from. For orbital optimization as
+  in Part 6, re-solve the state with `--rdm_output` and a tight tolerance:
+  `run_sbd_diag.py` does this on the α and β strings directly, and `run_gdb_diag.py` on
+  the determinant list. The SQD driver does not compute RDMs itself.
 
 ### A different SQD policy: Trim SQD
 
