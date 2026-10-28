@@ -41,8 +41,13 @@ import sbd
 REPO = pathlib.Path(__file__).resolve().parents[1]
 H2O = REPO / "vendor" / "sbd-upstream" / "data" / "h2o"
 
-# Small enough to be quick: 12 alpha strings is a 144-determinant subspace.
+# Small enough to be quick: 12 alpha strings is a 144-determinant subspace. It also
+# bounds SBD_TEST_NPROCS for the rank-failure test: run_sbd_diag.py spreads the 12
+# strings over that many ranks.
 ALPHA_LIMIT = 12
+
+# Ranks for the rank-failure test: SBD_TEST_NPROCS, as ``tox -e mpi`` uses, default 2.
+NPROCS = int(os.environ.get("SBD_TEST_NPROCS", "2"))
 
 HOOK = '''
 import os
@@ -126,10 +131,11 @@ DRIVERS = ["tpb/run_sbd_diag.py", "tpb/run_sqd_sbd.py",
 
 @pytest.mark.parametrize("script", DRIVERS)
 def test_a_failure_on_one_rank_aborts_the_job(script, device_config, tmp_path):
-    """Rank 1 fails in its solve while rank 0 waits there; the job must still end.
+    """Rank 1 fails in its solve while the others wait there; the job must still end.
 
-    Before, the failing rank exited while the other waited in the solve's collectives
-    until the job's time limit. The timeout here is the hang detector.
+    Before, the failing rank exited while the others waited in the solve's collectives
+    until the job's time limit. The timeout here is the hang detector. Runs on
+    SBD_TEST_NPROCS ranks (default 2); the layout tests below need exactly 2.
     """
     if script == "tpb/run_sqd_sbd.py":
         pytest.importorskip("qiskit_addon_sqd.fermion", reason="the SQD driver needs it")
@@ -140,9 +146,10 @@ def test_a_failure_on_one_rank_aborts_the_job(script, device_config, tmp_path):
     env = _clean_env(SBD_TEST_FAIL_RANK="1",
                      PYTHONPATH=os.pathsep.join(
                          [str(tmp_path), *filter(None, [os.environ.get("PYTHONPATH")])]))
-    args = _driver_args(script, _device(device_config), tmp_path)
+    args = _driver_args(script, _device(device_config), tmp_path, ranks=NPROCS)
     try:
-        completed = _run(script, args, env=env, launcher=(mpirun, "-n", "2"), timeout=120)
+        completed = _run(script, args, env=env, launcher=(mpirun, "-n", str(NPROCS)),
+                         timeout=120)
     except subprocess.TimeoutExpired:
         pytest.fail(f"{script} did not finish after rank 1 failed: the other rank is "
                     "still waiting for it")
