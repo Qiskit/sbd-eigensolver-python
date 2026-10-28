@@ -32,6 +32,11 @@ features:
     ``examples/tpb/run_sqd_sbd.py`` and ``examples/tpb/run_sqd_enlarge_subspace_sbd.py``
     warn when the strings carried in from ``--resume_from`` already fill ``--max_dim``,
     so that no new string can enter and every iteration would repeat the same subspace.
+  - |
+    ``examples/tpb/run_sqd_enlarge_subspace_sbd.py`` takes ``--checkpoint_frequency``,
+    as ``run_sqd_sbd.py`` does, to write ``--checkpoint_path`` only every that many
+    rounds. The round the loop stops on is always written, whichever criterion stops
+    it; the driver usually stops on its own criteria before ``--max_iterations``.
 fixes:
   - |
     The README and the :func:`sbd.tpb_diag` docstring gave TPB's ``savename`` files a

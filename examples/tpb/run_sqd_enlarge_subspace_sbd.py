@@ -134,9 +134,16 @@ def parse_args():
                             "every round's include_configurations.")
     loop.add_argument("--checkpoint_path", type=str, default=None,
                        help="Write ci_strs_a/ci_strs_b/occupancies/energy to this "
-                            "path as JSON text (rank 0 only), every round. Same "
-                            "format and multi-rank-visibility requirement as "
-                            "run_sqd_sbd.py's --checkpoint_path.")
+                            "path as JSON text (rank 0 only), every "
+                            "--checkpoint_frequency rounds. Same format and "
+                            "multi-rank-visibility requirement as run_sqd_sbd.py's "
+                            "--checkpoint_path.")
+    loop.add_argument("--checkpoint_frequency", type=int, default=1,
+                       help="Write --checkpoint_path every this many rounds, and "
+                            "always on the round the loop stops on, whichever "
+                            "criterion stops it. 1 (default) checkpoints every "
+                            "round. Raise this to cut the JSON-write overhead "
+                            "when the string lists are large.")
     loop.add_argument("--resume_from", type=str, default=None,
                        help="Seed this run's include_configurations and "
                             "initial_occupancies from a previous --checkpoint_path's "
@@ -536,10 +543,6 @@ def main():
                 "ci_strs_b": [int(x) for x in ci_strs_b],
             }
             checkpoint_history.append(entry)
-            if args.checkpoint_path:
-                tmp = Path(args.checkpoint_path).with_suffix(".tmp")
-                tmp.write_text(json.dumps({"iterations": checkpoint_history}))
-                tmp.replace(args.checkpoint_path)
 
         energy_converged = (prev_energy is not None
                              and abs(energy - prev_energy) < args.energy_tol)
@@ -547,6 +550,15 @@ def main():
                           and max(np.max(np.abs(occ[0] - prev_occ[0])),
                                   np.max(np.abs(occ[1] - prev_occ[1]))) < args.occupancies_tol)
         stop = no_growth or (energy_converged and occ_converged)
+        # Written after the stop decision, not before: the loop usually stops on its
+        # own criteria well before --max_iterations, and its last round must be
+        # checkpointed whichever way it stops.
+        last = stop or outer_iter == args.max_iterations
+        if rank == 0 and args.checkpoint_path and (
+                outer_iter % args.checkpoint_frequency == 0 or last):
+            tmp = Path(args.checkpoint_path).with_suffix(".tmp")
+            tmp.write_text(json.dumps({"iterations": checkpoint_history}))
+            tmp.replace(args.checkpoint_path)
         stop = comm.bcast(stop if rank == 0 else None, root=0)
         if stop:
             if rank == 0:
