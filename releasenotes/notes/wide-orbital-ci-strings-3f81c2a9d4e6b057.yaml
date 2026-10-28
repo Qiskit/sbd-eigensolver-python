@@ -1,0 +1,19 @@
+---
+fixes:
+  - |
+    :func:`sbd.sbd_solver.solve_sci` and :func:`sbd.sbd_solver.solve_sci_batch`
+    now work with 64 or more spatial orbitals. ``qiskit-addon-sqd`` already
+    passes CI strings that wide as Python ints, and SBD packs any width into
+    words of ``bit_length`` bits, but converting the solved determinants back to
+    CI strings forced an int64 array and failed with ``OverflowError: Python int
+    too large to convert to C long``. The CI strings in ``SCIResult.sci_state``
+    and ``SCIResult.carryover`` now follow the addon's own rule: an int64 array
+    up to 63 orbitals, and an object array of Python ints from 64 on. Nothing
+    changes below 64 orbitals. Under MPI the error was raised on rank 0 only, so
+    ``examples/tpb/run_sqd_sbd.py`` hung instead of exiting. See `#70
+    <https://github.com/Qiskit/sbd-eigensolver-python/issues/70>`__.
+  - |
+    ``examples/tpb/run_sqd_enlarge_subspace_sbd.py`` now works with 64 or more
+    spatial orbitals too. Unpacking CI strings into occupation bits went through a
+    uint64 array, which cannot hold the Python ints ``solve_sci`` returns at that
+    width, and raised the same ``OverflowError``.
