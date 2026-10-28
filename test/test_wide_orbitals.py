@@ -153,7 +153,7 @@ def test_solve_sci_past_63_orbitals_standalone(device_config):
 
 @pytest.mark.mpi
 def test_solve_sci_past_63_orbitals_mpi(device_config):
-    """The same on two ranks, splitting the alpha strings between them.
+    """The same on several ranks, splitting the alpha strings between them.
 
     Only rank 0 converts the solved strings back to CI strings, so before the fix
     only rank 0 raised (#70). Under run_sqd_sbd.py the other rank then waited for
@@ -161,8 +161,8 @@ def test_solve_sci_past_63_orbitals_mpi(device_config):
 
     The 70-orbital solve needs more words per determinant than the rest of the
     suite, and SBD fixes that count per process, so it cannot run in the ranks of
-    this job. Rank 0 starts a separate two-rank job instead, and every rank checks
-    the result it reports.
+    this job. Rank 0 starts a separate job instead, on SBD_TEST_NPROCS ranks (2 when
+    unset, as for ``tox -e mpi``), and every rank checks the result it reports.
     """
     from mpi4py import MPI
 
@@ -171,6 +171,7 @@ def test_solve_sci_past_63_orbitals_mpi(device_config):
     # rank 0 only would leave the other ranks waiting in the broadcast below.
     _require_dependencies()
     device = _device(device_config)
+    nprocs = int(os.environ.get("SBD_TEST_NPROCS", "2"))
     outcome = None
     if comm.Get_rank() == 0:
         mpirun = shutil.which("mpirun") or shutil.which("mpiexec")
@@ -178,15 +179,15 @@ def test_solve_sci_past_63_orbitals_mpi(device_config):
             outcome = "skip: no mpirun or mpiexec on PATH"
         else:
             try:
-                outcome = _run_script(device, launcher=(mpirun, "-n", "2"))
+                outcome = _run_script(device, launcher=(mpirun, "-n", str(nprocs)))
             except subprocess.TimeoutExpired:
-                outcome = ("fail: the two-rank run did not finish: one rank is likely "
-                           "waiting on another that raised")
+                outcome = (f"fail: the {nprocs}-rank run did not finish: one rank is "
+                           "likely waiting on another that raised")
     outcome = comm.bcast(outcome, root=0)
     if isinstance(outcome, str):
         kind, message = outcome.split(": ", 1)
         (pytest.skip if kind == "skip" else pytest.fail)(message)
-    assert _check_result(outcome)["ranks"] == 2
+    assert _check_result(outcome)["ranks"] == nprocs
 
 
 def _check_result(completed):
