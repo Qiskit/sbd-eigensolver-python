@@ -2,8 +2,8 @@
 features:
   - |
     ``examples/tpb/run_sbd_diag.py``, ``examples/tpb/run_sqd_sbd.py``,
-    ``examples/gdb/run_gdb_diag.py`` and ``examples/gdb/run_gdb_heatbath.py`` no
-    longer hang when one MPI rank fails. A failure on any rank, an error or a nonzero
+    ``examples/tpb/run_sqd_enlarge_subspace_sbd.py``, ``examples/gdb/run_gdb_diag.py``
+    and ``examples/gdb/run_gdb_heatbath.py`` no longer hang when one MPI rank fails. A failure on any rank, an error or a nonzero
     exit, now aborts the whole job, and the failing rank prints its own error, tagged
     with its rank number. Before, an error on a rank other than 0 could go unreported
     while the other ranks waited for it in a collective until the job's time limit.
@@ -29,9 +29,9 @@ features:
     subspace can only have a lower energy, so a rise means the solve stopped on a
     higher state.
   - |
-    ``examples/tpb/run_sqd_sbd.py`` warns when the strings carried in from
-    ``--resume_from`` already fill ``--max_dim``, so that no new string can enter and
-    every iteration would repeat the same subspace.
+    ``examples/tpb/run_sqd_sbd.py`` and ``examples/tpb/run_sqd_enlarge_subspace_sbd.py``
+    warn when the strings carried in from ``--resume_from`` already fill ``--max_dim``,
+    so that no new string can enter and every iteration would repeat the same subspace.
 fixes:
   - |
     The README and the :func:`sbd.tpb_diag` docstring gave TPB's ``savename`` files a

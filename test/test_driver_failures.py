@@ -99,7 +99,7 @@ def _driver_args(script, device, tmp_path, ranks=2):
         subset.write_text("\n".join(lines) + "\n")
         return ["--device", device, "--fcidump", fcidump, "--adetfile", str(subset),
                 "--adet_comm_size", str(ranks)]
-    if script == "tpb/run_sqd_sbd.py":
+    if script in ("tpb/run_sqd_sbd.py", "tpb/run_sqd_enlarge_subspace_sbd.py"):
         return ["--device", device, "--fcidump", fcidump,
                 "--counts", str(REPO / "examples" / "tpb" / "count_dict_h2o.json"),
                 "--max_iterations", "1", "--num_batches", "1", "--adet_comm_size", str(ranks)]
@@ -125,7 +125,7 @@ def _run(script, args, env=None, launcher=(), timeout=600):
                           capture_output=True, text=True, timeout=timeout, env=env)
 
 
-DRIVERS = ["tpb/run_sbd_diag.py", "tpb/run_sqd_sbd.py",
+DRIVERS = ["tpb/run_sbd_diag.py", "tpb/run_sqd_sbd.py", "tpb/run_sqd_enlarge_subspace_sbd.py",
            "gdb/run_gdb_diag.py", "gdb/run_gdb_heatbath.py"]
 
 
@@ -137,8 +137,8 @@ def test_a_failure_on_one_rank_aborts_the_job(script, device_config, tmp_path):
     until the job's time limit. The timeout here is the hang detector. Runs on
     SBD_TEST_NPROCS ranks (default 2); the layout tests below need exactly 2.
     """
-    if script == "tpb/run_sqd_sbd.py":
-        pytest.importorskip("qiskit_addon_sqd.fermion", reason="the SQD driver needs it")
+    if script.startswith("tpb/run_sqd_"):
+        pytest.importorskip("qiskit_addon_sqd.fermion", reason="the SQD drivers need it")
     mpirun = shutil.which("mpirun") or shutil.which("mpiexec")
     if mpirun is None:
         pytest.skip("no mpirun or mpiexec on PATH")
