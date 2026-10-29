@@ -538,3 +538,110 @@ def test_exact_past_63_orbitals_matches_the_small_system(device_config):
     assert r["wide"][1] == pytest.approx(r["small"][1], rel=1e-8)
     assert r["wide"][2] == pytest.approx(r["small"][2], rel=1e-8)
     assert r["small"][1] > 1e-6, "the subspace must leave something outside it"
+
+
+# --- converting to and from PySCF ----------------------------------------------------
+
+
+def _pyscf_state(system, keep_a, keep_b):
+    """A PySCF-convention state on a product subspace with different alpha and beta sets.
+
+    Solved here by PySCF, through qiskit-addon-sqd's solver, so that a sign or packing
+    error in converting it cannot be cancelled by the same error in SBD.
+    """
+    fermion = pytest.importorskip("qiskit_addon_sqd.fermion")
+    norb, nelec = system["norb"], system["nelec"]
+    full_a = cistring.make_strings(range(norb), nelec[0])
+    full_b = cistring.make_strings(range(norb), nelec[1])
+    strings_a = np.sort(full_a[: keep_a])
+    strings_b = np.sort(full_b[np.r_[0, 3 : 2 + keep_b]])        # differs from alpha
+    result = fermion.solve_sci((strings_a, strings_b), system["h1"], system["eri"],
+                               norb=norb, nelec=nelec, tol=1e-14)
+    return strings_a, strings_b, result.sci_state.amplitudes, result.energy + system["ecore"]
+
+
+def _one_weak_iteration(system, strings_a, strings_b, loadname):
+    """One Davidson iteration with two basis vectors: converged only from a converged start."""
+    f = sbd.LoadFCIDump(str(system["path"]))
+    norb = system["norb"]
+    pack = lambda strings: sbd.sort_bitarray(
+        [sbd.from_string(format(int(s), f"0{norb}b"), BITS, norb) for s in strings])
+    config = sbd.TPB_SBD()
+    config.eps, config.max_it, config.max_nb, config.bit_length = 1e-12, 1, 2, BITS
+    return sbd.tpb_diag(f, pack(strings_a), pack(strings_b), config,
+                        loadname=loadname)["energy"]
+
+
+def test_write_tpb_state_loads_into_sbd_and_the_analysis(backend, h8, tmp_path):
+    """A PySCF state written by ``write_tpb_state`` is that state, to SBD and to the analysis.
+
+    SBD loads it as the starting vector of a solve too weak to converge on its own, and
+    lands on PySCF's energy at once; from SBD's default start it falls short. The
+    analysis reads the same energy from the file.
+    """
+    from mpi4py import MPI
+    if MPI.COMM_WORLD.Get_size() > 1:
+        pytest.skip("the file is one block, written and read by one process here")
+    strings_a, strings_b, amplitudes, energy = _pyscf_state(h8, 14, 14)
+    prefix = str(tmp_path / "pyscf-")
+    path = analysis.write_tpb_state(prefix, strings_a, strings_b, amplitudes,
+                                    norb=h8["norb"], bit_length=BITS)
+    assert path == f"{prefix}000000"
+
+    from_file = _one_weak_iteration(h8, strings_a, strings_b, prefix)
+    assert from_file == pytest.approx(energy, abs=1e-8)
+    assert _one_weak_iteration(h8, strings_a, strings_b, "") > energy + 1e-5
+    f = sbd.LoadFCIDump(str(h8["path"]))
+    assert analysis.state_energy(prefix, f, bit_length=BITS) == pytest.approx(energy, abs=1e-8)
+
+    # The sign conversion matters for this state: amplitudes with the phase already
+    # applied are converted back, so the file holds the unconverted vector, and its
+    # energy is wrong.
+    phase = np.array([[(-1) ** sum(bin(int(a) >> (p + 1)).count("1")
+                                   for p in range(h8["norb"]) if int(b) >> p & 1)
+                       for b in strings_b] for a in strings_a])
+    analysis.write_tpb_state(str(tmp_path / "raw-"), strings_a, strings_b, amplitudes * phase,
+                             norb=h8["norb"], bit_length=BITS)
+    assert analysis.state_energy(str(tmp_path / "raw-"), f, bit_length=BITS) > energy + 1e-5
+
+
+def test_the_readme_recipe_turns_an_sbd_state_into_pyscf(backend, h8, tmp_path):
+    """examples/analysis/README.md's SBD-to-PySCF snippet, run as written there."""
+    from mpi4py import MPI
+    if MPI.COMM_WORLD.Get_size() > 1:
+        pytest.skip("load_state spreads the state over the ranks; the recipe is one rank")
+    norb, nelec = h8["norb"], h8["nelec"]
+    strings_a, strings_b, _, _ = _pyscf_state(h8, 14, 14)
+    prefix = str(tmp_path / "sbd-")
+    energy = _save_tpb(h8, ([format(int(s), f"0{norb}b") for s in strings_a],
+                            [format(int(s), f"0{norb}b") for s in strings_b]), prefix)
+
+    state = analysis.load_state(prefix, norb=norb, bit_length=BITS)
+    bits = np.array([[(int(row[q // BITS]) >> (q % BITS)) & 1 for q in range(2 * norb)]
+                     for row in state.det])
+    alpha, beta = bits[:, 0::2], bits[:, 1::2]
+    weights = 1 << np.arange(norb)
+    above = np.cumsum(alpha[:, ::-1], axis=1)[:, ::-1] - alpha
+    phase = 1 - 2 * (np.sum(above * beta, axis=1) & 1)
+    ci = np.zeros((cistring.num_strings(norb, nelec[0]), cistring.num_strings(norb, nelec[1])))
+    ci[cistring.strs2addr(norb, nelec[0], alpha @ weights),
+       cistring.strs2addr(norb, nelec[1], beta @ weights)] = state.coef * phase
+    ci /= np.linalg.norm(ci)
+
+    h2e = direct_spin1.absorb_h1e(h8["h1"], h8["eri"], norb, nelec, 0.5)
+    e_pyscf = float(np.vdot(ci, direct_spin1.contract_2e(h2e, ci, norb, nelec))) + h8["ecore"]
+    assert e_pyscf == pytest.approx(energy, abs=1e-8)
+
+
+@pytest.mark.parametrize("change, message", [
+    ({"amplitudes": np.zeros((3, 2))}, "expected"),
+    ({"strings_a": [7, 7, 11]}, "repeated"),
+    ({"strings_a": [7, 11, 1 << 9]}, "does not fit"),
+    ({"bit_length": 64}, "bit_length"),
+])
+def test_write_tpb_state_refuses_bad_input(tmp_path, change, message):
+    args = {"strings_a": [7, 11, 13], "strings_b": [7, 11, 13], "amplitudes": np.eye(3),
+            "norb": 8, "bit_length": BITS}
+    args.update(change)
+    with pytest.raises(ValueError, match=message):
+        analysis.write_tpb_state(str(tmp_path / "x-"), **args)

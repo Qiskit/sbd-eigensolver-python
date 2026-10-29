@@ -215,6 +215,66 @@ other is left out of the output.
 $|E - H_{aa}|$ is at or below the value given, rather than returning a PT2 dominated
 by one near-degenerate determinant. With 0, any finite nonzero denominator is accepted.
 
+## Converting to and from PySCF
+
+A state built elsewhere can be analysed, or loaded into SBD, once it is written in SBD's
+format, and a state SBD saved can be handed to PySCF. Two conventions differ between
+the two, and both have to be converted:
+
+- **Packing.** SBD stores each string in 64-bit words of `bit_length` orbitals each,
+  not 64, so `bit_length` must be the one the reading run uses.
+- **Signs.** SBD orders a determinant's creation operators orbital by orbital (alpha 0,
+  beta 0, alpha 1, ...); PySCF puts every alpha operator before every beta one. The two
+  differ by the phase $(-1)^n$, where $n$ counts, over the occupied beta orbitals $p$,
+  the occupied alpha orbitals above $p$. The same phase converts either way.
+
+**PySCF to SBD.** `strings_a` and `strings_b` are CI strings as integers (bit `p` is
+orbital `p`), and `amplitudes[i, j]` the coefficient of `(strings_a[i], strings_b[j])`,
+as in `pyscf.fci` or `qiskit_addon_sqd.fermion.SCIState`:
+
+```python
+from sbd import analysis
+
+analysis.write_tpb_state("/path/to/state-", strings_a, strings_b, amplitudes,
+                         norb=norb, bit_length=20)
+```
+
+This writes `/path/to/state-000000`, one alpha x beta block holding the whole state.
+SBD loads it with `loadname` (`run_sbd_diag.py --loadname /path/to/state-`, given the
+same strings) onto a grid of any shape, and `variance.py --state /path/to/state-`
+analyses it.
+
+**SBD to PySCF.** `load_state` reads a saved TPB or GDB state as full determinants,
+bit `2p` alpha orbital `p` and bit `2p+1` beta orbital `p`, with SBD's signs. For a
+PySCF FCI vector over the full space:
+
+```python
+import numpy as np
+from pyscf.fci import cistring
+from sbd import analysis
+
+state = analysis.load_state("/path/to/run/h2o-", norb=norb, bit_length=20)
+bits = np.array([[(int(row[q // 20]) >> (q % 20)) & 1 for q in range(2 * norb)]
+                 for row in state.det])
+alpha, beta = bits[:, 0::2], bits[:, 1::2]
+weights = 1 << np.arange(norb)
+above = np.cumsum(alpha[:, ::-1], axis=1)[:, ::-1] - alpha
+phase = 1 - 2 * (np.sum(above * beta, axis=1) & 1)          # SBD's signs to PySCF's
+ci = np.zeros((cistring.num_strings(norb, nelec[0]), cistring.num_strings(norb, nelec[1])))
+ci[cistring.strs2addr(norb, nelec[0], alpha @ weights),
+   cistring.strs2addr(norb, nelec[1], beta @ weights)] = state.coef * phase
+ci /= np.linalg.norm(ci)
+```
+
+`load_state` spreads a state over the ranks of the communicator, so run this on one
+rank, or gather `state.det` and `state.coef` first. Use the `bit_length` the state was
+saved with in both places (20 here).
+
+The snippet works up to 63 orbitals: PySCF's `cistring.strs2addr` refuses 64 or more.
+Past that, address each string by its position in `cistring.make_strings(range(norb),
+nelec)`, which lists the strings in address order, as occupied-orbital lists from 64
+orbitals on.
+
 ## Notes
 
 - **Memory:** the state is spread evenly over the ranks, whatever the number of files;
