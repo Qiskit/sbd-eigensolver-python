@@ -273,6 +273,13 @@ def parse_args():
                        help='Load an initial wavefunction from this file')
     parser.add_argument('--savename', default='',
                        help='Save the final wavefunction under this prefix')
+    parser.add_argument('--carryovername', default='', metavar='PREFIX',
+                       help='Write the carryover SBD returned (needs --carryover_type '
+                            '1-3) as determinant strings, PREFIX000000.txt ..., as '
+                            "upstream's app does: one file per b_comm rank for type 1, "
+                            'one per rank for types 2/3. With types 2/3 that is the '
+                            'heat-bath-expanded next subspace, which --detfiles reads '
+                            'back.')
 
     args = parser.parse_args()
     # Even, and at most 62. 64 overflows the shift in SBD's bitadvance(), reached
@@ -318,6 +325,26 @@ def interleave_spin_strings(alpha, beta):
     return ''.join(a_rev[i] + b_rev[i] for i in range(len(a_rev)))[::-1]
 
 
+def write_carryover(args, carryover, total_bits, rank):
+    """Write this rank's carryover as determinant strings, as upstream's app does.
+
+    The same files ``chemistry_gdb_selected_basis_diagonalization --carryovername``
+    writes: for type 1 the ranks at t = 0, h = 0 (world ranks below b_comm_size)
+    each write their shard, numbered by b_comm rank, since the other ranks hold
+    copies; for types 2/3 every rank writes its share of the globally sorted
+    expansion, numbered by world rank. Returns the file written, or None.
+    """
+    import sbd
+
+    if args.carryover_type == 1 and rank >= args.b_comm_size:
+        return None
+    path = f"{args.carryovername}{rank:06d}.txt"
+    with open(path, "w", encoding="ascii") as handle:
+        for row in carryover:
+            handle.write(sbd.makestring(list(row), args.bit_length, total_bits) + "\n")
+    return path
+
+
 def shard_bounds(total, b_comm_size, index):
     """This rank's slice of a globally sorted list of ``total`` determinants.
 
@@ -347,6 +374,28 @@ def main():
     rank = sbd.get_rank()
     size = sbd.get_world_size()
     device = sbd.get_device()
+
+    if args.carryovername:
+        import os
+        if not args.carryover_type:
+            print(f"[rank {rank}] ERROR: --carryovername needs --carryover_type 1, 2 "
+                  f"or 3: with 0, SBD selects no carryover", file=sys.stderr, flush=True)
+            return 1
+        if args.carryover_type == 1 and args.b_comm_size > 1:
+            # Each b_comm rank keeps the top determinants of its own shard, so the
+            # files' ranges interleave and --detfiles (ours and upstream's loader)
+            # refuses them. Types 2/3 end with a global sort, so their files reload.
+            print(f"[rank {rank}] ERROR: --carryovername with --carryover_type 1 needs "
+                  f"--b_comm_size 1: each shard keeps its own selection, so the files "
+                  f"overlap and a next run cannot read them back. Use carryover type 2 "
+                  f"or 3, or one shard", file=sys.stderr, flush=True)
+            return 1
+        directory = os.path.dirname(os.path.abspath(args.carryovername))
+        if not os.path.isdir(directory):
+            print(f"[rank {rank}] ERROR: --carryovername {args.carryovername!r}: "
+                  f"directory {directory!r} does not exist; create it first",
+                  file=sys.stderr, flush=True)
+            return 1
 
     if rank == 0:
         print("=" * 70)
@@ -505,6 +554,11 @@ def main():
     )
     elapsed = time.perf_counter() - start
 
+    # Collective, so every rank must reach it: before the rank-0-only report below,
+    # which the other ranks skip by returning.
+    if args.carryovername:
+        write_carryover(args, results['carryover_det'], total_bits, rank)
+
     if rank != 0:
         return 0
 
@@ -547,6 +601,12 @@ def main():
                   "local_heatbath_expansion starts from `edet = det` "
                   "(gdb/expansion.h:543), so this is the next subspace, not just "
                   "the new candidates.")
+
+    if args.carryovername:
+        writers = args.b_comm_size if args.carryover_type == 1 else size
+        files = [f"{args.carryovername}{i:06d}.txt" for i in range(writers)]
+        print(f"Carryover written to {len(files)} file(s)\n"
+              f"  next run: --detfiles {','.join(files)}")
 
     if args.rdm_output:
         # assemble_rdms' layout was verified against PySCF on the TPB path; the
