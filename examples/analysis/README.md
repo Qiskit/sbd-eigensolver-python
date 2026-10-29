@@ -114,6 +114,97 @@ $E_{\mathrm{var}} + E_{\mathrm{PT2}}$ 0.2 mHa.
 `--json FILE` also writes the result, the settings and the per-batch values. The same
 calculation is available in Python as `sbd.analysis.variance()`; see the API docs.
 
+## Example: one Fe4S4 subspace through TPB and GDB
+
+Upstream SBD ships one Fe4S4 subspace in both solvers' formats: `AlphaDets.txt` (244
+strings, used as alpha and beta, so $244^2 = 59{,}536$ determinants) for TPB, and
+`det0.txt`–`det3.txt` (the same 59,536 determinants) for GDB. This example solves it
+with each, has each solver build a larger subspace from its state, solves that, and
+reads both resulting states' variance and PT2.
+
+The two solvers expand a state differently:
+
+- **TPB** keeps a product of alpha and beta strings, so it grows the subspace a string
+  at a time. `--carryover_type 3` keeps the strings of the dominant determinants and
+  adds their single excitations.
+- **GDB** keeps a list of determinants, so it grows it a determinant at a time.
+  `--carryover_type 2` adds the determinants the heat-bath criterion connects to the
+  state, the state's own determinants included.
+
+The settings below give two next subspaces of about the same size, so their energies and
+variances can be read side by side.
+
+```bash
+SBD=/path/to/sbd-eigensolver-python
+APPS=$SBD/vendor/sbd-upstream/apps
+FCIDUMP=$APPS/chemistry_gdb_selected_basis_diagonalization/fcidump_Fe4S4.txt
+mkdir -p /path/to/fe4s4/tpb /path/to/fe4s4/gdb
+
+# TPB: solve, and write the expanded strings
+cd $SBD/examples/tpb
+mpirun -np 4 python run_sbd_diag.py --fcidump $FCIDUMP \
+    --adetfile $APPS/chemistry_tpb_selected_basis_diagonalization/AlphaDets.txt \
+    --adet_comm_size 2 --bdet_comm_size 2 --bit_length 20 --tolerance 1e-8 \
+    --carryover_type 3 --carryover_threshold 1e-2 \
+    --carryover_adetfile /path/to/fe4s4/tpb/a.txt --carryover_bdetfile /path/to/fe4s4/tpb/b.txt
+# solve the expanded subspace, saving the state
+mpirun -np 4 python run_sbd_diag.py --fcidump $FCIDUMP --symmetrize_spin 0 \
+    --adetfile /path/to/fe4s4/tpb/a.txt --bdetfile /path/to/fe4s4/tpb/b.txt \
+    --adet_comm_size 2 --bdet_comm_size 2 --bit_length 20 --tolerance 1e-8 \
+    --savename /path/to/fe4s4/tpb/next-
+
+# GDB: solve (det0-3.txt are the driver's defaults), and write the expanded list
+cd $SBD/examples/gdb
+mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 --fcidump $FCIDUMP \
+    --bit_length 62 --tolerance 1e-8 --carryover_type 2 --heatbath_cutoff 2e-4 \
+    --carryovername /path/to/fe4s4/gdb/list-
+# solve the expanded subspace from the files the first run lists, saving the state
+mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 --fcidump $FCIDUMP \
+    --bit_length 62 --tolerance 1e-8 --savename /path/to/fe4s4/gdb/next- \
+    --detfiles /path/to/fe4s4/gdb/list-000000.txt,/path/to/fe4s4/gdb/list-000001.txt,/path/to/fe4s4/gdb/list-000002.txt,/path/to/fe4s4/gdb/list-000003.txt
+
+# Variance and PT2 of both states
+cd $SBD/examples/analysis
+mpirun -np 32 -x OMP_NUM_THREADS=2 python variance.py --fcidump $FCIDUMP \
+    --state /path/to/fe4s4/tpb/next- --bit_length 20 --samples 5000 --batches 5 --json tpb.json
+mpirun -np 32 -x OMP_NUM_THREADS=2 python variance.py --fcidump $FCIDUMP \
+    --state /path/to/fe4s4/gdb/next- --bit_length 62 --samples 5000 --batches 5 --json gdb.json
+```
+
+Measured on an 8× H100 server (Ha):
+
+| | dimension | $E_{\mathrm{var}}$ | variance (Ha²) | PT2 | $E_{\mathrm{var}} + E_{\mathrm{PT2}}$ |
+|---|---|---|---|---|---|
+| Shared start, either solver | 59,536 | −326.6982519 | 7.46e-02 ± 1.0e-03 | −6.61e-02 ± 1.2e-03 | −326.7644 ± 0.0012 |
+| TPB, type 3, threshold 1e-2 | 204,304 (452 × 452) | −326.7074213 | 6.75e-02 ± 1.8e-03 | −5.78e-02 ± 2.1e-03 | −326.7652 ± 0.0021 |
+| GDB, type 2, cutoff 2e-4 | 206,105 | −326.7583052 | 6.90e-02 ± 7.4e-04 | −4.89e-02 ± 5.8e-04 | −326.8073 ± 0.0006 |
+
+Both solvers give the same energy for the shared start, as they must for the same
+determinants. The start's row was computed with the default 10 × 20,000 samples, the
+other two with 5 × 5,000, so their error bars are wider.
+
+Things to note when reading the table:
+
+- **The variance has not converged** in any row. It is of order $10^{-2}$ Ha² throughout,
+  so all three states are far from the exact one, and PT2, which assumes a small
+  correction, is only a rough guide here.
+- **Each expansion is one setting of a tunable step.** The threshold and cutoff above
+  were chosen to match the two dimensions; other values give other sizes, and TPB's
+  size moves in larger jumps, since adding a string adds a whole row and column of the
+  product.
+- To carry on from either state, repeat its step: the strings or list a run writes are
+  the next run's input. `extrapolate.py` then fits a series of such states, from the
+  `--json` files, to estimate the energy at zero PT2.
+- **GDB's placement can be tuned.** The GDB runs above use the default
+  `--determinant_distribution equal-bra-a` (also upstream's default), which gives each
+  rank an equal number of distinct alpha strings. A heat-bath expansion puts many
+  determinants on a few alpha strings, so the expanded subspace can land unevenly across
+  the ranks. The grid schemes, `grid-cyclic` and `grid-cyclic-balanced`, spread it more
+  evenly here. A scheme changes only how the work is spread, not the energy. Which one is
+  fastest depends on the subspace and the rank count; see
+  [Placement across `b_comm`](../gdb/README.md#placement-across-b_comm) for what each
+  one balances.
+
 ## Doing it in the same run
 
 The analysis can also run at the end of a diagonalization script, in the same MPI job,
