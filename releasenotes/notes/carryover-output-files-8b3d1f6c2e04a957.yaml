@@ -1,0 +1,12 @@
+---
+features:
+  - |
+    ``examples/tpb/run_sbd_diag.py --carryover_adetfile/--carryover_bdetfile`` and
+    ``examples/gdb/run_gdb_diag.py --carryovername`` write the carryover SBD selected
+    (``--carryover_type`` 1, 2 or 3) as determinant strings, with the option names and
+    file layout of upstream SBD's own apps, so a next run can start from it with
+    ``--adetfile``/``--bdetfile`` or ``--detfiles``. With carryover types 2 and 3 that
+    is the heat-bath-expanded next subspace, and the GDB driver prints the
+    ``--detfiles`` list for the next run. GDB type 1 needs ``--b_comm_size 1``: each
+    shard keeps its own selection, so files from several shards overlap and cannot be
+    read back.
