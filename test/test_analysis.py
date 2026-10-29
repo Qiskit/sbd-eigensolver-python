@@ -392,3 +392,77 @@ def test_the_thrust_backend_has_no_evaluator_and_is_not_used_for_it(backend):
     if "gpu" in sbd.available_backends():
         with pytest.raises(ValueError, match="no evaluator"):
             analysis._evaluator_backend("gpu")
+
+
+# --- the exact method past 63 orbitals -----------------------------------------------
+
+WIDE_SCRIPT = r"""
+import itertools, json, pathlib, sys, tempfile
+import numpy as np
+from pyscf import ao2mo, gto, scf
+from pyscf.tools import fcidump as fd
+import sbd
+from sbd import analysis
+
+norb, positions, bits = 65, [30, 64], 20
+sbd.init(device=sys.argv[1])
+mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+mf = scf.RHF(mol).run(conv_tol=1e-12)
+c, n = mf.mo_coeff, mol.nao
+h1_s = c.T @ scf.hf.get_hcore(mol) @ c
+eri_s = ao2mo.restore(1, ao2mo.kernel(mol, c), n)
+idx = np.array(positions)
+h1 = np.zeros((norb, norb)); h1[np.ix_(idx, idx)] = h1_s
+eri = np.zeros((norb,) * 4); eri[np.ix_(idx, idx, idx, idx)] = eri_s
+work = pathlib.Path(tempfile.mkdtemp())
+fd.from_integrals(str(work / "wide.txt"), h1, eri, norb, mol.nelec, nuc=mf.energy_nuc())
+fd.from_integrals(str(work / "small.txt"), h1_s, eri_s, n, mol.nelec, nuc=mf.energy_nuc())
+
+small = ["".join("1" if k in occ else "0" for k in reversed(range(n)))
+         for occ in itertools.combinations(range(n), 1)][:1]      # 1 of 2: outside is nonzero
+wide = ["".join("1" if any(positions[k] == p and s[n - 1 - k] == "1" for k in range(n))
+                else "0" for p in reversed(range(norb))) for s in small]
+
+def solve_and_analyse(path, strings, width):
+    f = sbd.LoadFCIDump(str(path))
+    config = sbd.TPB_SBD()
+    config.eps, config.max_it, config.bit_length = 1e-12, 300, bits
+    det = sbd.sort_bitarray([sbd.from_string(s, bits, width) for s in strings])
+    prefix = str(path) + "-state-"
+    sbd.tpb_diag(f, det, det, config, savename=prefix)
+    r = analysis.variance(prefix, f, method="exact", bit_length=bits)
+    return [r.energy, r.variance, r.pt2]
+
+if sys.argv[2] == "wide":
+    result = solve_and_analyse(work / "wide.txt", wide, norb)
+else:
+    result = solve_and_analyse(work / "small.txt", small, n)
+print("RESULT " + json.dumps(result))
+"""
+
+
+def test_exact_past_63_orbitals_matches_the_small_system(device_config):
+    """PySCF's string addressing stops at 63 orbitals; the exact method does not.
+
+    H2 embedded at orbitals 30 and 64 of 65, the rest uncoupled: the energy, variance and
+    PT2 must be the small system's. Small on purpose: the exact method's full space and
+    integrals grow fast with the orbital count, and a larger case takes minutes on a
+    CI runner. Each in its own subprocess, since ``det_vector``'s word
+    count is fixed for the life of a process, and the two systems need different counts.
+    """
+    import json
+    import subprocess
+    import sys
+
+    device = device_config.device if device_config is not None else "cpu"
+    r = {}
+    for system in ("wide", "small"):
+        done = subprocess.run([sys.executable, "-c", WIDE_SCRIPT, device, system],
+                              capture_output=True, text=True, timeout=900)
+        assert done.returncode == 0, f"{done.stdout[-3000:]}\n{done.stderr[-3000:]}"
+        line = [l for l in done.stdout.splitlines() if l.startswith("RESULT ")][-1]
+        r[system] = json.loads(line[len("RESULT "):])
+    assert r["wide"][0] == pytest.approx(r["small"][0], abs=1e-9)
+    assert r["wide"][1] == pytest.approx(r["small"][1], rel=1e-8)
+    assert r["wide"][2] == pytest.approx(r["small"][2], rel=1e-8)
+    assert r["small"][1] > 1e-6, "the subspace must leave something outside it"

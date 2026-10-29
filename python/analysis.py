@@ -732,9 +732,8 @@ def _exact(fcidump, det, coef, norb, nelec, bit_length):
     alpha, beta = bits[:, 0::2], bits[:, 1::2]
     if np.any(alpha.sum(axis=1) != nelec[0]) or np.any(beta.sum(axis=1) != nelec[1]):
         raise ValueError(f"the state has determinants without {nelec} electrons")
-    weights = 1 << np.arange(norb, dtype=np.int64)
-    ia = cistring.strs2addr(norb, nelec[0], alpha @ weights)
-    ib = cistring.strs2addr(norb, nelec[1], beta @ weights)
+    ia = _string_addresses(alpha, norb, nelec[0])
+    ib = _string_addresses(beta, norb, nelec[1])
     ci = np.zeros((cistring.num_strings(norb, nelec[0]), cistring.num_strings(norb, nelec[1])))
     ci[ia, ib] = coef * _alpha_first_phase(alpha, beta)
     norm = np.linalg.norm(ci)
@@ -751,6 +750,25 @@ def _exact(fcidump, det, coef, norb, nelec, bit_length):
     variance_ = float(np.dot(hc_out, hc_out))
     pt2 = float(np.sum(hc_out ** 2 / (e_el - hd_out)))
     return variance_, pt2, e_el + ecore
+
+
+def _string_addresses(occ, norb, nelec):
+    """PySCF's address of each row of ``occ`` (one 0/1 column per orbital).
+
+    By position in PySCF's own string list, which is in address order, rather than
+    ``cistring.strs2addr``: that packs a string into an int64 and refuses 64 orbitals
+    or more, while ``make_strings`` returns occupied-orbital lists there instead.
+    """
+    from pyscf.fci import cistring
+
+    strings = cistring.make_strings(range(norb), nelec)
+    if norb < 64:
+        index = {int(s): i for i, s in enumerate(strings)}
+        keys = [sum(1 << p for p in np.flatnonzero(row)) for row in occ]
+    else:
+        index = {tuple(int(p) for p in s): i for i, s in enumerate(strings)}
+        keys = [tuple(int(p) for p in np.flatnonzero(row)) for row in occ]
+    return np.array([index[k] for k in keys], dtype=np.intp)
 
 
 def _integrals(fcidump, norb):
