@@ -1,0 +1,8 @@
+---
+other:
+  - |
+    ``examples/analysis/README.md`` has a worked Fe4S4 example: upstream SBD's shipped
+    subspace solved with both TPB and GDB, each solver's carryover expansion written to
+    files and solved as the next subspace, and the variance and PT2 of both resulting
+    states read with ``variance.py``. The commands are given in full, with the measured
+    energies and variances.

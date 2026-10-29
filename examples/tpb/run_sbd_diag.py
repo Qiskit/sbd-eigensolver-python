@@ -148,6 +148,17 @@ def parse_args():
     parser.add_argument('--carryover_threshold', '--threshold', type=float, default=0.0, dest='threshold',
                        help='Carryover threshold')
     
+    parser.add_argument('--carryover_adetfile', default='', metavar='FILE',
+                       help='Write the alpha strings SBD carried over (needs '
+                            '--carryover_type 1-3) to FILE, one NORB-bit string per '
+                            'line: the format --adetfile reads, so a next run can '
+                            'start from them. Written by rank 0; every rank holds '
+                            'the same list.')
+    parser.add_argument('--carryover_bdetfile', default='', metavar='FILE',
+                       help='The same for the beta strings. With --symmetrize_spin 1 '
+                            '(the default) the next run builds beta from --adetfile '
+                            'alone, so this is only needed with --symmetrize_spin 0.')
+
     # Determinant representation
     parser.add_argument('--bit_length', type=int, default=20,
                        help='Bit length for determinant representation')
@@ -166,6 +177,16 @@ def parse_args():
     return parser.parse_args()
 
 
+def write_strings(path, strings):
+    """Write one string per line, replacing ``path`` only once the file is complete."""
+    import os
+
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="ascii") as handle:
+        handle.write("\n".join(strings) + ("\n" if strings else ""))
+    os.replace(tmp, path)
+
+
 def main():
     args = parse_args()
     
@@ -178,6 +199,21 @@ def main():
 
     rank = sbd.get_rank()
     size = sbd.get_world_size()
+
+    if args.carryover_adetfile or args.carryover_bdetfile:
+        import os
+        if not args.carryover_type:
+            print(f"[rank {rank}] ERROR: --carryover_adetfile/--carryover_bdetfile need "
+                  f"--carryover_type 1, 2 or 3: with 0, SBD selects no carryover",
+                  file=sys.stderr, flush=True)
+            return 1
+        for flag, path in (("--carryover_adetfile", args.carryover_adetfile),
+                           ("--carryover_bdetfile", args.carryover_bdetfile)):
+            directory = os.path.dirname(os.path.abspath(path)) if path else ""
+            if path and not os.path.isdir(directory):
+                print(f"[rank {rank}] ERROR: {flag} {path!r}: directory {directory!r} "
+                      f"does not exist; create it first", file=sys.stderr, flush=True)
+                return 1
     
     if rank == 0:
         print("="*70)
@@ -293,6 +329,14 @@ def main():
 
             print(f"Density: {combined_density}")
             print(f"Carryover determinants: {len(results['carryover_adet'])}")
+            for path, key in ((args.carryover_adetfile, 'carryover_adet'),
+                              (args.carryover_bdetfile, 'carryover_bdet')):
+                if path:
+                    norb = len(results['density']) // 2
+                    strings = [sbd.makestring(det, args.bit_length, norb)
+                               for det in results[key]]
+                    write_strings(path, strings)
+                    print(f"  wrote {len(strings)} {key[10:]} strings to {path}")
 
             norb = len(density) // 2
             rdm1, rdm2 = assemble_rdms(results, norb)
