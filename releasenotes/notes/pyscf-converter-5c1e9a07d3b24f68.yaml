@@ -1,0 +1,9 @@
+---
+features:
+  - |
+    New :func:`sbd.analysis.write_tpb_state` writes a wavefunction built elsewhere,
+    from CI strings and an amplitude matrix in PySCF's sign convention, as an SBD TPB
+    state, so that SBD can load it with ``loadname`` and :func:`sbd.analysis.variance`
+    can analyse it. It packs the strings and converts the signs as SBD needs.
+    ``examples/analysis/README.md`` shows the conversion both ways, including from a
+    saved SBD state to a PySCF FCI vector.

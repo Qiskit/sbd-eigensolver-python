@@ -49,7 +49,7 @@ from math import comb
 import numpy as np
 
 __all__ = ["SavedState", "VarianceResult", "load_gdb_shards", "load_state", "state_energy",
-           "variance"]
+           "variance", "write_tpb_state"]
 
 
 @dataclass
@@ -348,6 +348,70 @@ def load_state(source, norb, bit_length=None, comm=None):
             f"run's (or are not SBD states): keep one run's files per prefix.")
     return SavedState(np.ascontiguousarray(det), np.ascontiguousarray(coef), bit_length, kind,
                       list(files))
+
+
+def write_tpb_state(prefix, strings_a, strings_b, amplitudes, norb, bit_length):
+    """Write a TPB state from CI strings and amplitudes, in SBD's savename format.
+
+    For a wavefunction built outside SBD -- by PySCF, say -- so that SBD can load it
+    (``loadname``) or this module can analyse it (:func:`variance`). It writes one
+    file, ``f"{prefix}000000"``, holding the whole state as a single alpha x beta
+    block. That is enough whatever grid the reading run uses: SBD's loader looks
+    each saved string up in the run's own lists, so the run may split them over any
+    grid, and strings it does not have are skipped.
+
+    The file is what SBD's own ``SaveWavefunction`` writes: three ``uint64`` counts
+    (alpha strings, beta strings, words per string), the alpha strings, the beta
+    strings, then the amplitudes as ``float64``, row-major over alpha x beta. Each
+    string is packed as SBD packs it, ``bit_length`` orbitals per 64-bit word, not
+    64, so ``bit_length`` must be the one the reading run uses.
+
+    Args:
+        prefix: The ``savename`` prefix to write under. The directory must exist.
+        strings_a, strings_b: Alpha and beta CI strings as integers, bit ``p``
+            orbital ``p``, in any order and with no repeats.
+        amplitudes: The ``(len(strings_a), len(strings_b))`` coefficient matrix,
+            ``amplitudes[i, j]`` for the determinant ``(strings_a[i], strings_b[j])``,
+            in PySCF's sign convention, where every alpha creation operator precedes
+            every beta one, as from ``pyscf.fci`` or
+            :class:`qiskit_addon_sqd.fermion.SCIState`. They are converted to SBD's,
+            which interleaves the spins orbital by orbital.
+        norb: Spatial orbitals.
+        bit_length: Bits per packed word, as the run that reads the state uses.
+
+    Returns:
+        The path written.
+    """
+    amplitudes = np.array(amplitudes, dtype=np.float64)
+    strings_a, strings_b = list(strings_a), list(strings_b)
+    if amplitudes.shape != (len(strings_a), len(strings_b)):
+        raise ValueError(f"amplitudes has shape {amplitudes.shape}, expected "
+                         f"({len(strings_a)}, {len(strings_b)}) for the strings given")
+    if not 1 <= bit_length <= 63:
+        raise ValueError(f"bit_length must be in [1, 63], got {bit_length}")
+    for name, strings in (("strings_a", strings_a), ("strings_b", strings_b)):
+        if len(set(int(x) for x in strings)) != len(strings):
+            raise ValueError(f"{name} has repeated strings")
+        if any(int(x) < 0 or int(x) >> norb for x in strings):
+            raise ValueError(f"{name} has a string that does not fit {norb} orbitals")
+    bits_a = np.array([[(int(x) >> q) & 1 for q in range(norb)] for x in strings_a],
+                      dtype=np.int64).reshape(len(strings_a), norb)
+    bits_b = np.array([[(int(x) >> q) & 1 for q in range(norb)] for x in strings_b],
+                      dtype=np.int64).reshape(len(strings_b), norb)
+    # The phase of determinant (a, b): (-1)^(sum over occupied beta p of the
+    # occupied alpha orbitals above p), as _alpha_first_phase, for every pair.
+    above_a = np.cumsum(bits_a[:, ::-1], axis=1)[:, ::-1] - bits_a
+    amplitudes[((above_a @ bits_b.T) & 1) == 1] *= -1.0
+    alpha = _pack_bits(bits_a.astype(np.uint8), bit_length)
+    beta = _pack_bits(bits_b.astype(np.uint8), bit_length)
+    path = f"{prefix}000000"
+    with open(path, "wb") as handle:
+        header = [len(strings_a), len(strings_b), alpha.shape[1]]
+        np.array(header, dtype=np.uint64).tofile(handle)
+        alpha.tofile(handle)
+        beta.tofile(handle)
+        amplitudes.tofile(handle)
+    return path
 
 
 def _check_order(det, kind):
