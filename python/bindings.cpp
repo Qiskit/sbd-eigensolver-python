@@ -568,7 +568,9 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             // inside diag, after its setup collectives, and throws on the ranks that
             // fail; that is unanimous today only because every rank holds the same
             // lists. Check it here first, on every rank, with upstream's own packing,
-            // and raise on all of them together.
+            // and raise on all of them together. GDB needs no such check: its upstream
+            // lookup (BasisInitVectorFromDeterminant) reduces over b_comm before it
+            // throws, so every rank already raises together there.
             if (loadname.empty() && !sbd_data.initial_adeterminant_bitstring.empty()) {
                 std::string problem;
                 try {
@@ -577,6 +579,10 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                         if (kv.first == std::string("NORB")) {
                             norb = static_cast<size_t>(std::atoi(kv.second.c_str()));
                         }
+                    }
+                    if (norb == 0) {
+                        throw std::invalid_argument(
+                            "tpb_diag could not read NORB from the FCIDUMP header");
                     }
                     const std::string& b_string =
                         sbd_data.initial_bdeterminant_bitstring.empty()
