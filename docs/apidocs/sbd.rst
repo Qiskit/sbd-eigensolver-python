@@ -167,6 +167,16 @@ Inputs
 .. autofunction:: from_strings
 .. autofunction:: sort_bitarray_array
 
+CAOP: creation/annihilation-operator models
+============================================
+
+For lattice and spin models written as creation and annihilation operators, over a
+selected basis, as upstream SBD's ``caop_selected_basis_diagonalization`` app. CAOP runs
+on the ``cpu`` and ``gpu`` (Thrust) backends.
+
+.. autofunction:: CAOP_SBD
+.. autofunction:: caop_diag_from_files
+
 Backends and devices
 ====================
 
