@@ -309,7 +309,7 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
         .def_readwrite("initial_adeterminant_bitstring",
                       &sbd::tpb::SBD::initial_adeterminant_bitstring,
                       "Start Davidson with unit weight on this alpha string (NORB "
-                      "characters, rightmost = orbital 0) times "
+                      "characters, character NORB-1-i is orbital i, so the rightmost is orbital 0) times "
                       "initial_bdeterminant_bitstring, instead of the init policy. "
                       "Empty (the default) uses init. Each string must occur exactly "
                       "once in its list, or the solve raises ValueError")
@@ -387,8 +387,8 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
         .def_readwrite("initial_determinant_bitstring",
                       &sbd::gdb::SBD::initial_determinant_bitstring,
                       "Start Davidson with unit weight on this full determinant "
-                      "(2*NORB characters, alpha and beta interleaved as in "
-                      "from_strings), instead of the init policy. Empty (the default) "
+                      "(2*NORB characters; from the right, bit 2*i is alpha orbital i and bit "
+                      "2*i+1 beta orbital i, as in from_strings), instead of the init policy. Empty (the default) "
                       "uses init. It must occur exactly once across all shards, or "
                       "the solve raises ValueError")
         // do_shuffle is deliberately NOT exposed, for the same reason as
@@ -563,6 +563,47 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             // Get MPI rank for GPU assignment
             int mpi_rank;
             MPI_Comm_rank(comm, &mpi_rank);
+
+            // An explicit start must be in the lists. Upstream checks it locally deep
+            // inside diag, after its setup collectives, and throws on the ranks that
+            // fail; that is unanimous today only because every rank holds the same
+            // lists. Check it here first, on every rank, with upstream's own packing,
+            // and raise on all of them together.
+            if (loadname.empty() && !sbd_data.initial_adeterminant_bitstring.empty()) {
+                std::string problem;
+                try {
+                    size_t norb = 0;
+                    for (const auto& kv : fcidump.header) {
+                        if (kv.first == std::string("NORB")) {
+                            norb = static_cast<size_t>(std::atoi(kv.second.c_str()));
+                        }
+                    }
+                    const std::string& b_string =
+                        sbd_data.initial_bdeterminant_bitstring.empty()
+                            ? sbd_data.initial_adeterminant_bitstring
+                            : sbd_data.initial_bdeterminant_bitstring;
+                    const auto want_a = sbd::from_string_checked(
+                        sbd_data.initial_adeterminant_bitstring, sbd_data.bit_length, norb);
+                    const auto want_b = sbd::from_string_checked(
+                        b_string, sbd_data.bit_length, norb);
+                    const auto na = std::count(adet.begin(), adet.end(), want_a);
+                    const auto nb = std::count(bdet.begin(), bdet.end(), want_b);
+                    const char* spin = na != 1 ? "alpha" : (nb != 1 ? "beta" : nullptr);
+                    if (spin) {
+                        problem = std::string("initial ") + spin + " determinant "
+                            + ((na != 1 ? na : nb) == 0 ? "is not present in"
+                                                        : "occurs more than once in")
+                            + " the basis";
+                    }
+                } catch (const std::exception& e) {
+                    problem = e.what();
+                }
+                if (!sbd_all_ranks_ok(problem.empty(), comm)) {
+                    throw std::invalid_argument(problem.empty()
+                        ? "the initial determinant is invalid on another rank"
+                        : problem);
+                }
+            }
             
 #ifdef SBD_THRUST
             // Assign GPU device based on MPI rank

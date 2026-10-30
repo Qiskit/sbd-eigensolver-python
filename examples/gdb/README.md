@@ -71,7 +71,7 @@ python run_gdb_diag.py --initial_det <bitstring>
 ```
 
 The determinant bit order is the one the upstream app documents: reading from the
-right, alpha orbital 1, beta orbital 1, alpha orbital 2, and so on — i.e. bit
+right, alpha orbital 0, beta orbital 0, alpha orbital 1, and so on — i.e. bit
 `2*i` is alpha orbital `i` and bit `2*i + 1` is beta orbital `i`.
 
 ## run_gdb_heatbath.py — grow the subspace, round after round

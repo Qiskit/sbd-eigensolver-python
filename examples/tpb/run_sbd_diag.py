@@ -176,6 +176,10 @@ def parse_args():
     args = parser.parse_args()
     if args.initial_bdet and not args.initial_adet:
         parser.error("--initial_bdet needs --initial_adet")
+    if args.loadname and args.initial_adet:
+        # SBD starts from the loaded state and ignores the explicit start.
+        parser.error("--loadname and --initial_adet/--initial_bdet both set the starting "
+                     "vector, and --loadname would win silently: give one of them")
     return args
 
 

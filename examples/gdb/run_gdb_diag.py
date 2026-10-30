@@ -281,6 +281,10 @@ def parse_args():
                        help='Save the final wavefunction under this prefix')
 
     args = parser.parse_args()
+    if args.loadname and args.initial_det:
+        # SBD starts from the loaded state and ignores the explicit start.
+        parser.error("--loadname and --initial_det both set the starting vector, and "
+                     "--loadname would win silently: give one of them")
     # Even, and at most 62. 64 overflows the shift in SBD's bitadvance(), reached
     # whenever a placement scheme redistributes determinants. SBD's alpha/beta
     # conversions assume an even word size once a determinant spans two words:

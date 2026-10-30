@@ -56,7 +56,9 @@ Fields shared by ``TPB_SBD`` and ``GDB_SBD``:
      - Starting vector: ``0`` puts unit weight on the first determinant of the basis
        in sorted order, ``1`` is random. Davidson only reaches states its start
        overlaps with, so a poor start converges on a higher state without any error.
-       To choose the start, set the ``initial_*`` fields below; they take precedence.
+       To choose the start, set the ``initial_*`` fields below. The start comes from,
+       in order: a state loaded with ``loadname``, then the ``initial_*`` fields, then
+       ``init``.
    * - ``seed``
      - Seed for the random starting vector; used only with ``init = 1``.
    * - ``do_rdm``
@@ -95,7 +97,8 @@ Fields of ``TPB_SBD`` only:
        excitations.
    * - ``initial_adeterminant_bitstring``, ``initial_bdeterminant_bitstring``
      - Start Davidson with unit weight on this alpha string times this beta string
-       (``NORB`` characters each, rightmost is orbital 0), instead of ``init``. Empty
+       (``NORB`` characters each, character ``NORB - 1 - i`` is orbital ``i``, so the
+       rightmost is orbital 0), instead of ``init``. Empty
        (the default) uses ``init``. An empty beta string means the alpha one; beta
        cannot be set alone. Each string must occur exactly once in its list, or the
        solve raises ``ValueError``.
@@ -137,7 +140,8 @@ Fields of ``GDB_SBD`` only:
      - Number of candidates processed per batch during expansion.
    * - ``initial_determinant_bitstring``
      - Start Davidson with unit weight on this full determinant (``2*NORB``
-       characters, alpha and beta interleaved as in :func:`from_strings`), instead of
+       characters; from the right, bit ``2*i`` is alpha orbital ``i`` and bit
+       ``2*i + 1`` beta orbital ``i``, as in :func:`from_strings`), instead of
        ``init``. Empty (the default) uses ``init``. It must occur exactly once across
        all shards, or the solve raises ``ValueError``.
 
