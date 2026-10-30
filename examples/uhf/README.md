@@ -1,5 +1,8 @@
 # Unrestricted (UHF) examples
 
+> Part of the molecular workflow in [`../README.md`](../README.md#molecules-tpb-or-gdb):
+> a UHF FCIDUMP goes through the same solve and check steps as a restricted one.
+
 SBD diagonalizes unrestricted Hamiltonians — separate alpha and beta orbitals, as
 from a UHF calculation — through the same `sbd.tpb_diag` / `sbd.gdb_diag` calls and
 the same drivers as restricted ones. Nothing selects it: the package reads the
@@ -51,8 +54,7 @@ Hartree-Fock determinants differ: −55.5324955198 (the UHF energy) and −55.53
 
 ## Running the drivers
 
-From `examples/tpb/` — the full space, which must reproduce the exact energy
-(about 30 s on one laptop core):
+From `examples/tpb/` — the full space, which must reproduce the exact energy:
 
 ```bash
 python run_sbd_diag.py --fcidump ../uhf/nh2/nh2_uhf.fcidump --symmetrize_spin 0 \
@@ -65,15 +67,35 @@ default symmetric mode reuses the alpha list as the beta one, which for an open-
 system has the wrong number of electrons. That applies to the ROHF file equally.
 
 From `examples/gdb/` — heat-bath selection grown from the Hartree-Fock determinant
-alone, reaching the exact energy to 0.5 μHa with 64k of the 920k determinants
-(about 7 s):
+alone, which reaches the exact energy with a fraction of the full space:
 
 ```bash
 python run_gdb_heatbath.py --fcidump ../uhf/nh2/nh2_uhf.fcidump \
     --subspace-from hf --cutoffs 1e-2,1e-3,1e-4,1e-5
 #   System: 13 orbitals (26 spin orbitals), 9 electrons, MS2=1, uhf integrals
-#   End:   dim 64226, E = -55.6333610328
 ```
+
+**Checking a state** works as for a restricted one: save it, then run
+[`../analysis/variance.py`](../analysis/README.md) with the UHF FCIDUMP, which it
+detects. From `examples/gdb/`, on a small subspace (20 alpha × 20 beta strings) whose
+variance shows it is far from converged:
+
+```bash
+python -c "
+a = open('../uhf/nh2/nh2_alpha.txt').read().split()[:20]
+b = open('../uhf/nh2/nh2_beta.txt').read().split()[:20]
+il = lambda x, y: ''.join(p + q for p, q in zip(x[::-1], y[::-1]))[::-1]
+open('nh2_sub.txt', 'w').write('\n'.join(il(x, y) for x in a for y in b) + '\n')"
+python run_gdb_diag.py --fcidump ../uhf/nh2/nh2_uhf.fcidump --detfiles nh2_sub.txt \
+    --bit_length 26 --tolerance 1e-8 --savename nh2-      # note "Ground state energy:"
+python ../analysis/variance.py --fcidump ../uhf/nh2/nh2_uhf.fcidump --state nh2- \
+    --bit_length 26 --energy <E from run_gdb_diag.py>
+```
+
+The variance always runs on the stochastic method for a UHF file: upstream's
+`gdb-stat-evaluator-uhf`, the `-D_UHF` build of
+[`gdb-stat-evaluator`](https://github.com/r-ccs-cms/sbd/blob/main/apps/gdb-stat-evaluator/README.md).
+The exact method is restricted-only.
 
 Both drivers take the same MPI and `--device` options as for restricted files; see
 [`../tpb/README.md`](../tpb/README.md) and [`../gdb/README.md`](../gdb/README.md).
@@ -102,5 +124,7 @@ exact energy).
   default; `SBD_BUILD_UHF=0` at install time skips them.
 - **SQD:** the SQD loop (`sbd.sbd_solver.solve_sci`) is restricted only for now.
 - **Memory:** the unrestricted two-body store is `4*NORB^4` doubles against about
-  `NORB^4/8` restricted, so about 32x larger — 3.2 GB at 100 orbitals — and like the
-  restricted one it is replicated on every rank.
+  `NORB^4/8` restricted, about 32 times larger, and like the restricted one it is
+  replicated on every rank.
+- **Complex:** upstream's headers also have a complex unrestricted path (`_UHFCPLX`),
+  but no upstream build or test uses it, so it is not built here.
