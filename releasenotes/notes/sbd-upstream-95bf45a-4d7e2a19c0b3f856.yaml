@@ -1,0 +1,23 @@
+---
+features:
+  - |
+    The vendored SBD is updated to r-ccs-cms/sbd ``95bf45a``. ``TPB_SBD`` and
+    ``GDB_SBD`` gain ``cpu_subspace`` on the Thrust backend, which keeps the Davidson
+    (and TPB's Lanczos) subspace vectors in host memory, so large runs need less GPU
+    memory. The drivers expose it as ``--cpu_subspace`` (``run_sbd_diag.py``,
+    ``run_gdb_diag.py``, ``run_gdb_heatbath.py``) and ``--sbd_cpu_subspace`` (the two
+    SQD drivers); the other backends ignore it.
+fixes:
+  - |
+    The updated SBD fixes the sign of opposite-spin double excitations in the
+    2-particle RDM (r-ccs-cms/sbd#98). On open-shell states the opposite-spin
+    (``ab``) block of ``two_p_rdm`` from ``tpb_diag`` and ``gdb_diag`` was wrong
+    before; the error cancelled in the spin-summed 2-RDM, so ``assemble_rdms`` and
+    ``SCIResult.rdm2`` were unaffected.
+upgrade:
+  - |
+    On the Thrust (``gpu``) backend, upstream SBD now needs more than one OpenMP
+    thread per rank and otherwise aborts the whole MPI job. ``tpb_diag``,
+    ``tpb_diag_from_files`` and ``gdb_diag`` on that backend now raise
+    ``ValueError`` on every rank first when ``OMP_NUM_THREADS`` is 1. Set it to 2 or
+    more. The CPU and OpenMP-offload backends are not affected.

@@ -117,6 +117,11 @@ Fields of ``TPB_SBD`` only:
        (the default), each task's loops run as one flattened GPU loop; off, as nested
        loops, which need less GPU memory. Upstream turns it off by itself when the
        flattened size would overflow. Energies do not change.
+   * - ``cpu_subspace``
+     - Thrust backend only. Keep the Davidson or Lanczos subspace vectors in host
+       memory instead of GPU memory, so the GPU memory they use no longer grows with
+       ``max_nb``; the Hamiltonian is still applied on the GPU. Energies agree with
+       the default to within rounding.
 
 Fields of ``GDB_SBD`` only:
 
@@ -149,6 +154,9 @@ Fields of ``GDB_SBD`` only:
        ``2*i + 1`` beta orbital ``i``, as in :func:`from_strings`), instead of
        ``init``. Empty (the default) uses ``init``. It must occur exactly once across
        all shards, or the solve raises ``ValueError``.
+   * - ``cpu_subspace``
+     - Thrust backend only, as for ``TPB_SBD``: keep the Davidson subspace vectors in
+       host memory instead of GPU memory.
 
 Inputs
 ======

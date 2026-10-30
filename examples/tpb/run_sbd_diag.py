@@ -175,6 +175,10 @@ def parse_args():
     parser.add_argument('--thrust_collapse_loops', type=int, default=1, choices=[0, 1],
                        help='Thrust only, and only with --use_precalculated_dets 1: 1 runs '
                             'the loops flattened (faster), 0 nested (less GPU memory)')
+    parser.add_argument('--cpu_subspace', type=int, default=0, choices=[0, 1],
+                       help='Keep the Davidson subspace vectors in CPU memory instead of GPU memory '
+                            '(Thrust backend only; ignored elsewhere). For runs too large '
+                            'for GPU memory. Needs OMP_NUM_THREADS of 2 or more')
     
     args = parser.parse_args()
     if args.initial_bdet and not args.initial_adet:
@@ -235,6 +239,8 @@ def main():
         config.max_memory_gb_for_determinants = args.max_memory_gb_for_determinants
     if hasattr(config, 'thrust_collapse_loops'):
         config.thrust_collapse_loops = bool(args.thrust_collapse_loops)
+    if hasattr(config, 'cpu_subspace'):
+        config.cpu_subspace = bool(args.cpu_subspace)
     
     if rank == 0:
         print("Configuration:")
