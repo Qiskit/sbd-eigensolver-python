@@ -15,7 +15,10 @@ say how far that state is from the exact one:
 
 `variance.py` computes both for a state saved by either SBD driver, TPB or GDB, on any
 number of MPI ranks: the analysis need not use the same ranks, or the same device, as
-the run that produced the state.
+the run that produced the state. Its default method is upstream SBD's own statistical
+evaluator, the library behind upstream's
+[`gdb-stat-evaluator`](https://github.com/r-ccs-cms/sbd/tree/main/apps/gdb-stat-evaluator)
+app, called from Python; a TPB state is passed to it as full determinants.
 
 ## How it is computed, and why in batches
 
@@ -199,8 +202,18 @@ across ranks but not threaded. The analysis is a separate launch so it can use a
 different layout from the diagonalization, and it always runs on CPU, even for a state
 diagonalized on GPUs.
 
-**Seeds.** `--seed` makes a run reproducible for the same rank count; a different rank
-count draws different samples.
+**Seeds and batch IDs.** `--seed` makes a run reproducible for the same rank count; a
+different rank count draws different samples. Each batch's draws also depend on its ID,
+counted from `--first_batch` (default 0). To add batches to an earlier run, rerun with
+the same seed and `--first_batch` set past the batches it already has: the new batches
+are independent of the old ones, and the `--json` files of both can be pooled.
+
+**`--observable`** (`both`, `variance` or `pt2`) estimates only what you ask for; the
+other is left out of the output.
+
+**`--minimum_abs_denominator`** (default 0) stops with an error if any PT2 denominator
+$|E - H_{aa}|$ is at or below the value given, rather than returning a PT2 dominated
+by one near-degenerate determinant. With 0, any finite nonzero denominator is accepted.
 
 ## Notes
 

@@ -74,6 +74,16 @@ def parse_args():
                              "cutoff is faster but biases both results low, more so the "
                              "better the state; compare against a smaller one before "
                              "trusting it")
+    parser.add_argument('--observable', default='both', choices=['both', 'variance', 'pt2'],
+                        help='Stochastic: estimate the variance, PT2, or both (default)')
+    parser.add_argument('--first_batch', type=int, default=0,
+                        help='Stochastic: ID of the first batch (default 0). Another run with '
+                             'the same seed and a different first batch gives independent '
+                             'batches that can be pooled with this run\'s')
+    parser.add_argument('--minimum_abs_denominator', type=float, default=0.0,
+                        help='Stochastic: stop with an error if any PT2 denominator '
+                             '|E - H_aa| is at or below this (default 0: any finite nonzero '
+                             'one is accepted)')
     parser.add_argument('--json', default='', metavar='FILE',
                         help='Also write the result, settings and per-batch values as JSON')
     return parser.parse_args()
@@ -114,7 +124,9 @@ def main():
     try:
         result = analysis.variance(state, fcidump, energy, method=args.method,
                                    samples=args.samples, batches=args.batches, seed=args.seed,
-                                   cutoff=args.cutoff, exact_limit=args.exact_limit)
+                                   cutoff=args.cutoff, exact_limit=args.exact_limit,
+                                   observable=args.observable, first_batch=args.first_batch,
+                                   minimum_abs_denominator=args.minimum_abs_denominator)
     except (ImportError, ValueError, RuntimeError) as exc:
         say(f"ERROR: {exc}")
         return 1
@@ -125,12 +137,18 @@ def main():
     say("-" * 70)
     say(f"Method:        {result.method}"
         + (f"  ({args.batches} batches x {args.samples} samples, cutoff {args.cutoff:g}, "
-           f"seed {args.seed})" if stochastic else "  (PySCF, full CI space)"))
+           f"seed {args.seed}"
+           + (f", batches {args.first_batch}-{args.first_batch + args.batches - 1}"
+              if args.first_batch else "") + ")"
+           if stochastic else "  (PySCF, full CI space)"))
     say(f"Dimension:     {result.dimension:,}")
-    say(f"Variance:      {result.variance:.6e}{pm(result.variance_error)}  Ha^2")
-    say(f"PT2:           {result.pt2:.6e}{pm(result.pt2_error)}  Ha")
+    if result.variance == result.variance:            # NaN when not asked for
+        say(f"Variance:      {result.variance:.6e}{pm(result.variance_error)}  Ha^2")
+    if result.pt2 == result.pt2:
+        say(f"PT2:           {result.pt2:.6e}{pm(result.pt2_error)}  Ha")
     say(f"E_var:         {result.energy:.10f}  Ha")
-    say(f"E_var + PT2:   {result.energy_pt2:.10f}{pm(result.pt2_error)}  Ha")
+    if result.pt2 == result.pt2:
+        say(f"E_var + PT2:   {result.energy_pt2:.10f}{pm(result.pt2_error)}  Ha")
     say(f"Elapsed:       {elapsed:.1f} s")
     say("=" * 70)
     if args.json and rank == 0:

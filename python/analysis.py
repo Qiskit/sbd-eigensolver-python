@@ -85,7 +85,8 @@ class VarianceResult:
         energy: The reference energy the PT2 denominators use (Hartree).
         method: ``"exact"`` or ``"stochastic"``.
         dimension: Determinants in the state's subspace.
-        batches: Per-batch ``variance``/``pt2``/``seconds`` (stochastic only).
+        batches: Per-batch ``variance``/``pt2``/``seconds``/``batch_id`` (stochastic
+            only).
         settings: The options the estimate was made with.
     """
 
@@ -635,7 +636,8 @@ def _full_space_size(norb, nelec):
 
 def variance(source, fcidump, energy=None, *, method="auto", norb=None, bit_length=None,
              samples=20000, batches=10, seed=1729, cutoff=0.0, comm=None,
-             exact_limit=5_000_000, device=None):
+             exact_limit=5_000_000, device=None, observable="both", first_batch=0,
+             minimum_abs_denominator=0.0):
     """Energy variance and Epstein-Nesbet PT2 of a saved SBD wavefunction.
 
     Args:
@@ -665,6 +667,18 @@ def variance(source, fcidump, energy=None, *, method="auto", norb=None, bit_leng
         device: Backend for the stochastic method's C++ call. Default: one already
             loaded that has the evaluator, else the CPU one. The evaluator always runs
             on CPU, and the Thrust build does not include it.
+        observable: ``"both"``, ``"variance"`` or ``"pt2"``: what the stochastic
+            method estimates; the one not asked for is NaN in the result. The exact
+            method always gives both.
+        first_batch: ID of the first stochastic batch; batch ``k`` is
+            ``first_batch + k``. A batch's random draws depend on the seed, its ID
+            and the rank count, so another call with the same seed and a different
+            ``first_batch`` gives independent batches that can be pooled with the
+            first call's; the same ``first_batch`` repeats them.
+        minimum_abs_denominator: Refuse the stochastic PT2 when any denominator
+            :math:`|E - H_{aa}|` is at or below this, raising instead of returning a
+            value dominated by one near-degenerate determinant. 0 (the default)
+            accepts any finite nonzero denominator.
 
     Returns:
         A :class:`VarianceResult`, identical on every rank.
@@ -678,13 +692,17 @@ def variance(source, fcidump, energy=None, *, method="auto", norb=None, bit_leng
         method = "exact" if _full_space_size(norb, nelec) <= exact_limit else "stochastic"
     if method not in ("exact", "stochastic"):
         raise ValueError(f"method must be 'auto', 'exact' or 'stochastic', got {method!r}")
+    if observable not in ("both", "variance", "pt2"):
+        raise ValueError(f"observable must be 'both', 'variance' or 'pt2', got {observable!r}")
     state = source if isinstance(source, SavedState) else load_state(source, norb, bit_length, comm)
     if energy is None and method == "stochastic":
         energy = state_energy(state, fcidump, norb=norb, comm=comm)
     dimension = int(comm.allreduce(len(state.coef)))
     settings = {"method": method, "samples": samples, "batches": batches, "seed": seed,
                 "cutoff": cutoff, "ranks": comm.Get_size(), "kind": state.kind,
-                "bit_length": state.bit_length}
+                "bit_length": state.bit_length, "observable": observable,
+                "first_batch": first_batch,
+                "minimum_abs_denominator": minimum_abs_denominator}
 
     if method == "exact":
         result = None
@@ -702,14 +720,17 @@ def variance(source, fcidump, energy=None, *, method="auto", norb=None, bit_leng
     backend = _evaluator_backend(device)
     out = backend.external_observables(
         comm, fcidump, state.det, state.coef, state.bit_length, float(energy),
-        sample_count=samples, batch_count=batches, seed=seed, heatbath_cutoff=cutoff)
+        sample_count=samples, batch_count=batches, seed=seed, heatbath_cutoff=cutoff,
+        observable=observable, first_batch_id=first_batch,
+        minimum_abs_denominator=minimum_abs_denominator)
     v, p = np.asarray(out["variance"]), np.asarray(out["pt2"])
     k = len(v)
     stderr = (lambda x: float(x.std(ddof=1) / np.sqrt(k))) if k > 1 else (lambda x: float("nan"))
     return VarianceResult(float(v.mean()), stderr(v), float(p.mean()), stderr(p), float(energy),
                           "stochastic", dimension,
                           batches={"variance": v.tolist(), "pt2": p.tolist(),
-                                   "seconds": list(out["seconds"])},
+                                   "seconds": list(out["seconds"]),
+                                   "batch_id": [int(i) for i in out["batch_id"]]},
                           settings=settings)
 
 

@@ -215,13 +215,14 @@ def test_state_energy_is_the_saved_states_own(backend, h8, tmp_path):
 # --------------------------------------------------------------------------------
 
 
-def _stochastic_matches_exact(h8, prefix, energy):
+def _stochastic_matches_exact(h8, prefix, energy, comm=None):
     f = sbd.LoadFCIDump(str(h8["path"]))
-    exact = analysis.variance(prefix, f, method="exact", bit_length=BITS)
+    exact = analysis.variance(prefix, f, method="exact", bit_length=BITS, comm=comm)
     # Average independent seeds: the mean's error is small enough to expose a bias of a
     # fraction of a single run's error bar, and 5 sigma keeps a correct run from failing.
     runs = [analysis.variance(prefix, f, energy, method="stochastic", bit_length=BITS,
-                              samples=4000, batches=10, seed=100 + s) for s in range(8)]
+                              samples=4000, batches=10, seed=100 + s, comm=comm)
+            for s in range(8)]
     for name in ("variance", "pt2"):
         values = np.array([getattr(r, name) for r in runs])
         error = values.std(ddof=1) / np.sqrt(len(values))
@@ -278,6 +279,77 @@ def test_a_reproducible_seed(backend, h8, tmp_path):
     first, again, other = (np.array(run(s).batches["variance"]) for s in (7, 7, 8))
     np.testing.assert_allclose(again, first, rtol=1e-12)
     assert np.max(np.abs(other - first) / np.abs(first)) > 1e-6
+
+
+def test_first_batch_continues_the_random_streams(backend, h8, tmp_path):
+    """Batch IDs reach SBD: the same ID repeats a batch, the next ones are new draws.
+
+    So a second call with ``first_batch`` past the first call's batches adds
+    independent batches to pool with them, rather than repeating them.
+    """
+    strings = _subspace(h8, 15)
+    energy = _save_gdb(h8, strings, str(tmp_path / "gdb-"))
+    f = sbd.LoadFCIDump(str(h8["path"]))
+    run = lambda first, n: analysis.variance(str(tmp_path / "gdb-"), f, energy,
+                                             method="stochastic", bit_length=BITS,
+                                             samples=500, batches=n, seed=7,
+                                             first_batch=first)
+    four, later = run(0, 4), run(2, 2)
+    assert four.batches["batch_id"] == [0, 1, 2, 3] and later.batches["batch_id"] == [2, 3]
+    np.testing.assert_allclose(later.batches["variance"], four.batches["variance"][2:],
+                               rtol=1e-12)
+    assert len(set(np.round(four.batches["variance"], 12))) == 4, "batches must differ"
+
+
+def test_observable_and_denominator_reach_the_evaluator(backend, h8, tmp_path):
+    strings = _subspace(h8, 15)
+    energy = _save_gdb(h8, strings, str(tmp_path / "gdb-"))
+    f = sbd.LoadFCIDump(str(h8["path"]))
+    run = lambda **kw: analysis.variance(str(tmp_path / "gdb-"), f, energy,
+                                         method="stochastic", bit_length=BITS,
+                                         samples=500, batches=2, seed=7, **kw)
+    only_variance, only_pt2 = run(observable="variance"), run(observable="pt2")
+    assert np.isfinite(only_variance.variance) and np.isnan(only_variance.pt2)
+    assert np.isnan(only_pt2.variance) and np.isfinite(only_pt2.pt2)
+    with pytest.raises(ValueError, match="observable"):
+        run(observable="energy")
+    # No denominator is that large, so the evaluator must refuse the PT2.
+    with pytest.raises(ValueError, match="denominator"):
+        run(minimum_abs_denominator=1e6)
+
+
+@pytest.mark.mpi
+def test_a_state_saved_on_more_ranks_is_analysed_on_fewer(backend, h8):
+    """GDB files written by every rank, read back by half of them.
+
+    As upstream's own evaluator test does with 2 saved shards on 4 ranks: the state, not
+    the layout it was saved with, decides the result. The draws differ with the rank
+    count, so each layout is checked against the exact answer rather than batch by batch.
+    """
+    import shutil
+    import tempfile
+
+    from mpi4py import MPI
+
+    comm = MPI.COMM_WORLD
+    if comm.Get_size() < 2:
+        pytest.skip("needs at least two ranks to analyse on fewer")
+    path = comm.bcast(tempfile.mkdtemp(prefix="sbd-analysis-") if comm.Get_rank() == 0 else None)
+    try:
+        strings = _subspace(h8, 20)
+        energy = _save_gdb(h8, strings, f"{path}/gdb-")
+        comm.Barrier()
+        half = comm.Split(0 if comm.Get_rank() < comm.Get_size() // 2 else MPI.UNDEFINED,
+                          comm.Get_rank())
+        if half != MPI.COMM_NULL:
+            assert len(analysis.load_state(f"{path}/gdb-", h8["norb"], BITS, half).files) \
+                == comm.Get_size()
+            _stochastic_matches_exact(h8, f"{path}/gdb-", energy, comm=half)
+            half.Free()
+    finally:
+        comm.Barrier()
+        if comm.Get_rank() == 0:
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def test_auto_chooses_exact_for_a_small_space(backend, h8, tmp_path):
