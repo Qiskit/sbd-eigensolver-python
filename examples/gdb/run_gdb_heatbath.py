@@ -71,6 +71,9 @@ _GDB_APP = f"{_UPSTREAM}/apps/chemistry_gdb_selected_basis_diagonalization"
 _DEFAULT_FCIDUMP = f"{_GDB_APP}/fcidump_Fe4S4.txt"
 _DEFAULT_DETFILES = ",".join(f"{_GDB_APP}/det{i}.txt" for i in range(4))
 
+# A re-solve of the same subspace can move by roundoff; anything larger is a real rise.
+RISE_TOL = 1e-6
+
 
 def parse_args():
     """Parse command line arguments."""
@@ -488,6 +491,7 @@ def main():
 
     history = []
     previous_energy = None      # for the displayed dE, continuous across rungs
+    warned_rise = False
     stop_reason = "ladder complete"
 
     for rung, cutoff in enumerate(cutoffs):
@@ -528,10 +532,23 @@ def main():
 
             energy = result["energy"]
             delta = None if previous_energy is None else energy - previous_energy
+            # Variational: a round's subspace contains the previous one, so its energy
+            # can only fall. A rise means the solve stopped on a higher state.
+            # (Not with --heatbath_truncation, which can shrink the subspace.)
+            rose = (delta is not None and delta > RISE_TOL
+                    and not args.heatbath_truncation)
             if rank == 0:
                 shown = "" if delta is None else f"{delta:+.6f}"
                 print(f"  {rung:>4} {round_index:>5} {dim:>12} {energy:>18.10f} "
-                      f"{shown:>12} {elapsed:>7.1f}", flush=True)
+                      f"{shown:>12} {elapsed:>7.1f}"
+                      + ("  << ROSE" if rose else ""), flush=True)
+                if rose and not warned_rise:
+                    print("  WARNING: the energy rose although the subspace grew. The "
+                          "energy of a larger subspace can only be lower, so that solve "
+                          "did not find its lowest state, and these energies are not "
+                          "trustworthy. Tighten --tolerance or raise --iteration.",
+                          flush=True)
+                    warned_rise = True
             # Only the seed round can be a no-op; after that the subspace contains
             # its own excitation neighbours.
             if (rank == 0 and rung == 0 and round_index == 0 and dim > 1
@@ -543,7 +560,7 @@ def main():
             history.append({
                 "rung": rung, "cutoff": cutoff, "round": round_index,
                 "dimension": dim, "energy": energy,
-                "delta_energy": delta, "seconds": elapsed,
+                "delta_energy": delta, "seconds": elapsed, "rose": rose,
             })
 
             grown = result["carryover_det"]
@@ -578,6 +595,8 @@ def main():
     return _finish(args, history, stop_reason, rank)
 
 
+
+
 def _finish(args, history, stop_reason, rank):
     """Print the summary and optionally write the series."""
     if rank != 0:
@@ -596,6 +615,9 @@ def _finish(args, history, stop_reason, rank):
           f"{sum(h['seconds'] for h in history):.1f} s total")
     print("  The energy is variational, so it must not rise: a positive gain means "
           "the subspace shrank or a round failed to converge.")
+    rises = sum(1 for h in history if h.get("rose"))
+    if rises:
+        print(f"  WARNING: the energy rose in {rises} round(s); see the warning above.")
     if args.log:
         with open(args.log, "w", encoding="utf-8") as handle:
             json.dump({"stop_reason": stop_reason, "rounds": history}, handle,
@@ -605,4 +627,5 @@ def _finish(args, history, stop_reason, rank):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from sbd.mpi_util import run
+    sys.exit(run(main))

@@ -166,6 +166,26 @@ def parse_args():
     return parser.parse_args()
 
 
+
+def count_state_files(prefix, suffix):
+    """How many consecutive files ``prefix000000{suffix}``, ... a saved state has.
+
+    Returns ``(count, gap)``: ``gap`` is the first missing index when a file with a
+    higher index exists -- a partly copied checkpoint -- else None.
+    """
+    import glob
+    import os
+    import re
+
+    count = 0
+    while os.path.exists(f"{prefix}{count:06d}{suffix}"):
+        count += 1
+    pattern = re.compile(re.escape(os.path.basename(prefix)) + r"(\d{6})"
+                         + re.escape(suffix) + "$")
+    later = [int(m.group(1)) for f in glob.glob(f"{glob.escape(prefix)}[0-9]*{suffix}")
+             if (m := pattern.match(os.path.basename(f))) and int(m.group(1)) > count]
+    return count, (count if later else None)
+
 def main():
     args = parse_args()
     
@@ -178,6 +198,39 @@ def main():
 
     rank = sbd.get_rank()
     size = sbd.get_world_size()
+
+    # SBD writes the state without checking that its file opened, so a missing
+    # directory would lose the save while the run reports success. Checked by
+    # every rank: each one writes its own file there.
+    import os
+    if args.savename and not os.path.isdir(os.path.dirname(os.path.abspath(args.savename))):
+        print(f"[rank {rank}] ERROR: --savename {args.savename!r}: directory "
+              f"{os.path.dirname(os.path.abspath(args.savename))!r} does not exist; "
+              f"create it first", file=sys.stderr, flush=True)
+        return 1
+    if args.loadname:
+        # SBD's TPB loader opens one file per alpha x beta block. It loads a state onto
+        # a grid of any shape with at most as many blocks as there are files, but with
+        # more it calls MPI_Abort with exit status 0, which looks like success.
+        count, gap = count_state_files(args.loadname, "")
+        if gap is not None:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r}: file "
+                  f"{args.loadname}{gap:06d} is missing, though later ones exist: "
+                  f"the saved state is incomplete. Copy the whole state, or save it "
+                  f"again.", file=sys.stderr, flush=True)
+            return 1
+        grid = args.adet_comm_size * args.bdet_comm_size
+        if count == 0:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r}: no saved state "
+                  f"({args.loadname}000000 ...)", file=sys.stderr, flush=True)
+            return 1
+        if grid > count:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r} has {count} file(s) "
+                  f"but the grid --adet_comm_size x --bdet_comm_size has {grid} blocks: "
+                  f"SBD loads a saved TPB state only onto a grid of at most {count} "
+                  f"blocks. Use a smaller grid, or leave out --loadname.",
+                  file=sys.stderr, flush=True)
+            return 1
     
     if rank == 0:
         print("="*70)
@@ -320,18 +373,19 @@ def main():
         return_code = 0
 
     except FileNotFoundError as e:
-        if rank == 0:
-            print(f"\n✗ Error: {e}")
-            print("\nPlease check file paths:")
-            print(f"  FCIDUMP: {args.fcidump}")
-            print(f"  Alpha dets: {args.adetfile}")
+        # Printed by the rank that failed, as for any other error below.
+        print(f"\n[rank {rank}] ✗ Error: {e}\n"
+              f"Please check file paths:\n"
+              f"  FCIDUMP: {args.fcidump}\n"
+              f"  Alpha dets: {args.adetfile}", file=sys.stderr)
         return_code = 1
 
     except Exception as e:
-        if rank == 0:
-            print(f"\n✗ Error during calculation: {e}")
-            import traceback
-            traceback.print_exc()
+        # Printed by the rank that failed, which need not be rank 0: run() then aborts
+        # the job, so this is the only report of what went wrong.
+        import traceback
+        print(f"\n[rank {rank}] ✗ Error during calculation: {e}", file=sys.stderr)
+        traceback.print_exc()
         return_code = 1
 
     finally:
@@ -342,5 +396,7 @@ def main():
 
     return return_code
 
+
 if __name__ == "__main__":
-    sys.exit(main())
+    from sbd.mpi_util import run
+    sys.exit(run(main))

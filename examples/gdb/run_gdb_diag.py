@@ -63,6 +63,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 import time
 
@@ -336,6 +337,26 @@ def product_basis(alpha_strings):
             for a in alpha_strings for b in alpha_strings]
 
 
+
+def count_state_files(prefix, suffix):
+    """How many consecutive files ``prefix000000{suffix}``, ... a saved state has.
+
+    Returns ``(count, gap)``: ``gap`` is the first missing index when a file with a
+    higher index exists -- a partly copied checkpoint -- else None.
+    """
+    import glob
+    import os
+    import re
+
+    count = 0
+    while os.path.exists(f"{prefix}{count:06d}{suffix}"):
+        count += 1
+    pattern = re.compile(re.escape(os.path.basename(prefix)) + r"(\d{6})"
+                         + re.escape(suffix) + "$")
+    later = [int(m.group(1)) for f in glob.glob(f"{glob.escape(prefix)}[0-9]*{suffix}")
+             if (m := pattern.match(os.path.basename(f))) and int(m.group(1)) > count]
+    return count, (count if later else None)
+
 def main():
     args = parse_args()
 
@@ -347,6 +368,38 @@ def main():
     rank = sbd.get_rank()
     size = sbd.get_world_size()
     device = sbd.get_device()
+
+    # SBD writes the state without checking that its file opened, so a missing
+    # directory would lose the save while the run reports success. Checked by
+    # every rank: each one writes its own file there.
+    if args.savename and not os.path.isdir(os.path.dirname(os.path.abspath(args.savename))):
+        print(f"[rank {rank}] ERROR: --savename {args.savename!r}: directory "
+              f"{os.path.dirname(os.path.abspath(args.savename))!r} does not exist; "
+              f"create it first", file=sys.stderr, flush=True)
+        return 1
+    if args.loadname:
+        # SBD reads file b of a saved state onto b_comm position b, then passes what
+        # does not belong there around the ring; files past b_comm_size are never
+        # read. Davidson would then start from part of the state -- the right answer,
+        # slower, and without a word -- so say so instead.
+        count, gap = count_state_files(args.loadname, ".bin")
+        if gap is not None:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r}: file "
+                  f"{args.loadname}{gap:06d}.bin is missing, though later ones exist: "
+                  f"the saved state is incomplete. Copy the whole state, or save it "
+                  f"again.", file=sys.stderr, flush=True)
+            return 1
+        if count == 0:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r}: no saved state "
+                  f"({args.loadname}000000.bin ...)", file=sys.stderr, flush=True)
+            return 1
+        if count > args.b_comm_size:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r} has {count} files "
+                  f"but --b_comm_size is {args.b_comm_size}: SBD loads a saved state "
+                  f"only onto at least as many shards as it has files, and would start "
+                  f"from part of it. Use --b_comm_size {count} or more, or leave out "
+                  f"--loadname.", file=sys.stderr, flush=True)
+            return 1
 
     if rank == 0:
         print("=" * 70)
@@ -565,4 +618,5 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from sbd.mpi_util import run
+    sys.exit(run(main))

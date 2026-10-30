@@ -715,7 +715,8 @@ def tpb_diag(fcidump, adet, bdet, sbd_data,
         package's own SQD integration uses.
 
         ``savename`` instead writes one file per b_comm position,
-        ``f"{savename}{rank_b:06d}.bin"``, each holding only **that rank's
+        ``f"{savename}{rank_b:06d}"`` (no extension, unlike GDB's ``.bin``), each
+        holding only **that rank's
         block** of the subspace: three ``size_t`` headers
         (``adet_range``, ``bdet_range``, ``det_length``), then that block's
         alpha and then beta determinant words, then
@@ -831,6 +832,23 @@ def gdb_diag(fcidump, det, sbd_data,
     """
     _ensure_initialized()
     backend = get_backend(device)
+    # The Thrust GDB solve never returns when a b_comm shard is empty: every rank
+    # waits in its ring exchange (MpiSlider::Sync, gdb/helper_thrust.h) whatever the
+    # placement, while the CPU backend handles the same input. A seed smaller than
+    # b_comm_size -- one Hartree-Fock determinant, say -- is the usual way to get
+    # there, so refuse it up front rather than hang until the job's time limit.
+    if (getattr(backend, "__name__", "").endswith("_core_gpu_thrust")
+            and getattr(sbd_data, "b_comm_size", 1) > 1 and _global_comm is not None):
+        import numpy as np
+
+        empty = _global_comm.allreduce(int(np.asarray(det).shape[0] == 0))
+        if empty:
+            raise ValueError(
+                "gdb_diag on the gpu (Thrust) backend needs determinants on every "
+                f"b_comm shard, but {empty} of the ranks hold "
+                "none: upstream's Thrust solve then waits forever instead of failing. "
+                "Use b_comm_size 1 (or fewer shards) until the subspace has at least "
+                "b_comm_size determinants, or the cpu backend")
     return backend.gdb_diag(
         _global_comm, sbd_data, fcidump, det, loadname, savename,
         determinant_distribution, determinant_grid_a, determinant_grid_b,

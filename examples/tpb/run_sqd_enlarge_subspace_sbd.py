@@ -50,6 +50,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import time
 from functools import partial
 from pathlib import Path
@@ -133,9 +134,16 @@ def parse_args():
                             "every round's include_configurations.")
     loop.add_argument("--checkpoint_path", type=str, default=None,
                        help="Write ci_strs_a/ci_strs_b/occupancies/energy to this "
-                            "path as JSON text (rank 0 only), every round. Same "
-                            "format and multi-rank-visibility requirement as "
-                            "run_sqd_sbd.py's --checkpoint_path.")
+                            "path as JSON text (rank 0 only), every "
+                            "--checkpoint_frequency rounds. Same format and "
+                            "multi-rank-visibility requirement as run_sqd_sbd.py's "
+                            "--checkpoint_path.")
+    loop.add_argument("--checkpoint_frequency", type=int, default=1,
+                       help="Write --checkpoint_path every this many rounds, and "
+                            "always on the round the loop stops on, whichever "
+                            "criterion stops it. 1 (default) checkpoints every "
+                            "round. Raise this to cut the JSON-write overhead "
+                            "when the string lists are large.")
     loop.add_argument("--resume_from", type=str, default=None,
                        help="Seed this run's include_configurations and "
                             "initial_occupancies from a previous --checkpoint_path's "
@@ -455,6 +463,31 @@ def main():
     checkpoint_history: list[dict] = []
     result_history: list[list] = []
     current_include = (include_a, include_b) if (include_a or include_b) else None
+    if rank == 0 and args.max_dim and current_include:
+        # Strings already present are always kept first, both by the SQD loop and by
+        # cap_to_max_dim after each expansion, so at --max_dim the carried-in strings
+        # take the whole budget: no sampled or expanded string can enter, and the run
+        # re-solves the same subspace. Easy to hit by resuming a run that had reached
+        # its cap.
+        n_a, n_b = len(set(include_a)), len(set(include_b))
+        full = [name for name, n in (("alpha", n_a), ("beta", n_b)) if n >= args.max_dim]
+        if full:
+            if len(full) == 2:
+                effect = (f"no new strings can enter either sector, so every round "
+                          f"will repeat the same subspace")
+            else:
+                effect = (f"no new {full[0]} strings can enter, so the subspace can "
+                          f"grow only in the other sector")
+            # More strings carried in than --max_dim, as after lowering it on a resume:
+            # cap_to_max_dim then keeps a different random subset of them each round.
+            over = (" More are carried in than --max_dim allows, so each round also keeps "
+                    "a different random subset of them; raise --max_dim to at least the "
+                    "carried-in count to keep them all." if max(n_a, n_b) > args.max_dim
+                    else "")
+            print(f"WARNING: {n_a} alpha / {n_b} beta strings are carried in, and the "
+                  f"{' and '.join(full)} sector{'s are' if len(full) == 2 else ' is'} "
+                  f"already at --max_dim {args.max_dim} (a cap per sector): {effect}."
+                  f"{over}\n", flush=True)
     current_occ = initial_occupancies
     prev_energy = None
     prev_occ = None
@@ -522,10 +555,6 @@ def main():
                 "ci_strs_b": [int(x) for x in ci_strs_b],
             }
             checkpoint_history.append(entry)
-            if args.checkpoint_path:
-                tmp = Path(args.checkpoint_path).with_suffix(".tmp")
-                tmp.write_text(json.dumps({"iterations": checkpoint_history}))
-                tmp.replace(args.checkpoint_path)
 
         energy_converged = (prev_energy is not None
                              and abs(energy - prev_energy) < args.energy_tol)
@@ -533,6 +562,15 @@ def main():
                           and max(np.max(np.abs(occ[0] - prev_occ[0])),
                                   np.max(np.abs(occ[1] - prev_occ[1]))) < args.occupancies_tol)
         stop = no_growth or (energy_converged and occ_converged)
+        # Written after the stop decision, not before: the loop usually stops on its
+        # own criteria well before --max_iterations, and its last round must be
+        # checkpointed whichever way it stops.
+        last = stop or outer_iter == args.max_iterations
+        if rank == 0 and args.checkpoint_path and (
+                outer_iter % args.checkpoint_frequency == 0 or last):
+            tmp = Path(args.checkpoint_path).with_suffix(".tmp")
+            tmp.write_text(json.dumps({"iterations": checkpoint_history}))
+            tmp.replace(args.checkpoint_path)
         stop = comm.bcast(stop if rank == 0 else None, root=0)
         if stop:
             if rank == 0:
@@ -571,4 +609,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from sbd.mpi_util import run
+    sys.exit(run(main))

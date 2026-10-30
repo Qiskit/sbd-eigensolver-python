@@ -1,0 +1,44 @@
+---
+features:
+  - |
+    ``examples/tpb/run_sbd_diag.py``, ``examples/tpb/run_sqd_sbd.py``,
+    ``examples/tpb/run_sqd_enlarge_subspace_sbd.py``, ``examples/gdb/run_gdb_diag.py``
+    and ``examples/gdb/run_gdb_heatbath.py`` no longer hang when one MPI rank fails. A failure on any rank, an error or a nonzero
+    exit, now aborts the whole job, and the failing rank prints its own error, tagged
+    with its rank number. Before, an error on a rank other than 0 could go unreported
+    while the other ranks waited for it in a collective until the job's time limit.
+    Ctrl-C is reported in one line.
+  - |
+    :func:`sbd.gdb_diag` on the ``gpu`` (Thrust) backend raises ``ValueError`` when a
+    ``b_comm`` shard is empty, instead of waiting forever: upstream's Thrust solve
+    never returns in that case. A one-determinant start over several GPUs is the
+    usual way to get there.
+  - |
+    ``examples/tpb/run_sbd_diag.py`` and ``examples/gdb/run_gdb_diag.py`` check that
+    the directory for ``--savename`` exists before solving. SBD does not report a file
+    it failed to open, so a missing directory lost the saved state while the run
+    reported success.
+  - |
+    ``examples/tpb/run_sbd_diag.py`` and ``examples/gdb/run_gdb_diag.py`` check
+    ``--loadname`` against the layout. A TPB state loads onto a grid of any shape with
+    at most as many blocks as it has files; with more, SBD aborts the job, with exit
+    status 0. A GDB state loaded onto fewer shards than it has files starts Davidson
+    from only part of it, so it is refused too.
+  - |
+    ``examples/gdb/run_gdb_heatbath.py`` warns when a round's energy rises. A larger
+    subspace can only have a lower energy, so a rise means the solve stopped on a
+    higher state.
+  - |
+    ``examples/tpb/run_sqd_sbd.py`` and ``examples/tpb/run_sqd_enlarge_subspace_sbd.py``
+    warn when the strings carried in from ``--resume_from`` already fill ``--max_dim``,
+    so that no new string can enter and every iteration would repeat the same subspace.
+  - |
+    ``examples/tpb/run_sqd_enlarge_subspace_sbd.py`` takes ``--checkpoint_frequency``,
+    as ``run_sqd_sbd.py`` does, to write ``--checkpoint_path`` only every that many
+    rounds. The round the loop stops on is always written, whichever criterion stops
+    it; the driver usually stops on its own criteria before ``--max_iterations``.
+fixes:
+  - |
+    The README and the :func:`sbd.tpb_diag` docstring gave TPB's ``savename`` files a
+    ``.bin`` extension. TPB writes ``f"{savename}{rank:06d}"``, with none; only GDB's
+    files end in ``.bin``.
