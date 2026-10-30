@@ -469,13 +469,25 @@ def main():
         # take the whole budget: no sampled or expanded string can enter, and the run
         # re-solves the same subspace. Easy to hit by resuming a run that had reached
         # its cap.
-        kept = max(len(set(include_a)), len(set(include_b)))
-        if kept >= args.max_dim:
-            print(f"WARNING: {len(set(include_a))} alpha / {len(set(include_b))} beta "
-                  f"strings are carried in as include_configurations, already at "
-                  f"--max_dim {args.max_dim}: no new strings can enter, so every "
-                  f"round will repeat the same subspace. Raise --max_dim to let "
-                  f"the loop improve on it.\n", flush=True)
+        n_a, n_b = len(set(include_a)), len(set(include_b))
+        full = [name for name, n in (("alpha", n_a), ("beta", n_b)) if n >= args.max_dim]
+        if full:
+            if len(full) == 2:
+                effect = (f"no new strings can enter either sector, so every round "
+                          f"will repeat the same subspace")
+            else:
+                effect = (f"no new {full[0]} strings can enter, so the subspace can "
+                          f"grow only in the other sector")
+            # More strings carried in than --max_dim, as after lowering it on a resume:
+            # cap_to_max_dim then keeps a different random subset of them each round.
+            over = (" More are carried in than --max_dim allows, so each round also keeps "
+                    "a different random subset of them; raise --max_dim to at least the "
+                    "carried-in count to keep them all." if max(n_a, n_b) > args.max_dim
+                    else "")
+            print(f"WARNING: {n_a} alpha / {n_b} beta strings are carried in, and the "
+                  f"{' and '.join(full)} sector{'s are' if len(full) == 2 else ' is'} "
+                  f"already at --max_dim {args.max_dim} (a cap per sector): {effect}."
+                  f"{over}\n", flush=True)
     current_occ = initial_occupancies
     prev_energy = None
     prev_occ = None
@@ -596,59 +608,6 @@ def main():
         pass
 
 
-def _let_output_through():
-    """Pause before MPI_Abort, so the messages just written reach the launcher.
-
-    Abort kills every rank at once, this one included, and output a rank has
-    flushed can still be lost on the way to mpirun: without a pause, the error that
-    explains the abort went missing in one run in four or five.
-    """
-    import time
-    time.sleep(0.5)
-
-
-def run():
-    """Run main(); on a failure on ANY rank, abort the whole MPI job.
-
-    A rank that fails while the others wait in a collective would otherwise
-    leave the job hanging until its time limit. The failing rank prints its own
-    error, tagged with its rank, since it may not be rank 0.
-    """
-    try:
-        code = main()
-    except SystemExit:
-        raise
-    except KeyboardInterrupt:
-        from mpi4py import MPI
-        world = MPI.COMM_WORLD
-        sys.stderr.write(f"[rank {world.Get_rank()}] interrupted\n")
-        sys.stderr.flush()
-        if world.Get_size() > 1:
-            _let_output_through()
-            world.Abort(130)
-        return 130
-    except BaseException:
-        import traceback
-        from mpi4py import MPI
-        world = MPI.COMM_WORLD
-        sys.stderr.write(f"[rank {world.Get_rank()}] unhandled error:\n"
-                         + traceback.format_exc())
-        sys.stderr.flush()
-        if world.Get_size() > 1:
-            _let_output_through()
-            world.Abort(1)
-        raise
-    if code:
-        from mpi4py import MPI
-        world = MPI.COMM_WORLD
-        if world.Get_size() > 1:
-            sys.stderr.write(f"[rank {world.Get_rank()}] exiting with status "
-                             f"{code}; aborting the MPI job\n")
-            sys.stderr.flush()
-            _let_output_through()
-            world.Abort(code)
-    return code
-
-
 if __name__ == "__main__":
-    sys.exit(run())
+    from sbd.mpi_util import run
+    sys.exit(run(main))

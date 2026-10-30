@@ -12,17 +12,17 @@
 
 """How the example drivers fail: loudly and promptly, not silently or by hanging.
 
-- A rank that fails while the others wait in a collective must abort the whole MPI
-  job, not leave it hanging. A ``sitecustomize`` hook in the test's own directory
-  makes rank 1's first SBD solve raise, with the drivers unmodified.
 - A save into a directory that does not exist must be refused before solving: SBD
   does not check that its file opened, so the state would be lost silently.
 - A saved state must be refused on a layout SBD cannot load it onto.
 
 The drivers run in a **subprocess**, as a user runs them, so their ``__main__`` and
 argument handling are exercised; they test the backend ``SBD_TEST_DEVICE`` names
-(cpu when unset). The multi-rank cases start their own ``mpirun -n 2``, with the
-launching job's process-manager variables removed, and skip without one.
+(cpu when unset). The multi-rank cases are ``mpi``-marked: under ``tox -e mpi``, rank 0
+starts the driver under its own ``mpirun -n 2``, with the launching job's
+process-manager variables removed, and every rank checks the outcome. That a failure
+on one rank aborts the job is ``test_mpi_util.py``'s, since every driver starts
+through ``sbd.mpi_util.run``.
 """
 
 from __future__ import annotations
@@ -41,47 +41,8 @@ import sbd
 REPO = pathlib.Path(__file__).resolve().parents[1]
 H2O = REPO / "vendor" / "sbd-upstream" / "data" / "h2o"
 
-# Small enough to be quick: 12 alpha strings is a 144-determinant subspace. It also
-# bounds SBD_TEST_NPROCS for the rank-failure test: run_sbd_diag.py spreads the 12
-# strings over that many ranks.
+# Small enough to be quick: 12 alpha strings is a 144-determinant subspace.
 ALPHA_LIMIT = 12
-
-# Ranks for the rank-failure test: SBD_TEST_NPROCS, as ``tox -e mpi`` uses, default 2.
-NPROCS = int(os.environ.get("SBD_TEST_NPROCS", "2"))
-
-HOOK = '''
-import os
-
-if os.environ.get("SBD_TEST_FAIL_RANK") is not None:
-    import builtins
-
-    _real_import = builtins.__import__
-    _patched = False
-
-    def _import(name, *args, **kwargs):
-        global _patched
-        module = _real_import(name, *args, **kwargs)
-        if not _patched and (name == "sbd" or name.startswith("sbd.")):
-            _patched = True           # before the imports below, which re-enter here
-            import sbd as _sbd
-            import sbd.sbd_solver as _solver
-            fail = int(os.environ["SBD_TEST_FAIL_RANK"])
-            # The drivers' solve entry points: the package functions, and the core
-            # the SQD solver wrappers call.
-            for owner, entry in ((_sbd, "tpb_diag"), (_sbd, "tpb_diag_from_files"),
-                                 (_sbd, "gdb_diag"), (_solver, "_solve_sci_core")):
-                real = getattr(owner, entry)
-
-                def wrapper(*a, _real=real, **k):
-                    if _sbd.get_rank() == fail:
-                        raise RuntimeError(f"injected failure on rank {fail}")
-                    return _real(*a, **k)
-
-                setattr(owner, entry, wrapper)
-        return module
-
-    builtins.__import__ = _import
-'''
 
 
 def _device(device_config):
@@ -120,43 +81,51 @@ def _clean_env(**extra):
 
 
 def _run(script, args, env=None, launcher=(), timeout=600):
+    """Run a driver from its own directory, clear of any MPI job this test is in.
+
+    Under ``tox -e mpi`` the test itself runs inside an MPI job, and a driver started
+    without a launcher would still find that job's process-manager variables and try
+    to join it, so every run gets a clean environment, not only the launched ones.
+    """
+    env = _clean_env() if env is None else env
     path = REPO / "examples" / script
     return subprocess.run([*launcher, sys.executable, path.name, *args], cwd=path.parent,
                           capture_output=True, text=True, timeout=timeout, env=env)
 
 
-DRIVERS = ["tpb/run_sbd_diag.py", "tpb/run_sqd_sbd.py", "tpb/run_sqd_enlarge_subspace_sbd.py",
-           "gdb/run_gdb_diag.py", "gdb/run_gdb_heatbath.py"]
+@pytest.fixture
+def shared_dir():
+    """A directory rank 0 makes and every rank sees, since each rank's tmp_path is its own."""
+    import tempfile
+    from mpi4py import MPI
+
+    comm = MPI.COMM_WORLD
+    path = comm.bcast(tempfile.mkdtemp(prefix="sbd-drivers-") if comm.Get_rank() == 0
+                      else None)
+    yield pathlib.Path(path)
+    comm.Barrier()
+    if comm.Get_rank() == 0:
+        shutil.rmtree(path, ignore_errors=True)
 
 
-@pytest.mark.parametrize("script", DRIVERS)
-def test_a_failure_on_one_rank_aborts_the_job(script, device_config, tmp_path):
-    """Rank 1 fails in its solve while the others wait there; the job must still end.
+def _on_rank_zero(check):
+    """Run ``check(mpirun)`` on rank 0 alone; every rank skips or fails with it."""
+    from mpi4py import MPI
 
-    Before, the failing rank exited while the others waited in the solve's collectives
-    until the job's time limit. The timeout here is the hang detector. Runs on
-    SBD_TEST_NPROCS ranks (default 2); the layout tests below need exactly 2.
-    """
-    if script.startswith("tpb/run_sqd_"):
-        pytest.importorskip("qiskit_addon_sqd.fermion", reason="the SQD drivers need it")
-    mpirun = shutil.which("mpirun") or shutil.which("mpiexec")
-    if mpirun is None:
-        pytest.skip("no mpirun or mpiexec on PATH")
-    (tmp_path / "sitecustomize.py").write_text(HOOK)
-    env = _clean_env(SBD_TEST_FAIL_RANK="1",
-                     PYTHONPATH=os.pathsep.join(
-                         [str(tmp_path), *filter(None, [os.environ.get("PYTHONPATH")])]))
-    args = _driver_args(script, _device(device_config), tmp_path, ranks=NPROCS)
-    try:
-        completed = _run(script, args, env=env, launcher=(mpirun, "-n", str(NPROCS)),
-                         timeout=120)
-    except subprocess.TimeoutExpired:
-        pytest.fail(f"{script} did not finish after rank 1 failed: the other rank is "
-                    "still waiting for it")
-    assert completed.returncode != 0
-    # The failing rank reports itself, whoever prints the traceback.
-    assert "injected failure on rank 1" in completed.stderr
-    assert "[rank 1]" in completed.stderr
+    error = None
+    if MPI.COMM_WORLD.Get_rank() == 0:
+        mpirun = shutil.which("mpirun") or shutil.which("mpiexec")
+        if mpirun is None:
+            error = "skip: no mpirun or mpiexec on PATH"
+        else:
+            try:
+                check(mpirun)
+            except AssertionError as caught:
+                error = f"fail: {caught}"
+    error = MPI.COMM_WORLD.bcast(error, root=0)
+    if error:
+        kind, message = error.split(": ", 1)
+        (pytest.skip if kind == "skip" else pytest.fail)(message)
 
 
 @pytest.mark.parametrize("script", ["tpb/run_sbd_diag.py", "gdb/run_gdb_diag.py"])
@@ -169,16 +138,18 @@ def test_a_missing_save_directory_is_refused_before_solving(script, device_confi
     assert "Ground state energy" not in completed.stdout
 
 
-def test_tpb_refuses_a_state_on_a_grid_with_more_blocks_than_files(device_config, tmp_path):
+@pytest.mark.mpi
+def test_tpb_refuses_a_state_on_a_grid_with_more_blocks_than_files(device_config, shared_dir):
     """A TPB state loads onto any grid of at most as many blocks as it has files.
 
     One more block than that and SBD calls MPI_Abort with status 0, which looks like
     success, so the driver refuses it. A smaller grid is allowed, and gives the same
     energy as the run that saved the state.
     """
-    mpirun = shutil.which("mpirun") or shutil.which("mpiexec")
-    if mpirun is None:
-        pytest.skip("no mpirun or mpiexec on PATH")
+    _on_rank_zero(lambda mpirun: _check_tpb_layouts(device_config, shared_dir, mpirun))
+
+
+def _check_tpb_layouts(device_config, tmp_path, mpirun):
     script = "tpb/run_sbd_diag.py"
     device = _device(device_config)
     tight = ["--tolerance", "1e-8"]
@@ -206,11 +177,13 @@ def test_tpb_refuses_a_state_on_a_grid_with_more_blocks_than_files(device_config
     assert "at most 1" in refused.stderr
 
 
-def test_gdb_refuses_a_state_on_fewer_shards_than_files(device_config, tmp_path):
+@pytest.mark.mpi
+def test_gdb_refuses_a_state_on_fewer_shards_than_files(device_config, shared_dir):
     """A GDB state loaded onto fewer shards than files starts Davidson from part of it."""
-    mpirun = shutil.which("mpirun") or shutil.which("mpiexec")
-    if mpirun is None:
-        pytest.skip("no mpirun or mpiexec on PATH")
+    _on_rank_zero(lambda mpirun: _check_gdb_layouts(device_config, shared_dir, mpirun))
+
+
+def _check_gdb_layouts(device_config, tmp_path, mpirun):
     script = "gdb/run_gdb_diag.py"
     device = _device(device_config)
     saved = _run(script, _driver_args(script, device, tmp_path)

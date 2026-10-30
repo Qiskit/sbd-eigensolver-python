@@ -337,6 +337,26 @@ def product_basis(alpha_strings):
             for a in alpha_strings for b in alpha_strings]
 
 
+
+def count_state_files(prefix, suffix):
+    """How many consecutive files ``prefix000000{suffix}``, ... a saved state has.
+
+    Returns ``(count, gap)``: ``gap`` is the first missing index when a file with a
+    higher index exists -- a partly copied checkpoint -- else None.
+    """
+    import glob
+    import os
+    import re
+
+    count = 0
+    while os.path.exists(f"{prefix}{count:06d}{suffix}"):
+        count += 1
+    pattern = re.compile(re.escape(os.path.basename(prefix)) + r"(\d{6})"
+                         + re.escape(suffix) + "$")
+    later = [int(m.group(1)) for f in glob.glob(f"{glob.escape(prefix)}[0-9]*{suffix}")
+             if (m := pattern.match(os.path.basename(f))) and int(m.group(1)) > count]
+    return count, (count if later else None)
+
 def main():
     args = parse_args()
 
@@ -362,9 +382,13 @@ def main():
         # does not belong there around the ring; files past b_comm_size are never
         # read. Davidson would then start from part of the state -- the right answer,
         # slower, and without a word -- so say so instead.
-        count = 0
-        while os.path.exists(f"{args.loadname}{count:06d}.bin"):
-            count += 1
+        count, gap = count_state_files(args.loadname, ".bin")
+        if gap is not None:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r}: file "
+                  f"{args.loadname}{gap:06d}.bin is missing, though later ones exist: "
+                  f"the saved state is incomplete. Copy the whole state, or save it "
+                  f"again.", file=sys.stderr, flush=True)
+            return 1
         if count == 0:
             print(f"[rank {rank}] ERROR: --loadname {args.loadname!r}: no saved state "
                   f"({args.loadname}000000.bin ...)", file=sys.stderr, flush=True)
@@ -593,59 +617,6 @@ def main():
     return 0
 
 
-def _let_output_through():
-    """Pause before MPI_Abort, so the messages just written reach the launcher.
-
-    Abort kills every rank at once, this one included, and output a rank has
-    flushed can still be lost on the way to mpirun: without a pause, the error that
-    explains the abort went missing in one run in four or five.
-    """
-    import time
-    time.sleep(0.5)
-
-
-def run():
-    """Run main(); on a failure on ANY rank, abort the whole MPI job.
-
-    A rank that fails while the others wait in a collective would otherwise
-    leave the job hanging until its time limit. The failing rank prints its own
-    error, tagged with its rank, since it may not be rank 0.
-    """
-    try:
-        code = main()
-    except SystemExit:
-        raise
-    except KeyboardInterrupt:
-        from mpi4py import MPI
-        world = MPI.COMM_WORLD
-        sys.stderr.write(f"[rank {world.Get_rank()}] interrupted\n")
-        sys.stderr.flush()
-        if world.Get_size() > 1:
-            _let_output_through()
-            world.Abort(130)
-        return 130
-    except BaseException:
-        import traceback
-        from mpi4py import MPI
-        world = MPI.COMM_WORLD
-        sys.stderr.write(f"[rank {world.Get_rank()}] unhandled error:\n"
-                         + traceback.format_exc())
-        sys.stderr.flush()
-        if world.Get_size() > 1:
-            _let_output_through()
-            world.Abort(1)
-        raise
-    if code:
-        from mpi4py import MPI
-        world = MPI.COMM_WORLD
-        if world.Get_size() > 1:
-            sys.stderr.write(f"[rank {world.Get_rank()}] exiting with status "
-                             f"{code}; aborting the MPI job\n")
-            sys.stderr.flush()
-            _let_output_through()
-            world.Abort(code)
-    return code
-
-
 if __name__ == "__main__":
-    sys.exit(run())
+    from sbd.mpi_util import run
+    sys.exit(run(main))

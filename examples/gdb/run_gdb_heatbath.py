@@ -71,6 +71,9 @@ _GDB_APP = f"{_UPSTREAM}/apps/chemistry_gdb_selected_basis_diagonalization"
 _DEFAULT_FCIDUMP = f"{_GDB_APP}/fcidump_Fe4S4.txt"
 _DEFAULT_DETFILES = ",".join(f"{_GDB_APP}/det{i}.txt" for i in range(4))
 
+# A re-solve of the same subspace can move by roundoff; anything larger is a real rise.
+RISE_TOL = 1e-6
+
 
 def parse_args():
     """Parse command line arguments."""
@@ -592,8 +595,6 @@ def main():
     return _finish(args, history, stop_reason, rank)
 
 
-# A re-solve of the same subspace can move by roundoff; anything larger is a real rise.
-RISE_TOL = 1e-6
 
 
 def _finish(args, history, stop_reason, rank):
@@ -625,59 +626,6 @@ def _finish(args, history, stop_reason, rank):
     return 0
 
 
-def _let_output_through():
-    """Pause before MPI_Abort, so the messages just written reach the launcher.
-
-    Abort kills every rank at once, this one included, and output a rank has
-    flushed can still be lost on the way to mpirun: without a pause, the error that
-    explains the abort went missing in one run in four or five.
-    """
-    import time
-    time.sleep(0.5)
-
-
-def run():
-    """Run main(); on a failure on ANY rank, abort the whole MPI job.
-
-    A rank that fails while the others wait in a collective would otherwise
-    leave the job hanging until its time limit. The failing rank prints its own
-    error, tagged with its rank, since it may not be rank 0.
-    """
-    try:
-        code = main()
-    except SystemExit:
-        raise
-    except KeyboardInterrupt:
-        from mpi4py import MPI
-        world = MPI.COMM_WORLD
-        sys.stderr.write(f"[rank {world.Get_rank()}] interrupted\n")
-        sys.stderr.flush()
-        if world.Get_size() > 1:
-            _let_output_through()
-            world.Abort(130)
-        return 130
-    except BaseException:
-        import traceback
-        from mpi4py import MPI
-        world = MPI.COMM_WORLD
-        sys.stderr.write(f"[rank {world.Get_rank()}] unhandled error:\n"
-                         + traceback.format_exc())
-        sys.stderr.flush()
-        if world.Get_size() > 1:
-            _let_output_through()
-            world.Abort(1)
-        raise
-    if code:
-        from mpi4py import MPI
-        world = MPI.COMM_WORLD
-        if world.Get_size() > 1:
-            sys.stderr.write(f"[rank {world.Get_rank()}] exiting with status "
-                             f"{code}; aborting the MPI job\n")
-            sys.stderr.flush()
-            _let_output_through()
-            world.Abort(code)
-    return code
-
-
 if __name__ == "__main__":
-    sys.exit(run())
+    from sbd.mpi_util import run
+    sys.exit(run(main))

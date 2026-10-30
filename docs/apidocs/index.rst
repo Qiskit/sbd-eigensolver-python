@@ -8,3 +8,4 @@
    sbd
    sbd.sbd_solver
    sbd.device_config
+   sbd.mpi_util
