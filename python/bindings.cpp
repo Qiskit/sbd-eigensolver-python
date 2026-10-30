@@ -306,6 +306,17 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                       "Initialization method")
         .def_readwrite("seed", &sbd::tpb::SBD::seed,
                       "Seed for the random initial vector (init = 1)")
+        .def_readwrite("initial_adeterminant_bitstring",
+                      &sbd::tpb::SBD::initial_adeterminant_bitstring,
+                      "Start Davidson with unit weight on this alpha string (NORB "
+                      "characters, character NORB-1-i is orbital i, so the rightmost is orbital 0) times "
+                      "initial_bdeterminant_bitstring, instead of the init policy. "
+                      "Empty (the default) uses init. Each string must occur exactly "
+                      "once in its list, or the solve raises ValueError")
+        .def_readwrite("initial_bdeterminant_bitstring",
+                      &sbd::tpb::SBD::initial_bdeterminant_bitstring,
+                      "Beta half of the explicit start. Empty uses the alpha string "
+                      "for beta; it cannot be set without the alpha one")
         .def_readwrite("do_shuffle", &sbd::tpb::SBD::do_shuffle,
                       "Shuffle determinants flag")
         .def_readwrite("do_rdm", &sbd::tpb::SBD::do_rdm,
@@ -373,6 +384,13 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                       "Initialization method")
         .def_readwrite("seed", &sbd::gdb::SBD::seed,
                       "Seed for the initial vector")
+        .def_readwrite("initial_determinant_bitstring",
+                      &sbd::gdb::SBD::initial_determinant_bitstring,
+                      "Start Davidson with unit weight on this full determinant "
+                      "(2*NORB characters; from the right, bit 2*i is alpha orbital i and bit "
+                      "2*i+1 beta orbital i, as in from_strings), instead of the init policy. Empty (the default) "
+                      "uses init. It must occur exactly once across all shards, or "
+                      "the solve raises ValueError")
         // do_shuffle is deliberately NOT exposed, for the same reason as
         // h_comm_size: GDB declares the field (gdb/sbdiag.h:25), parses it from
         // argv (:94) and copies it into a local (:219), then never reads it
@@ -545,6 +563,53 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             // Get MPI rank for GPU assignment
             int mpi_rank;
             MPI_Comm_rank(comm, &mpi_rank);
+
+            // An explicit start must be in the lists. Upstream checks it locally deep
+            // inside diag, after its setup collectives, and throws on the ranks that
+            // fail; that is unanimous today only because every rank holds the same
+            // lists. Check it here first, on every rank, with upstream's own packing,
+            // and raise on all of them together. GDB needs no such check: its upstream
+            // lookup (BasisInitVectorFromDeterminant) reduces over b_comm before it
+            // throws, so every rank already raises together there.
+            if (loadname.empty() && !sbd_data.initial_adeterminant_bitstring.empty()) {
+                std::string problem;
+                try {
+                    size_t norb = 0;
+                    for (const auto& kv : fcidump.header) {
+                        if (kv.first == std::string("NORB")) {
+                            norb = static_cast<size_t>(std::atoi(kv.second.c_str()));
+                        }
+                    }
+                    if (norb == 0) {
+                        throw std::invalid_argument(
+                            "tpb_diag could not read NORB from the FCIDUMP header");
+                    }
+                    const std::string& b_string =
+                        sbd_data.initial_bdeterminant_bitstring.empty()
+                            ? sbd_data.initial_adeterminant_bitstring
+                            : sbd_data.initial_bdeterminant_bitstring;
+                    const auto want_a = sbd::from_string_checked(
+                        sbd_data.initial_adeterminant_bitstring, sbd_data.bit_length, norb);
+                    const auto want_b = sbd::from_string_checked(
+                        b_string, sbd_data.bit_length, norb);
+                    const auto na = std::count(adet.begin(), adet.end(), want_a);
+                    const auto nb = std::count(bdet.begin(), bdet.end(), want_b);
+                    const char* spin = na != 1 ? "alpha" : (nb != 1 ? "beta" : nullptr);
+                    if (spin) {
+                        problem = std::string("initial ") + spin + " determinant "
+                            + ((na != 1 ? na : nb) == 0 ? "is not present in"
+                                                        : "occurs more than once in")
+                            + " the basis";
+                    }
+                } catch (const std::exception& e) {
+                    problem = e.what();
+                }
+                if (!sbd_all_ranks_ok(problem.empty(), comm)) {
+                    throw std::invalid_argument(problem.empty()
+                        ? "the initial determinant is invalid on another rank"
+                        : problem);
+                }
+            }
             
 #ifdef SBD_THRUST
             // Assign GPU device based on MPI rank

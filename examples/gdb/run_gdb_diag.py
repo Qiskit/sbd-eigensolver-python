@@ -239,6 +239,12 @@ def parse_args():
                        help='Initial vector policy')
     parser.add_argument('--seed', type=int, default=1729,
                        help='Seed for a random initial vector (init != 0)')
+    parser.add_argument('--initial_det', '--initial_determinant_bitstring', default='',
+                       dest='initial_det', metavar='BITS',
+                       help='Start from unit weight on this full determinant (2*NORB '
+                            'characters, alpha and beta interleaved, as in --detfiles) '
+                            'instead of --init. It must be in the subspace, or the run '
+                            'stops')
     parser.add_argument('--bit_length', type=int, default=62,
                        help='Bits per packed word: even, at most 62. Words per '
                             'determinant is ceil(2*norb / bit_length)')
@@ -275,6 +281,10 @@ def parse_args():
                        help='Save the final wavefunction under this prefix')
 
     args = parser.parse_args()
+    if args.loadname and args.initial_det:
+        # SBD starts from the loaded state and ignores the explicit start.
+        parser.error("--loadname and --initial_det both set the starting vector, and "
+                     "--loadname would win silently: give one of them")
     # Even, and at most 62. 64 overflows the shift in SBD's bitadvance(), reached
     # whenever a placement scheme redistributes determinants. SBD's alpha/beta
     # conversions assume an even word size once a determinant spans two words:
@@ -450,6 +460,7 @@ def main():
     config.max_time = args.max_time
     config.init = args.init
     config.seed = args.seed
+    config.initial_determinant_bitstring = args.initial_det
     config.do_rdm = 1 if args.rdm_output else 0
     config.bit_length = args.bit_length
     config.carryover_type = args.carryover_type
