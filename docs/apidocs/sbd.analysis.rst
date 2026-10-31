@@ -26,6 +26,7 @@ it. The exact method needs PySCF and runs in one process.
 .. autofunction:: load_state
 .. autofunction:: state_energy
 .. autofunction:: load_gdb_shards
+.. autofunction:: write_tpb_state
 .. autoclass:: VarianceResult
    :members: energy_pt2
 .. autoclass:: SavedState
