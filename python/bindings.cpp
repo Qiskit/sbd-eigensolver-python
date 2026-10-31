@@ -1157,6 +1157,173 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
         py::arg("determinant_grid_b") = 0);
 
     // ========================================================================
+    // Stochastic external variance and Epstein-Nesbet PT2 (upstream's
+    // apps/gdb-stat-evaluator, as a library call)
+    //
+    // Not in the Thrust build: upstream's gdb/inc_all.h includes the evaluator
+    // only #ifndef SBD_THRUST. It always runs on CPU anyway, so sbd.analysis uses
+    // a module that has it (the CPU or OpenMP-offload one), whatever the device
+    // the state was diagonalized on.
+    // ========================================================================
+#ifndef SBD_THRUST
+    m.attr("__sbd_has_evaluator__") = true;
+    m.def("external_observables",
+        [](py::object py_comm,
+           const sbd::FCIDump& fcidump,
+           py::array_t<size_t, py::array::c_style | py::array::forcecast> det_in,
+           py::array_t<double, py::array::c_style | py::array::forcecast> coef_in,
+           size_t bit_length,
+           double reference_energy,
+           size_t sample_count,
+           size_t batch_count,
+           uint64_t seed,
+           uint64_t first_batch_id,
+           double heatbath_cutoff,
+           const std::string& observable,
+           size_t expansion_batch_size,
+           double minimum_abs_denominator) {
+
+            MPI_Comm comm = get_mpi_comm(py_comm);
+            int mpi_size = 0;
+            MPI_Comm_size(comm, &mpi_size);
+
+            sbd::stat_evaluator::Observable which;
+            try {
+                which = sbd::stat_evaluator::parse_observable(observable);
+            } catch (const std::exception&) {
+                throw std::invalid_argument(
+                    "observable must be 'both', 'variance' or 'pt2', got '" + observable + "'");
+            }
+            if (sample_count < 2)
+                throw std::invalid_argument("sample_count must be at least 2");
+            if (batch_count < 1)
+                throw std::invalid_argument("batch_count must be at least 1");
+            if (bit_length < 1 || bit_length > 64)
+                throw std::invalid_argument("bit_length must be in [1, 64]");
+            if (!(heatbath_cutoff >= 0.0) || !std::isfinite(heatbath_cutoff))
+                throw std::invalid_argument("heatbath_cutoff must be finite and >= 0");
+            if (which != sbd::stat_evaluator::Observable::variance
+                && !std::isfinite(reference_energy))
+                throw std::invalid_argument("PT2 needs a finite reference_energy");
+
+            // Every rank passes the same FCIDump; the integrals are replicated.
+            int norb_i = 0, nelec = 0;
+            double scalar_integral = 0.0;
+            sbd::oneInt<double> one_integrals;
+            sbd::twoInt<double> two_integrals;
+            sbd::SetupIntegrals(fcidump, norb_i, nelec, scalar_integral,
+                                one_integrals, two_integrals);
+            if (norb_i <= 0)
+                throw std::invalid_argument("FCIDUMP has no positive NORB");
+            const size_t norb = static_cast<size_t>(norb_i);
+            const size_t words = (2 * norb + bit_length - 1) / bit_length;
+
+            if (det_in.ndim() != 2)
+                throw std::invalid_argument("det must be an (n, words) array");
+            if (coef_in.ndim() != 1)
+                throw std::invalid_argument("coef must be a 1-D array");
+            const size_t n_local = static_cast<size_t>(det_in.shape(0));
+            const size_t local_words = n_local ? static_cast<size_t>(det_in.shape(1)) : words;
+            if (!sbd_all_ranks_ok(static_cast<size_t>(coef_in.shape(0)) == n_local, comm))
+                throw std::invalid_argument("det and coef have different lengths on some rank");
+            if (!sbd_all_ranks_ok(local_words == words, comm))
+                throw std::invalid_argument(
+                    "determinants are packed into " + std::to_string(local_words)
+                    + " word(s), but NORB=" + std::to_string(norb) + " with bit_length="
+                    + std::to_string(bit_length) + " implies " + std::to_string(words));
+
+            try {
+                sbd::det_vector<size_t>::init_elem_size(words);
+                sbd::det_vector<size_t, sbd::det_kind::half>::init_elem_size(
+                    (norb + bit_length - 1) / bit_length);
+            } catch (const std::length_error&) {
+                throw std::invalid_argument(
+                    "this process already used a different number of words per "
+                    "determinant, which SBD fixes for the process lifetime. Keep norb "
+                    "and bit_length fixed, or evaluate in a fresh process.");
+            }
+
+            sbd::det_vector<size_t> parents;
+            parents.resize(n_local);
+            if (n_local > 0)
+                std::memcpy(parents.flat().data(), det_in.data(), n_local * words * sizeof(size_t));
+            std::vector<double> coefficients(coef_in.data(), coef_in.data() + n_local);
+
+            // The evaluator assumes a normalized state (upstream normalizes in
+            // LoadWavefunction, which this path does not use), so normalize over
+            // all ranks here.
+            double local_norm2 = 0.0;
+            for (double c : coefficients) local_norm2 += c * c;
+            double norm2 = 0.0;
+            MPI_Allreduce(&local_norm2, &norm2, 1, MPI_DOUBLE, MPI_SUM, comm);
+            if (!(norm2 > 0.0) || !std::isfinite(norm2))
+                throw std::invalid_argument("the state has zero or non-finite norm");
+            const double inv_norm = 1.0 / std::sqrt(norm2);
+            for (double& c : coefficients) c *= inv_norm;
+
+            sbd::gdb::StatEvaluatorOptions<double> options;
+            options.observable = which;
+            options.bit_length = bit_length;
+            options.norb = norb;
+            options.sample_count = sample_count;
+            options.heatbath_cutoff = heatbath_cutoff;
+            options.reference_energy = reference_energy;
+            options.base_seed = seed;
+            options.expansion_batch_size = expansion_batch_size;
+            options.minimum_abs_denominator = minimum_abs_denominator;
+
+            std::vector<sbd::gdb::BatchRequest> batches(batch_count);
+            for (size_t k = 0; k < batch_count; ++k) {
+                batches[k].calculation_id = "sbd-python";
+                batches[k].batch_id = first_batch_id + k;
+            }
+
+            std::vector<double> variance, pt2, seconds;
+            std::vector<uint64_t> batch_ids;
+            {
+                py::gil_scoped_release release;
+                sbd::gdb::evaluate_statistical_batches<double, double>(
+                    parents, coefficients, scalar_integral, one_integrals, two_integrals,
+                    options, batches, comm,
+                    [&](const sbd::gdb::EvaluatedBatch& evaluated) {
+                        const auto& r = evaluated.record;
+                        batch_ids.push_back(r.batch_id);
+                        variance.push_back(r.has_variance ? r.variance_estimate : NAN);
+                        pt2.push_back(r.has_pt2 ? r.pt2_estimate : NAN);
+                        seconds.push_back(r.elapsed_seconds);
+                    });
+            }
+
+            py::dict out;
+            out["variance"] = variance;
+            out["pt2"] = pt2;
+            out["batch_id"] = batch_ids;
+            out["seconds"] = seconds;
+            out["mpi_size"] = mpi_size;
+            out["norm_before"] = std::sqrt(norm2);
+            return out;
+        },
+        "Stochastic external variance and Epstein-Nesbet PT2 of a GDB state "
+        "(upstream's statistical evaluator). Internal: use sbd.analysis.variance.",
+        py::arg("comm"),
+        py::arg("fcidump"),
+        py::arg("det"),
+        py::arg("coef"),
+        py::arg("bit_length"),
+        py::arg("reference_energy"),
+        py::arg("sample_count") = 20000,
+        py::arg("batch_count") = 10,
+        py::arg("seed") = 0,
+        py::arg("first_batch_id") = 0,
+        py::arg("heatbath_cutoff") = 0.0,
+        py::arg("observable") = "both",
+        py::arg("expansion_batch_size") = 1000000,
+        py::arg("minimum_abs_denominator") = 0.0);
+#else
+    m.attr("__sbd_has_evaluator__") = false;
+#endif
+
+    // ========================================================================
     // Main TPB diagonalization function (file-based version)
     // ========================================================================
     
