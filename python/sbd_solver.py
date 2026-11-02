@@ -790,13 +790,18 @@ def _create_sbd_config(config_dict: dict | None = None, backend=None, device_con
     sbd_data.threshold = 1e-4
     sbd_data.bit_length = SBD_DEFAULT_BIT_LENGTH
 
+    # The device config first, then sbd_config, so a value given in sbd_config is
+    # the one SBD gets. Applied last, DeviceConfig used to reset sbd_config's
+    # use_precalculated_dets and max_memory_gb_for_determinants to its own
+    # defaults on the Thrust backend, which silently disabled both SQD drivers'
+    # flags for them. It now writes only the (deprecated) arguments it was given.
+    if device_config is not None:
+        device_config.apply(sbd_data)
+
     if config_dict:
         for key, value in config_dict.items():
             if hasattr(sbd_data, key):
                 setattr(sbd_data, key, value)
-
-    if device_config is not None:
-        device_config.apply(sbd_data)
 
     return sbd_data
 
