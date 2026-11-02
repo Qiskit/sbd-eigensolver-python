@@ -145,6 +145,11 @@ def _is_thrust(backend):
     return "thrust" in getattr(backend, "__name__", "")
 
 
+def _is_offload(backend):
+    """Whether ``backend`` is the OpenMP-offload build, on which gdb_diag is refused."""
+    return getattr(backend, "__name__", "").endswith("_core_gpu_omp_offload")
+
+
 _THRUST_HELPER = "requires h_comm_size == 1"
 
 
@@ -166,7 +171,13 @@ def _uneven_shard(full, b_comm_size, rank):
 
 @pytest.fixture(scope="module")
 def h2o(data_dir, backend):
-    """The h2o FCIDUMP, its orbital count, the alpha-list path, and a truncation."""
+    """The h2o FCIDUMP, its orbital count, the alpha-list path, and a truncation.
+
+    Every solving test here takes this fixture, so this is where they skip on the
+    OpenMP-offload backend, which refuses gdb_diag (see the refusal test below).
+    """
+    if _is_offload(backend):
+        pytest.skip("gdb_diag is refused on the OpenMP-offload backend")
     molecule_dir = data_dir / "h2o"
     fcidump = backend.LoadFCIDump(str(molecule_dir / "fcidump.txt"))
     norb = int(fcidump.header["NORB"])
@@ -729,3 +740,18 @@ print("ENERGY", repr(result["energy"]), "DIM", result["global_dim"])
     _, energy, _, dim = line[-1].split()
     assert int(dim) == 59536
     assert float(energy) == pytest.approx(FE4S4_ENERGY, abs=1e-8)
+
+
+def test_gdb_is_refused_on_the_offload_backend(backend, data_dir):
+    """Upstream has no OpenMP-offload GDB code, so gpu-omp refuses rather than run on the host."""
+    if not _is_offload(backend):
+        pytest.skip("the OpenMP-offload backend only (SBD_TEST_DEVICE=gpu-omp)")
+    fcidump = backend.LoadFCIDump(str(data_dir / "h2o" / "fcidump.txt"))
+    norb = int(fcidump.header["NORB"])
+    alpha = _alpha_strings(data_dir / "h2o" / "h2o-1em3-alpha.txt", 2)
+    det = sbd.from_strings([_interleave(a, b) for a in alpha for b in alpha],
+                           BIT_LENGTH, 2 * norb)
+    config = backend.GDB_SBD()
+    config.bit_length = BIT_LENGTH
+    with pytest.raises(ValueError, match=r"OpenMP-offload.*device='cpu'.*device='gpu'"):
+        sbd.gdb_diag(fcidump, det, config, device="gpu-omp")
