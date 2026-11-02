@@ -138,7 +138,7 @@ Solver, MPI and output — the same meanings as in `run_gdb_diag.py`:
 
 | Parameter | What it controls | Default |
 |---|---|---|
-| `--device` | `cpu` or `gpu` (Thrust) are the two real choices; `gpu-omp` and `auto` run GDB on the host, see [Choosing a backend](#choosing-a-backend) | `cpu` |
+| `--device` | `cpu`, or `gpu` (Thrust, NVIDIA only). `gpu-omp` is refused, and so is `auto` when it resolves to `gpu-omp`; see [Choosing a backend](#choosing-a-backend) | `cpu` |
 | `--method` | 0=Davidson, 1=Davidson storing the Hamiltonian. GDB has no Lanczos | `0` |
 | `--tolerance` / `--iteration` / `--block` | Davidson residual tolerance, iteration cap, and basis-vector count. Also accepted as `--eps` / `--max_it` / `--max_nb`, matching SBD's own names | `1e-6` / `30` / `10` |
 | `--bit_length` | Bits per packed word: even, at most 62. 64 is undefined behavior in SBD's redistribution. An odd value breaks SBD's alpha/beta conversion once a determinant spans two words, so the heatbath expansion crashes or returns a wrong energy | `62` |
@@ -439,10 +439,12 @@ already count-balanced.
 --device gpu       # NVHPC Thrust, NVIDIA only -- the only GPU backend with GDB kernels
 ```
 
-`gpu-omp` and `auto` are accepted too, but for GDB neither is a GPU path: `gpu-omp` has
-no GDB kernels and silently diagonalizes on the host (the drivers warn), and `auto`
-prefers Thrust but falls back to `gpu-omp` where Thrust is not built — landing on the
-host as well. **For GDB, pick `cpu` or `gpu` explicitly.**
+`gpu-omp` is **refused**: upstream SBD has no OpenMP-offload GDB kernels, so it would
+diagonalize on the host while a GPU was asked for. `sbd.gdb_diag` raises `ValueError`
+on that backend, and both drivers exit with an error before reading any input. `auto`
+prefers Thrust but falls back to `gpu-omp` where Thrust is not built, and is refused
+when it does. **For GDB, pick `cpu` or `gpu` explicitly.** On AMD GPUs that means
+`cpu`: there is no Thrust build for AMD.
 
 `sbd.available_backends()` reports what this install actually built — a static scan, so
 it is safe to call outside `mpirun` — and `sbd.loaded_backends()` reports what the
@@ -458,9 +460,8 @@ not route device work through OpenMP.
 ### On GPUs
 
 GDB has **Thrust kernels only** (`--device gpu`, NVIDIA). There is no `omp target`
-code under `include/sbd/chemistry/gdb/` at all, so under `--device gpu-omp` a GDB run
-pins a device and then diagonalizes on the host; the driver warns when it resolves
-there. AMD has no Thrust build, so AMD GDB is CPU-only.
+code under `include/sbd/chemistry/gdb/` at all, so `--device gpu-omp` is refused
+rather than run on the host. AMD has no Thrust build, so AMD GDB is CPU-only.
 
 The Thrust path additionally requires **`helper == 1`** (`gdb/mult_thrust.h:310-314`,
 checked on every kernel launch), so every rank must go to `t_comm_size × b_comm_size`.

@@ -1,0 +1,9 @@
+---
+upgrade:
+  - |
+    ``gdb_diag`` now refuses the OpenMP-offload backend (``gpu-omp``) with
+    ``ValueError``, and ``run_gdb_diag.py`` and ``run_gdb_heatbath.py`` exit with an
+    error for ``--device gpu-omp``, or ``--device auto`` when it resolves to it.
+    Upstream SBD has no OpenMP-offload GDB code, so these used to run on the CPU
+    while a GPU had been asked for. Use ``cpu``, or ``gpu`` (Thrust) on NVIDIA GPUs;
+    on AMD GPUs, GDB is CPU-only.

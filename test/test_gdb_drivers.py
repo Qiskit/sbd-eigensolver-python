@@ -356,6 +356,20 @@ def test_drivers_refuse_an_unsafe_word_size(script, bit_length):
     assert "--bit_length must be even and between 2 and 62" in completed.stderr
 
 
+@pytest.mark.parametrize("script", ["run_gdb_diag.py", "run_gdb_heatbath.py"])
+def test_drivers_refuse_the_offload_backend(script):
+    """GDB has no OpenMP-offload kernels upstream: refused, pointing at cpu and gpu."""
+    import sbd
+
+    if "gpu-omp" not in sbd.available_backends():
+        pytest.skip("the OpenMP-offload backend was not built")
+    completed = _run(script, ["--device", "gpu-omp"])
+    assert completed.returncode != 0
+    assert "OpenMP-offload" in completed.stderr
+    assert "--device cpu" in completed.stderr and "--device gpu" in completed.stderr
+    assert "Ground state energy" not in completed.stdout
+
+
 def test_skip_weight_check_bypasses_the_validation(tmp_path):
     """The escape hatch must skip the check, not merely survive it.
 
