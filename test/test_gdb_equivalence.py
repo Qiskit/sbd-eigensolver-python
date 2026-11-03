@@ -560,6 +560,36 @@ def test_gdb_placement_does_not_change_the_energy_mpi(backend, h2o, h2o_product,
 
 
 @pytest.mark.mpi
+def test_thrust_refuses_a_shard_that_placement_empties(backend, h2o):
+    """equal-bra-a deals out whole alpha strings, so one alpha string paired with many
+    betas lands on a single rank, though every rank passed determinants in. Upstream's
+    Thrust solve would then wait forever in its ring exchange; every rank refuses
+    instead. The CPU backend solves the same input.
+    """
+    from mpi4py import MPI
+
+    comm = MPI.COMM_WORLD
+    size = comm.Get_size()
+    if size < 2:
+        pytest.skip("needs 2 ranks or more")
+    fcidump, norb, _, alpha = h2o
+    product = sbd.sort_bitarray_array(sbd.from_strings(
+        [_interleave(alpha[0], b) for b in alpha], BIT_LENGTH, 2 * norb))
+    shard = _shard(product, size, comm.Get_rank())
+    if not _is_thrust(backend):
+        _gdb_energy(backend, fcidump, shard, norb, b_comm_size=size,
+                    determinant_distribution="equal-bra-a")
+        return
+    refused = 0
+    try:
+        _gdb_energy(backend, fcidump, shard, norb, b_comm_size=size,
+                    determinant_distribution="equal-bra-a")
+    except ValueError as error:
+        refused = int("empty" in str(error))
+    assert comm.allreduce(refused) == size
+
+
+@pytest.mark.mpi
 @pytest.mark.parametrize("scheme", ["count", "count-sorted"])
 def test_gdb_count_schemes_rebalance_uneven_shards(backend, h2o, h2o_product, scheme):
     """The count schemes move determinants when the input is not already balanced.
