@@ -47,7 +47,8 @@ sampling, so no batches and no error bar).
 ## Workflow
 
 **1. Diagonalize with `--savename`, and give `--bit_length` explicitly.** The analysis
-must use the same value, and the files do not record it.
+must use the same value, and the files do not record it. Note the energy the run
+prints (`Ground state energy:`): the analysis takes it as `--energy`.
 
 ```bash
 # TPB (examples/tpb): h2o, 275 x 275 = 75,625 determinants, on a 2 x 2 rank grid
@@ -75,7 +76,8 @@ Converge the diagonalization tightly (`--tolerance`). The variance counts only w
 $H|\psi\rangle$ puts outside the subspace; any residual left inside it by an
 unconverged solve is not included.
 
-**2. Analyse the state with `variance.py`,** giving the same FCIDUMP and `--bit_length`:
+**2. Analyse the state with `variance.py`,** giving the same FCIDUMP and `--bit_length`,
+and the energy from step 1 as `--energy`:
 
 ```bash
 cd ../analysis
@@ -83,12 +85,12 @@ cd ../analysis
 # h2o
 mpirun -np 32 -x OMP_NUM_THREADS=2 python variance.py \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
-    --state /path/to/run1/h2o- --bit_length 20
+    --state /path/to/run1/h2o- --bit_length 20 --energy -76.2359466308
 
 # Fe4S4
 mpirun -np 32 -x OMP_NUM_THREADS=2 python variance.py \
     --fcidump ../../vendor/sbd-upstream/apps/chemistry_gdb_selected_basis_diagonalization/fcidump_Fe4S4.txt \
-    --state /path/to/run2/fe4s4- --bit_length 62
+    --state /path/to/run2/fe4s4- --bit_length 62 --energy <the Fe4S4 run's energy>
 ```
 
 Output for the h2o run above:
@@ -100,7 +102,7 @@ State:   /path/to/run1/h2o-  (TPB, 4 file(s), checked as one run)
            /path/to/run1/h2o-000002  (155,672 bytes)
            /path/to/run1/h2o-000003  (154,560 bytes)
 Ranks:   32
-Energy:  -76.2359466308  (computed from the state)
+Energy:  -76.2359466308  (given)
 ----------------------------------------------------------------------
 Method:        stochastic  (10 batches x 20000 samples, cutoff 0, seed 1729)
 Dimension:     75,625
@@ -136,8 +138,9 @@ if args.savename:
         print(f"E_var + PT2: {v.energy_pt2:.10f} +- {v.pt2_error:.2e} Ha")
 ```
 
-Every rank must make the call, since it is collective. Passing `results['energy']`
-skips recomputing the energy; it must be the energy of the state just saved.
+Every rank must make the call, since it is collective. `results['energy']` is the
+energy of the state just saved, the PT2 reference; it is required, and the analysis
+does not recompute it.
 
 The state still goes through the files `savename` writes: SBD's solvers do not hand
 their eigenvector back, so the analysis reads it from disk even in the same job.
@@ -218,14 +221,14 @@ by one near-degenerate determinant. With 0, any finite nonzero denominator is ac
 ## Notes
 
 - **Memory:** the state is spread evenly over the ranks, whatever the number of files;
-  nothing is gathered onto one rank. Computing the state's energy writes a temporary
-  copy of it, removed afterwards.
+  nothing is gathered onto one rank.
 - **Multi-node:** every rank must be able to read the state's files, as for the
   FCIDUMP: put them on a shared filesystem.
-- **Energy:** by default it is computed from the saved state, which also checks that
-  the state and the FCIDUMP belong together — it should equal what the diagonalization
-  reported. `--energy` overrides it; it must be this state's energy, since it is the
-  PT2 reference.
+- **Energy:** `--energy` is required, as upstream's `gdb-stat-evaluator` requires
+  `--reference-energy`. It is the PT2 reference, so it must be this state's energy:
+  the one the diagonalization that saved it reported. It is not recomputed. To
+  recompute it from the files, for instance to check that a state and an FCIDUMP
+  belong together, use `sbd.analysis.state_energy()` on the `cpu` or `gpu` backend.
 - **Restricted FCIDUMPs only** for the exact method.
 - **When to run it:** the analysis can cost much more than the diagonalization that
   produced the state, so run it on the state you want to assess, not every iteration.

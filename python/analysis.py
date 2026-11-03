@@ -438,9 +438,12 @@ def state_energy(source, fcidump, *, norb=None, bit_length=None, comm=None, devi
     """The energy of a saved state, :math:`\\langle\\psi|H|\\psi\\rangle`, computed by SBD.
 
     Loads the state into its own basis with zero Davidson iterations, so it is the
-    state's energy, not a re-optimized one. Use it as the PT2 reference, and to check
-    that a state and an FCIDUMP belong together: it should equal the energy the run
-    that saved the state reported.
+    state's energy, not a re-optimized one. Use it to check that a state and an
+    FCIDUMP belong together: it should equal the energy the run that saved the state
+    reported. :func:`variance` does not call it; pass it that reported energy.
+
+    It runs :func:`sbd.gdb_diag`, so it needs the ``cpu`` or ``gpu`` (Thrust)
+    backend: ``gdb_diag`` refuses the OpenMP-offload one.
 
     The state stays distributed over the ranks; a temporary copy of it is written and
     removed afterwards. A determinant found in more than one file raises.
@@ -634,7 +637,7 @@ def _full_space_size(norb, nelec):
     return comb(norb, nelec[0]) * comb(norb, nelec[1])
 
 
-def variance(source, fcidump, energy=None, *, method="auto", norb=None, bit_length=None,
+def variance(source, fcidump, energy, *, method="auto", norb=None, bit_length=None,
              samples=20000, batches=10, seed=1729, cutoff=0.0, comm=None,
              exact_limit=5_000_000, device=None, observable="both", first_batch=0,
              minimum_abs_denominator=0.0):
@@ -645,9 +648,14 @@ def variance(source, fcidump, energy=None, *, method="auto", norb=None, bit_leng
             or a :class:`SavedState` already loaded on every rank.
         fcidump: The FCIDump the state was diagonalized with (``sbd.LoadFCIDump``).
         energy: The state's energy (Hartree, including the FCIDUMP constant), the
-            PT2 reference. Default: computed from the state by :func:`state_energy`.
-            If given, it must be this state's energy, not the exact one. The exact
-            method always computes it from the vector, and reports that.
+            PT2 reference: the energy the diagonalization that saved the state
+            returned, ``results["energy"]`` from :func:`sbd.tpb_diag` or
+            :func:`sbd.gdb_diag`. It is required, as upstream's evaluator requires
+            ``--reference-energy``, and never recomputed here. It must be this
+            state's energy, not the exact one. The exact method computes the energy
+            from the vector, reports that, and records the one given in
+            ``settings["energy_given"]``. :func:`state_energy` computes it from a
+            saved state, where only the state is at hand.
         method: ``"exact"``, ``"stochastic"``, or ``"auto"``: exact when the full CI
             space has at most ``exact_limit`` determinants, otherwise stochastic.
         norb, bit_length: As for :func:`load_state`; ``norb`` defaults to the
@@ -694,9 +702,13 @@ def variance(source, fcidump, energy=None, *, method="auto", norb=None, bit_leng
         raise ValueError(f"method must be 'auto', 'exact' or 'stochastic', got {method!r}")
     if observable not in ("both", "variance", "pt2"):
         raise ValueError(f"observable must be 'both', 'variance' or 'pt2', got {observable!r}")
+    if energy is None:
+        raise ValueError(
+            "variance() needs the state's energy, the PT2 reference: pass the energy "
+            "the diagonalization that saved the state returned (results['energy'] "
+            "from tpb_diag or gdb_diag). It is not recomputed here; "
+            "sbd.analysis.state_energy() computes it from a saved state")
     state = source if isinstance(source, SavedState) else load_state(source, norb, bit_length, comm)
-    if energy is None and method == "stochastic":
-        energy = state_energy(state, fcidump, norb=norb, comm=comm)
     dimension = int(comm.allreduce(len(state.coef)))
     settings = {"method": method, "samples": samples, "batches": batches, "seed": seed,
                 "cutoff": cutoff, "ranks": comm.Get_size(), "kind": state.kind,
@@ -711,8 +723,7 @@ def variance(source, fcidump, energy=None, *, method="auto", norb=None, bit_leng
             det = np.concatenate([d for d, _ in gathered])
             coef = np.concatenate([c for _, c in gathered])
             var, pt2, e_state = _exact(fcidump, det, coef, norb, nelec, state.bit_length)
-            if energy is not None:
-                settings["energy_given"] = float(energy)
+            settings["energy_given"] = float(energy)
             result = VarianceResult(var, 0.0, pt2, 0.0, e_state, "exact", dimension,
                                     settings=settings)
         return comm.bcast(result, root=0)

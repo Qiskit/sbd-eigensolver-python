@@ -119,8 +119,15 @@ def _save_gdb(system, strings, prefix):
     config = sbd.GDB_SBD()
     config.eps, config.max_it, config.max_nb, config.bit_length = 1e-12, 300, 20, BITS
     config.b_comm_size = size
-    return sbd.gdb_diag(f, full[lo:lo + q + (1 if rank < r else 0)], config,
-                        savename=prefix)["energy"]
+    try:
+        return sbd.gdb_diag(f, full[lo:lo + q + (1 if rank < r else 0)], config,
+                            savename=prefix)["energy"]
+    except ValueError as e:
+        # A backend that refuses GDB outright (upstream has no OpenMP-offload GDB
+        # kernels) raises before any work, on every rank, so every rank skips.
+        if "not supported on the OpenMP-offload backend" in str(e):
+            pytest.skip(str(e).split(":")[0])
+        raise
 
 
 def _reference(system, strings):
@@ -163,7 +170,7 @@ def test_exact_matches_an_independent_pyscf_calculation(backend, h8, tmp_path, k
     variance, pt2, e_ref = _reference(h8, strings)
     assert energy == pytest.approx(e_ref, abs=1e-9)
     f = sbd.LoadFCIDump(str(h8["path"]))
-    result = analysis.variance(prefix, f, method="exact", bit_length=BITS)
+    result = analysis.variance(prefix, f, energy, method="exact", bit_length=BITS)
     assert result.method == "exact"
     assert result.dimension == len(strings[0]) * len(strings[1])
     assert result.energy == pytest.approx(e_ref, abs=1e-9)
@@ -179,10 +186,10 @@ def test_the_full_space_has_nothing_outside(backend, tmp_path):
     fd.from_scf(mf, str(path), tol=1e-15)
     system = {"path": path, "norb": mol.nao, "nelec": mol.nelec}
     full = (_strings(mol.nao, mol.nelec[0]), _strings(mol.nao, mol.nelec[1]))
-    _save_tpb(system, full, str(tmp_path / "full-"))
+    energy = _save_tpb(system, full, str(tmp_path / "full-"))
     f = sbd.LoadFCIDump(str(path))
     for method in ("exact", "stochastic"):
-        result = analysis.variance(str(tmp_path / "full-"), f, method=method,
+        result = analysis.variance(str(tmp_path / "full-"), f, energy, method=method,
                                    bit_length=BITS, samples=200, batches=2)
         assert result.variance == pytest.approx(0.0, abs=1e-14)
         assert result.pt2 == pytest.approx(0.0, abs=1e-14)
@@ -190,15 +197,16 @@ def test_the_full_space_has_nothing_outside(backend, tmp_path):
 
 def test_tpb_and_gdb_files_of_one_state_give_one_answer(backend, h8, tmp_path):
     strings = _subspace(h8, 15)
-    _save_tpb(h8, strings, str(tmp_path / "tpb-"))
+    energy = _save_tpb(h8, strings, str(tmp_path / "tpb-"))
     _save_gdb(h8, strings, str(tmp_path / "gdb-"))
     f = sbd.LoadFCIDump(str(h8["path"]))
-    a = analysis.variance(str(tmp_path / "tpb-"), f, method="exact", bit_length=BITS)
-    b = analysis.variance(str(tmp_path / "gdb-"), f, method="exact", bit_length=BITS)
+    a = analysis.variance(str(tmp_path / "tpb-"), f, energy, method="exact", bit_length=BITS)
+    b = analysis.variance(str(tmp_path / "gdb-"), f, energy, method="exact", bit_length=BITS)
     assert a.variance == pytest.approx(b.variance, rel=1e-10)
     assert a.pt2 == pytest.approx(b.pt2, rel=1e-10)
     # and a single checkpoint file reads like its prefix
-    c = analysis.variance(str(tmp_path / "gdb-000000.bin"), f, method="exact", bit_length=BITS)
+    c = analysis.variance(str(tmp_path / "gdb-000000.bin"), f, energy, method="exact",
+                          bit_length=BITS)
     assert c.variance == pytest.approx(b.variance, rel=1e-12)
 
 
@@ -217,7 +225,7 @@ def test_state_energy_is_the_saved_states_own(backend, h8, tmp_path):
 
 def _stochastic_matches_exact(h8, prefix, energy, comm=None):
     f = sbd.LoadFCIDump(str(h8["path"]))
-    exact = analysis.variance(prefix, f, method="exact", bit_length=BITS, comm=comm)
+    exact = analysis.variance(prefix, f, energy, method="exact", bit_length=BITS, comm=comm)
     # Average independent seeds: the mean's error is small enough to expose a bias of a
     # fraction of a single run's error bar, and 5 sigma keeps a correct run from failing.
     runs = [analysis.variance(prefix, f, energy, method="stochastic", bit_length=BITS,
@@ -354,10 +362,10 @@ def test_a_state_saved_on_more_ranks_is_analysed_on_fewer(backend, h8):
 
 def test_auto_chooses_exact_for_a_small_space(backend, h8, tmp_path):
     strings = _subspace(h8, 15)
-    _save_gdb(h8, strings, str(tmp_path / "gdb-"))
+    energy = _save_gdb(h8, strings, str(tmp_path / "gdb-"))
     f = sbd.LoadFCIDump(str(h8["path"]))
-    assert analysis.variance(str(tmp_path / "gdb-"), f, bit_length=BITS).method == "exact"
-    assert analysis.variance(str(tmp_path / "gdb-"), f, bit_length=BITS, exact_limit=10,
+    assert analysis.variance(str(tmp_path / "gdb-"), f, energy, bit_length=BITS).method == "exact"
+    assert analysis.variance(str(tmp_path / "gdb-"), f, energy, bit_length=BITS, exact_limit=10,
                              samples=200, batches=2).method == "stochastic"
 
 
@@ -368,17 +376,22 @@ def test_auto_chooses_exact_for_a_small_space(backend, h8, tmp_path):
 
 def test_bad_inputs_are_refused(backend, h8, tmp_path):
     strings = _subspace(h8, 10)
-    _save_gdb(h8, strings, str(tmp_path / "gdb-"))
+    energy = _save_gdb(h8, strings, str(tmp_path / "gdb-"))
     f = sbd.LoadFCIDump(str(h8["path"]))
     prefix = str(tmp_path / "gdb-")
     with pytest.raises(FileNotFoundError, match="no saved state"):
-        analysis.variance(str(tmp_path / "nope-"), f, bit_length=BITS)
+        analysis.variance(str(tmp_path / "nope-"), f, energy, bit_length=BITS)
     with pytest.raises(ValueError, match="bit_length is required"):
-        analysis.variance(prefix, f)
+        analysis.variance(prefix, f, energy)
     with pytest.raises(ValueError, match="word"):
-        analysis.variance(prefix, f, bit_length=4)
+        analysis.variance(prefix, f, energy, bit_length=4)
     with pytest.raises(ValueError, match="method must be"):
-        analysis.variance(prefix, f, method="nope", bit_length=BITS)
+        analysis.variance(prefix, f, energy, method="nope", bit_length=BITS)
+    # The energy is the PT2 reference and is never recomputed, so it is required.
+    with pytest.raises(TypeError, match="energy"):
+        analysis.variance(prefix, f, bit_length=BITS)
+    with pytest.raises(ValueError, match="needs the state's energy"):
+        analysis.variance(prefix, f, None, bit_length=BITS)
 
 
 def test_files_from_more_than_one_run_are_refused(backend, h8, tmp_path):
@@ -501,8 +514,8 @@ def solve_and_analyse(path, strings, width):
     config.eps, config.max_it, config.bit_length = 1e-12, 300, bits
     det = sbd.sort_bitarray([sbd.from_string(s, bits, width) for s in strings])
     prefix = str(path) + "-state-"
-    sbd.tpb_diag(f, det, det, config, savename=prefix)
-    r = analysis.variance(prefix, f, method="exact", bit_length=bits)
+    energy = sbd.tpb_diag(f, det, det, config, savename=prefix)["energy"]
+    r = analysis.variance(prefix, f, energy, method="exact", bit_length=bits)
     return [r.energy, r.variance, r.pt2]
 
 if sys.argv[2] == "wide":

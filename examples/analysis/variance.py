@@ -60,9 +60,10 @@ def parse_args():
                              "--exact_limit determinants")
     parser.add_argument('--exact_limit', type=int, default=5_000_000,
                         help='Largest full CI space auto treats exactly (default 5,000,000)')
-    parser.add_argument('--energy', type=float, default=None,
-                        help="The state's energy, the PT2 reference. Default: computed from "
-                             "the state. If you give it, it must be this state's energy")
+    parser.add_argument('--energy', type=float, required=True,
+                        help="The state's energy, the PT2 reference: the energy the run that "
+                             "saved the state printed. Required, as upstream's evaluator "
+                             "requires --reference-energy; it is not recomputed")
     parser.add_argument('--samples', type=int, default=20000,
                         help='Stochastic: parent draws per batch (default 20000)')
     parser.add_argument('--batches', type=int, default=10,
@@ -115,11 +116,7 @@ def main():
     say(f"Ranks:   {size}")
 
     energy = args.energy
-    if energy is None:
-        energy = analysis.state_energy(state, fcidump)
-        say(f"Energy:  {energy:.10f}  (computed from the state)")
-    else:
-        say(f"Energy:  {energy:.10f}  (given)")
+    say(f"Energy:  {energy:.10f}  (given)")
 
     try:
         result = analysis.variance(state, fcidump, energy, method=args.method,
