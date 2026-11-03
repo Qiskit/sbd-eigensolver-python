@@ -78,6 +78,10 @@ in Python, with its option names and CSV output; see
 for the options, conventions and limits. For the 2-site Hubbard file above:
 
 ```bash
+# 0. the 2-site Hubbard file above, and its half-filling basis
+printf '%s\n' -1 '-1.0 cdag 0 c 1' '-1.0 cdag 1 c 0' '-1.0 cdag 2 c 3' '-1.0 cdag 3 c 2' \
+    '4.0 cdag 0 cdag 2 c 2 c 0' '4.0 cdag 1 cdag 3 c 3 c 1' > hub2.txt
+printf '%s\n' 0101 0110 1001 1010 > hub2_basis.txt
 # 1. ground state, saved; note the "Ground state energy:" line (10 decimals), not
 #    upstream's rounded "Energy =" log line
 python run_caop_diag.py --hamfile hub2.txt --basisfiles hub2_basis.txt --system_size 4 \
