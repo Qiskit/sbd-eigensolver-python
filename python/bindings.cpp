@@ -41,6 +41,7 @@
 #include <type_traits>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <numeric>
 #include <sstream>
 
@@ -302,6 +303,138 @@ static void caop_check_hamfile(const std::string& hamfile, bool complex, MPI_Com
     const std::string first = sbd_first_problem(problem, comm);
     if (!first.empty()) {
         throw std::invalid_argument(std::string(where) + ": " + first);
+    }
+}
+#endif
+
+#ifndef USE_OMP_OFFLOAD
+/**
+ * Check a CAOP state saved by SaveWavefunction against the scalar type and the basis
+ * files it will be loaded onto, on every rank, before upstream's LoadWavefunction.
+ *
+ * The file is [n][words][n x words determinant words][n amplitudes] with no type tag,
+ * and LoadWavefunction neither checks its size nor reports what it drops: it maps the
+ * saved amplitudes onto the basis by determinant and normalizes the result. So a real
+ * file read as complex (or the reverse), an unnormalized state, or a basis that is
+ * not the saved state's all give a wrong answer with no error. Rank r < shards reads
+ * shard r, as the loader does. The basis is compared by count and an
+ * order-independent hash of its determinants, with duplicates refused, which upstream
+ * otherwise aborts on.
+ */
+static void caop_check_state(const std::string& loadname, size_t shards,
+                             const std::vector<std::string>& basisfiles, size_t sites,
+                             size_t bit_length, bool complex, MPI_Comm comm,
+                             const char* where) {
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+    const size_t words = (sites + bit_length - 1) / bit_length;
+    const size_t elem = complex ? sizeof(std::complex<double>) : sizeof(double);
+    auto mix = [](uint64_t x) {            // splitmix64: a well-spread 64-bit hash
+        x += 0x9e3779b97f4a7c15ULL;
+        x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+        return x ^ (x >> 31);
+    };
+    auto hash_det = [&](const uint64_t* w) {
+        uint64_t h = 0;
+        for (size_t k = 0; k < words; ++k) h = mix(h ^ w[k]);
+        return h;
+    };
+    std::string problem;
+    double norm2 = 0.0;
+    uint64_t state_count = 0, state_hash = 0, basis_count = 0, basis_hash = 0;
+    if (size_t(rank) < shards) {
+        std::ostringstream name;
+        name << loadname << std::setw(6) << std::setfill('0') << rank << ".bin";
+        std::ifstream in(name.str(), std::ios::binary | std::ios::ate);
+        if (!in) {
+            problem = "cannot read the saved state " + name.str();
+        } else {
+            const auto bytes = size_t(in.tellg());
+            in.seekg(0);
+            uint64_t n = 0, w = 0;
+            in.read(reinterpret_cast<char*>(&n), sizeof n);
+            in.read(reinterpret_cast<char*>(&w), sizeof w);
+            const size_t real_bytes = 16 + n * (w * 8 + sizeof(double));
+            const size_t complex_bytes = 16 + n * (w * 8 + sizeof(std::complex<double>));
+            if (!in || w != words) {
+                problem = name.str() + ": its determinants are " + std::to_string(w)
+                    + " words, where sites=" + std::to_string(sites) + " and bit_length="
+                    + std::to_string(bit_length) + " give " + std::to_string(words)
+                    + "; use the run's own system_size and bit_length";
+            } else if (bytes != (complex ? complex_bytes : real_bytes)) {
+                problem = name.str() + (bytes == (complex ? real_bytes : complex_bytes)
+                    ? std::string(" holds ") + (complex ? "real" : "complex")
+                      + " amplitudes: pass complex=" + (complex ? "False" : "True")
+                      + ", as the state was solved with"
+                    : " is truncated or not a saved CAOP state");
+            } else {
+                std::vector<uint64_t> det(n * words);
+                in.read(reinterpret_cast<char*>(det.data()), det.size() * 8);
+                std::vector<double> amp(n * elem / sizeof(double));
+                in.read(reinterpret_cast<char*>(amp.data()), amp.size() * sizeof(double));
+                for (double a : amp) norm2 += a * a;      // |c|^2: re^2 + im^2 if complex
+                std::vector<uint64_t> hashes(n);
+                for (size_t i = 0; i < n; ++i) hashes[i] = hash_det(&det[i * words]);
+                for (uint64_t h : hashes) state_hash += h;
+                state_count = n;
+            }
+        }
+        // The basis lines this rank's loader would read: every file, as the loader
+        // gives each loading rank its share of them; count and hash all of them on
+        // rank 0 only, so the total is not counted once per loading rank.
+        if (rank == 0) {
+            std::vector<uint64_t> hashes;
+            for (const auto& file : basisfiles) {
+                std::ifstream bf(file);
+                if (!bf) {
+                    if (problem.empty()) problem = "cannot open the basis file " + file;
+                    break;
+                }
+                std::string line;
+                std::vector<uint64_t> wv(words);
+                while (std::getline(bf, line)) {
+                    if (line.empty()) continue;
+                    std::fill(wv.begin(), wv.end(), 0);
+                    const size_t len = std::min(line.size(), sites);
+                    for (size_t j = 0; j < len; ++j) {
+                        if (line[j] == '1') {
+                            const size_t bit = sites - 1 - j;
+                            wv[bit / bit_length] |= uint64_t(1) << (bit % bit_length);
+                        }
+                    }
+                    hashes.push_back(hash_det(wv.data()));
+                }
+            }
+            std::sort(hashes.begin(), hashes.end());
+            if (problem.empty()
+                && std::adjacent_find(hashes.begin(), hashes.end()) != hashes.end()) {
+                problem = "the basis files list a determinant more than once";
+            }
+            basis_count = hashes.size();
+            for (uint64_t h : hashes) basis_hash += h;
+        }
+    }
+    const std::string first = sbd_first_problem(problem, comm);
+    if (!first.empty()) {
+        throw std::invalid_argument(std::string(where) + ": " + first);
+    }
+    uint64_t local[4] = {state_count, state_hash, basis_count, basis_hash};
+    uint64_t total[4] = {0, 0, 0, 0};
+    MPI_Allreduce(local, total, 4, MPI_UINT64_T, MPI_SUM, comm);
+    double norm2_total = 0.0;
+    MPI_Allreduce(&norm2, &norm2_total, 1, MPI_DOUBLE, MPI_SUM, comm);
+    if (total[0] != total[2] || total[1] != total[3]) {
+        throw std::invalid_argument(
+            std::string(where) + ": the basis files (" + std::to_string(total[2])
+            + " determinants) are not the saved state's (" + std::to_string(total[0])
+            + "); give the basis files the state was solved over");
+    }
+    if (!(std::abs(norm2_total - 1.0) <= 1e-8)) {
+        throw std::invalid_argument(
+            std::string(where) + ": the saved state's norm squared is "
+            + std::to_string(norm2_total) + ", not 1; the evaluator needs a normalized "
+              "state, as the solver saves it");
     }
 }
 #endif
@@ -2057,6 +2190,140 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
         "Green's function from coefficients saved by caop_spectrum, on a new grid, as "
         "upstream's caop-spectrum --read-coefficients",
         py::arg("path"), py::arg("omegas"), py::arg("eta"));
+    // CAOP stochastic external variance and Epstein-Nesbet PT2 (upstream's
+    // apps/caop-stat-evaluator, as a library call). It reads the state as upstream's
+    // CLI does: the basis files, then the saved amplitudes onto them with
+    // LoadWavefunction, on one rank per saved shard. It runs on the CPU, like the
+    // GDB evaluator, whichever module calls it.
+    m.def("caop_external_observables",
+        [](py::object py_comm,
+           const std::string& hamfile,
+           const std::vector<std::string>& basisfiles,
+           const std::string& loadname,
+           size_t shards,
+           size_t sites,
+           size_t bit_length,
+           double reference_energy,
+           size_t sample_count,
+           size_t batch_count,
+           uint64_t seed,
+           uint64_t first_batch_id,
+           double heatbath_cutoff,
+           const std::string& observable,
+           size_t expansion_batch_size,
+           double minimum_abs_denominator,
+           size_t h_comm_size,
+           bool complex) {
+            MPI_Comm world = get_mpi_comm(py_comm);
+            int rank = 0, size = 1;
+            MPI_Comm_rank(world, &rank);
+            MPI_Comm_size(world, &size);
+            if (h_comm_size == 0 || size % h_comm_size) {
+                throw std::invalid_argument(
+                    "caop_external_observables: h_comm_size must divide the rank count");
+            }
+            sbd::stat_evaluator::Observable which;
+            try {
+                which = sbd::stat_evaluator::parse_observable(observable);
+            } catch (const std::exception&) {
+                throw std::invalid_argument(
+                    "observable must be 'both', 'variance' or 'pt2', got '" + observable + "'");
+            }
+            if (sample_count < 2) {
+                throw std::invalid_argument("sample_count must be at least 2");
+            }
+            if (batch_count == 0) {
+                throw std::invalid_argument("batch_count must be at least 1");
+            }
+            const int b_size = size / int(h_comm_size);
+            const size_t load_b_size = shards == 0 ? size_t(b_size) : shards;
+            if (load_b_size > size_t(b_size)) {
+                throw std::invalid_argument(
+                    "caop_external_observables: the state has more shards than b ranks");
+            }
+            // Upstream loads the Hamiltonian, the basis and the state on some ranks only;
+            // check what would otherwise hang the others or give a wrong answer silently.
+            caop_check_hamfile(hamfile, complex, world, "caop_external_observables");
+            caop_check_state(loadname, load_b_size, basisfiles, sites, bit_length, complex,
+                             world, "caop_external_observables");
+            std::vector<double> variance, pt2, seconds;
+            std::vector<uint64_t> batch_ids;
+            auto run = [&](auto tag) {
+                using ElemT = decltype(tag);
+                const int h_rank = rank / b_size;
+                MPI_Comm h_comm, b_comm, load_b_comm = MPI_COMM_NULL;
+                MPI_Comm_split(world, rank % b_size, h_rank, &h_comm);
+                MPI_Comm_split(world, h_rank, rank % b_size, &b_comm);
+                const bool load_rank = size_t(rank) < load_b_size;
+                MPI_Comm_split(world, load_rank ? 0 : MPI_UNDEFINED, rank, &load_b_comm);
+                sbd::GeneralOp<ElemT> hamiltonian;
+                bool sign = false;
+                sbd::load_GeneralOp_from_file(hamfile, hamiltonian, sign,
+                                              h_comm, b_comm, MPI_COMM_SELF);
+                if (size_t(hamiltonian.max_index()) >= sites) {
+                    throw std::invalid_argument("a Hamiltonian mode exceeds sites");
+                }
+                sbd::det_vector<size_t>::init_elem_size((sites + bit_length - 1) / bit_length);
+                sbd::det_vector<size_t> parents;
+                std::vector<ElemT> coefficients;
+                if (load_rank) {
+                    sbd::load_basis_from_files(basisfiles, parents, bit_length, sites,
+                                               load_b_comm);
+                    sbd::LoadWavefunction(loadname, parents, MPI_COMM_SELF, load_b_comm,
+                                          MPI_COMM_SELF, coefficients);
+                    MPI_Comm_free(&load_b_comm);
+                }
+                sbd::caop::stat::StatEvaluatorOptions<double> options;
+                options.observable = which;
+                options.bit_length = bit_length;
+                options.sites = sites;
+                options.sample_count = sample_count;
+                options.heatbath_cutoff = heatbath_cutoff;
+                options.reference_energy = reference_energy;
+                options.base_seed = seed;
+                options.expansion_batch_size = expansion_batch_size;
+                options.minimum_abs_denominator = minimum_abs_denominator;
+                std::vector<sbd::caop::stat::BatchRequest> batches(batch_count);
+                for (size_t k = 0; k < batch_count; ++k) {
+                    batches[k].calculation_id = "sbd-python";
+                    batches[k].batch_id = first_batch_id + k;
+                }
+                sbd::caop::stat::evaluate_statistical_batches<ElemT, double>(
+                    parents, coefficients, hamiltonian, sign, options, batches, world,
+                    [&](const sbd::caop::stat::EvaluatedBatch& evaluated) {
+                        const auto& r = evaluated.record;
+                        batch_ids.push_back(r.batch_id);
+                        variance.push_back(r.has_variance ? r.variance_estimate : NAN);
+                        pt2.push_back(r.has_pt2 ? r.pt2_estimate : NAN);
+                        seconds.push_back(r.elapsed_seconds);
+                    },
+                    h_comm, b_comm);
+                MPI_Comm_free(&b_comm);
+                MPI_Comm_free(&h_comm);
+            };
+            {
+                py::gil_scoped_release release;
+                if (complex) run(std::complex<double>{});
+                else run(double{});
+            }
+            py::dict out;
+            out["variance"] = variance;
+            out["pt2"] = pt2;
+            out["batch_id"] = batch_ids;
+            out["seconds"] = seconds;
+            out["mpi_size"] = size;
+            return out;
+        },
+        "Stochastic external variance and EN-PT2 of a saved CAOP state, as upstream's "
+        "caop-stat-evaluator",
+        py::arg("comm"), py::arg("hamfile"), py::arg("basisfiles"), py::arg("loadname"),
+        py::arg("shards"), py::arg("sites"), py::arg("bit_length"),
+        py::arg("reference_energy"), py::arg("sample_count") = 20000,
+        py::arg("batch_count") = 10, py::arg("seed") = 0, py::arg("first_batch_id") = 0,
+        py::arg("heatbath_cutoff") = 0.0, py::arg("observable") = "both",
+        py::arg("expansion_batch_size") = 1000000,
+        py::arg("minimum_abs_denominator") = 0.0, py::arg("h_comm_size") = 1,
+        py::arg("complex") = false);
 #else
     m.attr("__sbd_has_caop__") = false;
 #endif

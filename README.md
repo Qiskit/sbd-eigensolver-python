@@ -73,17 +73,20 @@ built), building against an existing host MPI, and fuller verification.
 ## Examples
 
 Located in `examples/`, organized by basis type since the solvers take different
-subspaces and decompose over MPI differently. Each folder's README is the authoritative
-guide to what it contains, how to run it, and the backend and threading settings that
-matter for it.
+subspaces and decompose over MPI differently. [`examples/README.md`](examples/README.md)
+shows how they fit together, from a solve through its variance check to, for lattice
+models, the Green's function. Each folder's README is the authoritative guide to what
+it contains, how to run it, and the backend and threading settings that matter for it.
 
 - [`examples/tpb/`](examples/tpb/README.md) — tensor-product basis: standalone TPB
   diagonalization, the SQD loops, and the subspace-enlargement driver.
 - [`examples/gdb/`](examples/gdb/README.md) — general determinant basis: standalone
   GDB diagonalization over an explicit determinant list, and an iterative
   heatbath-expansion driver.
+- [`examples/caop/`](examples/caop/README.md) — creation/annihilation-operator models
+  (lattice and spin): the ground state and its Green's function.
 - [`examples/analysis/`](examples/analysis/README.md) — energy variance and PT2 of a
-  state saved by either solver, as a separate MPI job or at the end of the same run.
+  state saved by any solver, as a separate MPI job or at the end of the same run.
 
 ## Integration with qiskit-addon-sqd
 

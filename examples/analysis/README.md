@@ -1,5 +1,7 @@
 # Analysis examples — energy variance and PT2 of a saved state
 
+> The check step of both workflows in [`../README.md`](../README.md).
+
 A diagonalization gives the energy of the best state *within its subspace*. Two numbers
 say how far that state is from the exact one:
 
@@ -118,6 +120,23 @@ $E_{\mathrm{var}} + E_{\mathrm{PT2}}$ 0.2 mHa.
 
 `--json FILE` also writes the result, the settings and the per-batch values. The same
 calculation is available in Python as `sbd.analysis.variance()`; see the API docs.
+
+## CAOP states
+
+A state saved by `../caop/run_caop_diag.py --savename` goes through the same driver
+with `--hamfile` instead of `--fcidump`, plus the basis files the state was solved over
+and the run's settings, which the files do not record:
+
+```bash
+python variance.py --hamfile ../caop/hub2.txt --basisfiles ../caop/hub2_basis.txt \
+    --sites 4 --state ../caop/gs- --bit_length 20 --energy <E0 from the run>
+```
+
+It runs upstream's
+[`caop-stat-evaluator`](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop-stat-evaluator/README.md),
+always stochastically. `--energy` may be left out with `--observable variance`. Give
+`--complex` if the run used it and `--shards` its `--b_comm_size`: the state file does not
+record either, and a mismatch is refused. The settings above apply unchanged.
 
 ## Doing it in the same run
 

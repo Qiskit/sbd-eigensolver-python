@@ -1,5 +1,7 @@
 # CAOP — models written with creation and annihilation operators
 
+> Part of the lattice and spin workflow in [`../README.md`](../README.md#lattice-and-spin-models-caop).
+
 `run_caop_diag.py` runs upstream SBD's
 [`caop_selected_basis_diagonalization`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop_selected_basis_diagonalization)
 app from Python: the ground state of a Hamiltonian written as operator terms, over a
