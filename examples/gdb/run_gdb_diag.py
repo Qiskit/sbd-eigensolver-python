@@ -40,7 +40,7 @@ Usage:
 
     # Shard Fe4S4's four files one per rank: file i goes to b_comm position i,
     # which for this data is already the balanced globally-sorted split
-    mpirun -np 4 -x OMP_NUM_THREADS=8 python run_gdb_diag.py --b_comm_size 4
+    OMP_NUM_THREADS=8 mpirun -np 4 python run_gdb_diag.py --b_comm_size 4
 
     # Spend ranks on both named dimensions (t <= b, and t*b must divide the ranks)
     mpirun -np 8 python run_gdb_diag.py --b_comm_size 4 --t_comm_size 2

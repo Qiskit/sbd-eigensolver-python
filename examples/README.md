@@ -1,7 +1,8 @@
 # Workflows
 
 The examples are organized by solver; this page shows how they fit together. Each step
-links to the folder whose README covers its options and pitfalls.
+links to the folder whose README covers its options and pitfalls. Each block below starts
+in this `examples/` directory.
 
 Two checks follow every diagonalization, whatever the solver: its **energy variance**
 and **PT2** say how far the saved state is from the exact one. Run them before using the
@@ -14,7 +15,7 @@ From an FCIDUMP and a determinant subspace.
 
 ```bash
 # 1. diagonalize and save the state; note "Ground state energy:"
-cd tpb
+cd tpb       # from examples/
 mpirun -np 4 python run_sbd_diag.py --adet_comm_size 2 --bdet_comm_size 2 \
     --bit_length 20 --tolerance 1e-8 --savename /path/to/h2o-
 
@@ -35,7 +36,12 @@ From a Hamiltonian written as operator terms. After the ground state is checked,
 Green's function gives the single-particle spectrum.
 
 ```bash
-cd caop
+cd caop      # from examples/
+# 0. a 2-site Hubbard model (t = 1, U = 4) and its half-filling basis; see caop/ for the format
+printf '%s\n' -1 '-1.0 cdag 0 c 1' '-1.0 cdag 1 c 0' '-1.0 cdag 2 c 3' '-1.0 cdag 3 c 2' \
+    '4.0 cdag 0 cdag 2 c 2 c 0' '4.0 cdag 1 cdag 3 c 3 c 1' > hub2.txt
+printf '%s\n' 0101 0110 1001 1010 > hub2_basis.txt
+
 # 1. the ground state, saved; note "Ground state energy:"
 python run_caop_diag.py --hamfile hub2.txt --basisfiles hub2_basis.txt --system_size 4 \
     --tolerance 1e-10 --savename gs-
@@ -54,8 +60,7 @@ python run_caop_spectrum.py --hamfile hub2.txt --sites 4 --loadname gs- \
     --extra-detfile add_basis.txt --output add.csv
 ```
 
-- **Input files and solve:** [`caop/`](caop/README.md#preparing-the-input-files), which
-  also writes out `hub2.txt` and `hub2_basis.txt`.
+- **Input files and solve:** [`caop/`](caop/README.md#preparing-the-input-files).
 - **Check:** [`analysis/`](analysis/README.md#caop-states).
 - **Green's function:** [`caop/`](caop/README.md#greens-function).
 

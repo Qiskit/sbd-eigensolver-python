@@ -23,7 +23,7 @@ and on any number of ranks: it need not match the run that saved the state.
     mpirun -np 4 python ../gdb/run_gdb_diag.py --b_comm_size 4 --savename state-
 
     # 2. its variance and PT2 (stochastic, on CPU; many ranks, few threads is fastest)
-    mpirun -np 32 -x OMP_NUM_THREADS=2 python variance.py \\
+    OMP_NUM_THREADS=2 mpirun -np 32 python variance.py \\
         --fcidump ../../vendor/sbd-upstream/apps/chemistry_gdb_selected_basis_diagonalization/fcidump_Fe4S4.txt \\
         --state state- --bit_length 62
 

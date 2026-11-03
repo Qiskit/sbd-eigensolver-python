@@ -1,7 +1,5 @@
 # TPB examples — SQD/SBD with a tensor-product basis
 
-> Part of the molecular workflow in [`../README.md`](../README.md#molecules-tpb-or-gdb).
-
 Examples demonstrating SBD's capabilities for quantum chemistry calculations.
 
 ## Overview

@@ -1,7 +1,5 @@
 # GDB examples — general determinant basis
 
-> Part of the molecular workflow in [`../README.md`](../README.md#molecules-tpb-or-gdb).
-
 GDB spans the subspace with the determinants it is given, rather than with the
 Cartesian product of an alpha and a beta list that TPB uses. TPB's dimension is
 `|adet| x |bdet|`; GDB's is exactly the number of determinants passed. That is what
