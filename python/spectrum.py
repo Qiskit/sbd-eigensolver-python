@@ -51,7 +51,7 @@ __all__ = ["green_function", "green_function_from_coefficients", "spectral_funct
 
 
 def green_function(loadname, hamfile, orbitals, channel, *, sites, bit_length,
-                   reference_energy, omegas, eta=0.05, shards=1, extra_basis=(),
+                   reference_energy, omegas, eta=0.1, shards=1, extra_basis=(),
                    max_steps=100, h_comm_size=1, t_comm_size=1, store_hamiltonian=True,
                    complex=False, wavefunction_complex=False, save_coefficients="",
                    operator_files=(), rank_atol=1e-13, rank_rtol=1e-12, device=None):
@@ -127,7 +127,8 @@ def green_function_from_coefficients(path, omegas, eta, *, device=None):
 
     Returns:
         dict with ``green_function`` (``(len(omegas), n, n)``), ``basis_size``,
-        ``steps``, ``stop_reason`` and ``addition`` (the channel it was saved for).
+        ``steps``, ``stop_reason``, ``addition`` (the channel it was saved for), and
+        the row labels: ``orbitals``, and ``operator_files`` for general operators.
     """
     backend = sbd._caop_backend(device)
     return backend.caop_spectrum_from_coefficients(
