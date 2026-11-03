@@ -1058,6 +1058,8 @@ try:
 except ImportError:
     sbd_solver = None  # pyscf or qiskit-addon-sqd not installed
 
+from . import analysis  # noqa: E402  (PySCF is imported only by its exact method)
+
 __all__ = [
     # Initialization
     'init',
@@ -1103,6 +1105,7 @@ __all__ = [
 
     # Sub-modules
     'sbd_solver',
+    'analysis',
 
     # Version
     '__version__',
