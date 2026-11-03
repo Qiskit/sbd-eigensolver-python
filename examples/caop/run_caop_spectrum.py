@@ -85,7 +85,7 @@ def parse_args():
     parser.add_argument('--output', default='', help='CSV of G and A on the grid')
     parser.add_argument('--omega-min', type=float, default=-10.0)
     parser.add_argument('--omega-max', type=float, default=10.0)
-    parser.add_argument('--points', type=int, default=401)
+    parser.add_argument('--points', type=int, default=201)
     parser.add_argument('--eta', type=float, default=0.1)
     args = parser.parse_args()
     if args.read_coefficients:
@@ -141,8 +141,11 @@ def main():
                                                      args.eta)
         n = result["green_function"].shape[1]
         if rank == 0:
-            _write_csv(args.output, omegas, result["green_function"], list(range(n)),
-                       general=False)
+            # Label the rows as the generating run did: its orbitals, or for general
+            # operators the operator indices 0..n-1.
+            general = bool(result["operator_files"])
+            labels = list(range(n)) if general else result["orbitals"]
+            _write_csv(args.output, omegas, result["green_function"], labels, general)
             print(f"Reevaluated {args.read_coefficients}: {n} x {n}, "
                   f"{len(omegas)} points, eta {args.eta} -> {args.output}")
         return 0

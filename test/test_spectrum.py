@@ -286,6 +286,25 @@ def test_orbitals_and_operator_files_together_are_refused(backend):
                        reference_energy=0.0, omegas=[0.0], rank_atol=-1.0)
 
 
+def test_operator_files_upstream_checks_on_some_ranks_only_are_refused(backend, tmp_path):
+    """A mode beyond sites, or an operator with other statistics than H: upstream
+    raises on the h=t=0 ranks or on one h shard only, which hangs the other ranks."""
+    if not getattr(backend, "__sbd_has_caop__", False):
+        pytest.skip("this backend has no CAOP solver")
+    from sbd.spectrum import green_function
+
+    wide = tmp_path / "wide.txt"
+    wide.write_text("1\n1.0 sz 0 sz 2\n")
+    with pytest.raises(ValueError, match="mode 2, beyond sites=2"):
+        green_function("x-", wide, [0], "addition", sites=2, bit_length=20,
+                       reference_energy=0.0, omegas=[0.0])
+    fermion = tmp_path / "fermion.txt"
+    fermion.write_text("-1\n1.0 cdag 0 c 1\n")
+    with pytest.raises(ValueError, match="different statistics"):
+        green_function("x-", DIMER / "ham.txt", [], "addition", sites=2, bit_length=20,
+                       reference_energy=0.0, omegas=[0.0], operator_files=[fermion])
+
+
 # --- the driver: the README's flow ---------------------------------------------------
 
 def test_the_drivers_flow_ground_state_then_green_function(caop_device, tmp_path):
@@ -355,4 +374,5 @@ def test_the_drivers_flow_ground_state_then_green_function(caop_device, tmp_path
         expected = np.array([(projected.conj() / (w + e[0] - ea + 1j * eta)) @ projected.T
                              for w in omegas])
         np.testing.assert_allclose(got, expected, atol=1e-8, err_msg=path)
-
+        # The reevaluated CSV keeps the generating run's orbital labels.
+        assert sorted(set(rows[:, 1].astype(int))) == [0, 2], path

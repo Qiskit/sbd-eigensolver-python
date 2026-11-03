@@ -1774,10 +1774,36 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             }
             // Upstream reads the hamfile on h-rank 0 only, as for the solve; see
             // caop_check_hamfile. The operator files are read the same way.
-            caop_check_hamfile(hamfile, complex, comm, "caop_spectrum");
+            const auto ham_facts = caop_check_hamfile(hamfile, complex, comm, "caop_spectrum");
+            caop_check_modes(hamfile, ham_facts, sites, "caop_spectrum");
+            // Upstream compares each operator's statistics with H on the h=t=0 ranks
+            // only, so a mismatch there would hang the rest: refuse it here, everywhere.
             for (const auto& file : operator_files) {
-                caop_check_hamfile(file, complex, comm, "caop_spectrum");
+                const auto facts = caop_check_hamfile(file, complex, comm, "caop_spectrum");
+                caop_check_modes(file, facts, sites, "caop_spectrum");
+                if (facts.fermion != ham_facts.fermion) {
+                    throw std::invalid_argument(
+                        "caop_spectrum: operator file " + file
+                        + " has different statistics from the Hamiltonian");
+                }
             }
+#ifdef SBD_THRUST
+            // make_slide deals the b ring stations over the t task ranks
+            // (caop/basic/helper.h:41-55); with t > b some get none, and upstream's
+            // Thrust mult returns early on an empty slide (mult_thrust.h:583), skipping
+            // the Allreduce the other ranks wait in. The stored mode runs the CPU mult.
+            if (!store_hamiltonian && t_comm_size > world / (h_comm_size * t_comm_size)) {
+                throw std::invalid_argument(
+                    "caop_spectrum on the gpu (Thrust) backend with the on-the-fly "
+                    "Hamiltonian needs t_comm_size <= the b ranks (ranks / (h_comm_size * "
+                    "t_comm_size)): a task rank with no basis-ring station hangs "
+                    "upstream's GPU kernel. Lower t_comm_size, store the Hamiltonian, or "
+                    "use device='cpu'");
+            }
+#endif
+            // As upstream's app: the stored Hamiltonian's per-thread slots need the
+            // same OpenMP team in every parallel region (caop/basic/mkham.h).
+            omp_set_dynamic(0);
 #ifdef SBD_THRUST
             {
                 int numDevices = 1;
@@ -1900,7 +1926,7 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
         py::arg("comm"), py::arg("loadname"), py::arg("shards"), py::arg("hamfile"),
         py::arg("orbitals"), py::arg("addition"), py::arg("sites"), py::arg("bit_length"),
         py::arg("reference_energy"), py::arg("extra_basis") = std::vector<std::string>{},
-        py::arg("omegas") = std::vector<double>{}, py::arg("eta") = 0.05,
+        py::arg("omegas") = std::vector<double>{}, py::arg("eta") = 0.1,
         py::arg("max_steps") = 100, py::arg("h_comm_size") = 1, py::arg("t_comm_size") = 1,
         py::arg("store_hamiltonian") = true, py::arg("complex") = false,
         py::arg("wavefunction_complex") = false, py::arg("save_coefficients") = "",
@@ -1917,10 +1943,14 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             size_t n = 0, basis_size = 0, steps = 0;
             bool addition = true;
             std::string stop_reason;
+            std::vector<size_t> labels;
+            std::vector<std::string> operator_files;
             auto evaluate = [&](auto tag) {
                 using ElemT = decltype(tag);
                 auto result = cs::load_coefficients<ElemT>(path);
                 n = result.orbitals.size();
+                labels = result.orbitals;
+                operator_files = result.operator_files;
                 basis_size = result.basis_size;
                 steps = result.coefficients.A.size();
                 stop_reason = result.coefficients.stop_reason;
@@ -1943,6 +1973,8 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             results["steps"] = steps;
             results["stop_reason"] = stop_reason;
             results["addition"] = addition;
+            results["orbitals"] = labels;
+            results["operator_files"] = operator_files;
             return results;
         },
         "Green's function from coefficients saved by caop_spectrum, on a new grid, as "
