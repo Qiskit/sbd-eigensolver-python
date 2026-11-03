@@ -83,12 +83,12 @@ and the energy from step 1 as `--energy`:
 cd ../analysis
 
 # h2o
-mpirun -np 32 -x OMP_NUM_THREADS=2 python variance.py \
+OMP_NUM_THREADS=2 mpirun -np 32 python variance.py \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
-    --state /path/to/run1/h2o- --bit_length 20 --energy -76.2359466308
+    --state /path/to/run1/h2o- --bit_length 20 --energy -76.2359466308   # step 1's energy
 
 # Fe4S4
-mpirun -np 32 -x OMP_NUM_THREADS=2 python variance.py \
+OMP_NUM_THREADS=2 mpirun -np 32 python variance.py \
     --fcidump ../../vendor/sbd-upstream/apps/chemistry_gdb_selected_basis_diagonalization/fcidump_Fe4S4.txt \
     --state /path/to/run2/fe4s4- --bit_length 62 --energy <the Fe4S4 run's energy>
 ```

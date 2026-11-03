@@ -283,7 +283,10 @@ def test_every_rank_refuses_together(device, tmp_path_factory):
 def test_sharded_gdb_is_exact(device, layout):
     """The basis split over b_comm: each rank passes its own contiguous slice.
 
-    b = the rank count keeps the helper dimension at 1, which Thrust requires.
+    b = the rank count keeps the helper dimension at 1, which Thrust requires. The
+    slices are kept as given ('input'): the default equal-bra-a placement deals out
+    whole alpha strings, and this space has only three, so from four ranks on it would
+    leave a shard empty, which the Thrust solve refuses.
     """
     size, rank = sbd.get_world_size(), sbd.get_rank()
     full = sbd.sort_bitarray_array(_full_space())
@@ -292,7 +295,10 @@ def test_sharded_gdb_is_exact(device, layout):
     shard = full[begin:begin + quotient + (1 if rank < remainder else 0)]
     config = _gdb()
     config.b_comm_size = size
-    result = sbd.gdb_diag(sbd.LoadFCIDump(LAYOUTS[layout]), shard, config)
+    if size > len(full):                 # the same on every rank, so no rank is left behind
+        pytest.skip("more ranks than determinants")
+    result = sbd.gdb_diag(sbd.LoadFCIDump(LAYOUTS[layout]), shard, config,
+                          determinant_distribution="input")
     assert result["global_dim"] == len(full)
     assert result["energy"] == pytest.approx(REFERENCE["e_fci"], abs=1e-9)
 

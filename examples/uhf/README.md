@@ -1,7 +1,8 @@
 # Unrestricted (UHF) examples
 
-> Part of the molecular workflow in [`../README.md`](../README.md#molecules-tpb-or-gdb):
-> a UHF FCIDUMP goes through the same solve and check steps as a restricted one.
+> A UHF FCIDUMP goes through the same solve and check steps as a restricted one:
+> [`../tpb/`](../tpb/README.md) or [`../gdb/`](../gdb/README.md), then
+> [`../analysis/`](../analysis/README.md).
 
 SBD diagonalizes unrestricted Hamiltonians — separate alpha and beta orbitals, as
 from a UHF calculation — through the same `sbd.tpb_diag` / `sbd.gdb_diag` calls and

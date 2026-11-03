@@ -31,6 +31,8 @@ constraints. Reach for GDB when the subspace is not a product.
   [`examples/gdb/README.md`](examples/gdb/README.md)
 - MPI parallelization
 - Integration with [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) for SQD workflows
+- **Unrestricted (UHF) integrals** through the same TPB and GDB calls, detected from
+  the FCIDUMP — see [`examples/uhf/README.md`](examples/uhf/README.md)
 - **Energy variance and Epstein–Nesbet PT2** of saved TPB and GDB states
   (`sbd.analysis`), estimated with **MPI + OpenMP across multiple nodes and cores** —
   see [Energy variance and PT2](#energy-variance-and-pt2)
@@ -184,7 +186,7 @@ mpirun -np 4 python examples/gdb/run_gdb_diag.py --device gpu --b_comm_size 4 \
     --bit_length 62 --savename /path/to/run/fe4s4-
 
 # 2. its variance and PT2: a separate CPU job, on as many nodes and cores as you like
-mpirun -np 32 -x OMP_NUM_THREADS=2 python examples/analysis/variance.py \
+OMP_NUM_THREADS=2 mpirun -np 32 python examples/analysis/variance.py \
     --fcidump vendor/sbd-upstream/apps/chemistry_gdb_selected_basis_diagonalization/fcidump_Fe4S4.txt \
     --state /path/to/run/fe4s4- --bit_length 62
 ```
