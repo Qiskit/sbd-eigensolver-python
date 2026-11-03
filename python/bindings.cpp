@@ -251,9 +251,15 @@ static std::string sbd_first_problem(const std::string& local, MPI_Comm comm) {
  * coefficient as a double, so "(re,im)" is refused there with a pointer to
  * complex=True.
  */
-static void caop_check_hamfile(const std::string& hamfile, bool complex, MPI_Comm comm,
-                               const char* where) {
+struct CaopFileFacts {
+    bool fermion = false;     // statistics zero or negative, as upstream's loader reads it
+    size_t max_mode = 0;      // highest mode index any term uses
+};
+
+static CaopFileFacts caop_check_hamfile(const std::string& hamfile, bool complex,
+                                        MPI_Comm comm, const char* where) {
     std::string problem;
+    CaopFileFacts facts;
     std::ifstream ifs(hamfile);
     if (!ifs) {
         problem = "cannot open the Hamiltonian file " + hamfile;
@@ -273,6 +279,7 @@ static void caop_check_hamfile(const std::string& hamfile, bool complex, MPI_Com
                         + ": the first line must be the statistics (an integer: positive "
                           "for hard-core bosons or spins, zero or negative for fermions)";
                 }
+                facts.fermion = statistics <= 0;
                 statistics_read = true;
                 continue;
             }
@@ -283,6 +290,14 @@ static void caop_check_hamfile(const std::string& hamfile, bool complex, MPI_Com
             } else {
                 double c;
                 read = static_cast<bool>(iss >> c);
+            }
+            // The operator tokens, each followed by its mode, up to a '#' comment.
+            std::string op;
+            size_t mode = 0;
+            while (read && iss >> op && op[0] != '#') {
+                if (iss >> mode) facts.max_mode = std::max(facts.max_mode, mode);
+                else problem = "line " + std::to_string(number) + " of " + hamfile
+                         + ": operator " + op + " has no mode index after it";
             }
             if (!read) {
                 const bool looks_complex = line[first] == '(';
@@ -302,6 +317,22 @@ static void caop_check_hamfile(const std::string& hamfile, bool complex, MPI_Com
     const std::string first = sbd_first_problem(problem, comm);
     if (!first.empty()) {
         throw std::invalid_argument(std::string(where) + ": " + first);
+    }
+    return facts;
+}
+
+/**
+ * Refuse, on every rank, a CAOP file whose terms use a mode at or beyond sites.
+ *
+ * Upstream checks max_index() on the h-sharded operator, so with h_comm_size > 1 only
+ * the shard holding the high mode throws and the others hang.
+ */
+static void caop_check_modes(const std::string& file, const CaopFileFacts& facts,
+                             size_t sites, const char* where) {
+    if (facts.max_mode >= sites) {
+        throw std::invalid_argument(
+            std::string(where) + ": " + file + " uses mode " + std::to_string(facts.max_mode)
+            + ", beyond sites=" + std::to_string(sites) + " (modes are 0 .. sites-1)");
     }
 }
 #endif
@@ -1206,6 +1237,26 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                 }
             }
 
+#ifdef SBD_THRUST
+            // ---- Thrust: every b shard must hold something, after placement -------
+            // Upstream's Thrust mult never returns when a b shard is empty: the ring
+            // exchange (MpiSlider::Sync, gdb/helper_thrust.h) waits forever, while the
+            // CPU backend handles the same input. Placement can empty a shard the
+            // input filled: equal-bra-a deals out whole alpha strings, so fewer
+            // distinct alpha strings than b_comm_size leaves ranks with nothing.
+            if (b_comm_size > 1 && !sbd_all_ranks_ok(det.size() > 0, comm)) {
+                throw std::invalid_argument(
+                    std::string("gdb_diag on the gpu (Thrust) backend needs determinants "
+                                "on every b_comm shard after placement (determinant_"
+                                "distribution='")
+                    + sbd_det_distribution_name(distribution)
+                    + "'), but at least one is empty: upstream's Thrust solve then waits "
+                      "forever. Use fewer shards (a smaller b_comm_size), "
+                      "determinant_distribution='input' with a non-empty slice per rank, "
+                      "or device='cpu'");
+            }
+#endif
+
             // ---- global dimension -------------------------------------------
             // Summed over b_comm, since h_comm and t_comm hold replicas.
             unsigned long long local_dim = static_cast<unsigned long long>(det.size());
@@ -1589,9 +1640,9 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
 #ifdef SBD_THRUST
             // make_slide deals the b ring stations out over the t task ranks
             // (caop/basic/helper.h:41-55), so with t > b some ranks get none. The CPU
-            // mult guards an empty slide (mult.h:19), but the Thrust one reads
-            // slide_[0] unguarded (mult_thrust.h:628) and the job hangs; the
-            // stored-Hamiltonian methods run the CPU mult and are unaffected. The
+            // mult guards an empty slide (mult.h:19); the Thrust one returns early
+            // (mult_thrust.h:583) and skips the Allreduce the other ranks wait in, so
+            // the job hangs; the stored-Hamiltonian methods run the CPU mult. The
             // same t <= b holds for GDB on every backend.
             if ((sbd_data.method == 0 || sbd_data.method == 2) && t_comm_size > b_comm_size) {
                 throw std::invalid_argument(
@@ -1621,7 +1672,14 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             // Upstream reads the hamfile on h-rank 0 only and sends the terms on
             // (caop/basic/loadmodel.h:92-96), so a file it cannot read hangs the other
             // ranks; see caop_check_hamfile.
-            caop_check_hamfile(hamfile, complex, comm, "caop_diag_from_files");
+            // Upstream's solve does not check the terms' modes against system_size.
+            caop_check_modes(hamfile,
+                             caop_check_hamfile(hamfile, complex, comm,
+                                                "caop_diag_from_files"),
+                             sbd_data.system_size, "caop_diag_from_files");
+            // As upstream's caop-spectrum app: the stored Hamiltonian (methods 1/3) keeps
+            // per-thread slots that need a fixed OpenMP team (caop/basic/mkham.h).
+            omp_set_dynamic(0);
             double energy = 0.0;
             sbd::det_vector<size_t> co_basis;
             {

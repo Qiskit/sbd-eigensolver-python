@@ -12,7 +12,6 @@ for each one and for its `gen_ham.py` and `gen_bits.py`. This page covers what i
 specific to the Python driver and what we found running it.
 
 ```bash
-cd examples/caop
 mpirun -np 4 python run_caop_diag.py --b_comm_size 4    # upstream's 8-site boson chain
 ```
 

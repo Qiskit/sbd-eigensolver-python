@@ -326,11 +326,13 @@ def test_settings_upstream_gets_wrong_are_refused(backend, fields, match):
 
 
 # Upstream reads the Hamiltonian on one rank and sends the terms on, so a file it cannot
-# read raises there and leaves the other ranks waiting. The bindings read it first.
+# read raises there and leaves the other ranks waiting. The bindings read it first. A
+# mode beyond system_size is not checked upstream at all.
 BAD_HAMFILES = {
     "complex-on-real": ("-1\n(0,1) cdag 1 c 0\n(0,-1) cdag 0 c 1\n", "complex=True"),
     "bad-coefficient": ("-1\nabc cdag 1 c 0\n", "cannot read the coefficient 'abc'"),
     "no-statistics": ("# only a comment\n", "no statistics line"),
+    "mode-beyond-sites": ("1\n1.0 bdag 8 b 0\n1.0 bdag 0 b 8\n", "mode 8, beyond sites=8"),
 }
 
 
