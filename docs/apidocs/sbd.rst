@@ -53,8 +53,12 @@ Fields shared by ``TPB_SBD`` and ``GDB_SBD``:
    * - ``max_time``
      - Wall-clock limit, in seconds.
    * - ``init``
-     - Starting vector: ``0`` puts unit weight on the first determinant of the basis,
-       ``1`` is random.
+     - Starting vector: ``0`` puts unit weight on the first determinant of the basis
+       in sorted order, ``1`` is random. Davidson only reaches states its start
+       overlaps with, so a poor start converges on a higher state without any error.
+       To choose the start, set the ``initial_*`` fields below. The start comes from,
+       in order: a state loaded with ``loadname``, then the ``initial_*`` fields, then
+       ``init``.
    * - ``seed``
      - Seed for the random starting vector; used only with ``init = 1``.
    * - ``do_rdm``
@@ -91,6 +95,13 @@ Fields of ``TPB_SBD`` only:
      - ``1`` ranks half-determinants by marginal weight; ``2`` also adds their single
        excitations; ``3`` ranks whole determinants by amplitude, then adds single
        excitations.
+   * - ``initial_adeterminant_bitstring``, ``initial_bdeterminant_bitstring``
+     - Start Davidson with unit weight on this alpha string times this beta string
+       (``NORB`` characters each, character ``NORB - 1 - i`` is orbital ``i``, so the
+       rightmost is orbital 0), instead of ``init``. Empty
+       (the default) uses ``init``. An empty beta string means the alpha one; beta
+       cannot be set alone. Each string must occur exactly once in its list, or the
+       solve raises ``ValueError``.
    * - ``do_shuffle``
      - Shuffle the determinants loaded from file before use.
    * - ``dump_matrix_form_wf``
@@ -101,6 +112,16 @@ Fields of ``TPB_SBD`` only:
    * - ``max_memory_gb_for_determinants``
      - Thrust backend only, and used only when ``use_precalculated_dets`` is off: a
        per-thread buffer cap in GB, or ``-1`` for none.
+   * - ``thrust_collapse_loops``
+     - Thrust backend only, and used only when ``use_precalculated_dets`` is on. On
+       (the default), each task's loops run as one flattened GPU loop; off, as nested
+       loops, which need less GPU memory. Upstream turns it off by itself when the
+       flattened size would overflow. Energies do not change.
+   * - ``cpu_subspace``
+     - Thrust backend only. Keep the Davidson or Lanczos subspace vectors in host
+       memory instead of GPU memory, so the GPU memory they use no longer grows with
+       ``max_nb``; the Hamiltonian is still applied on the GPU. Energies agree with
+       the default to within rounding.
 
 Fields of ``GDB_SBD`` only:
 
@@ -127,6 +148,15 @@ Fields of ``GDB_SBD`` only:
        the parents the expansion needs.
    * - ``heatbath_batch_size``
      - Number of candidates processed per batch during expansion.
+   * - ``initial_determinant_bitstring``
+     - Start Davidson with unit weight on this full determinant (``2*NORB``
+       characters; from the right, bit ``2*i`` is alpha orbital ``i`` and bit
+       ``2*i + 1`` beta orbital ``i``, as in :func:`from_strings`), instead of
+       ``init``. Empty (the default) uses ``init``. It must occur exactly once across
+       all shards, or the solve raises ``ValueError``.
+   * - ``cpu_subspace``
+     - Thrust backend only, as for ``TPB_SBD``: keep the Davidson subspace vectors in
+       host memory instead of GPU memory.
 
 Inputs
 ======
@@ -136,6 +166,17 @@ Inputs
 .. autofunction:: sort_bitarray
 .. autofunction:: from_strings
 .. autofunction:: sort_bitarray_array
+
+CAOP: creation/annihilation-operator models
+============================================
+
+For lattice and spin models written as creation and annihilation operators, over a
+selected basis, as upstream SBD's ``caop_selected_basis_diagonalization`` app. CAOP runs
+on the ``cpu`` and ``gpu`` (Thrust) backends. See :mod:`sbd.spectrum` for Green's
+functions of a CAOP ground state.
+
+.. autofunction:: CAOP_SBD
+.. autofunction:: caop_diag_from_files
 
 Backends and devices
 ====================

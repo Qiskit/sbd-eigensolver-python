@@ -50,8 +50,10 @@ alpha/beta determinant sets instead; `--bdetfile` is otherwise ignored
 **Key options:** `--device`, `--fcidump`, `--adetfile`, `--bdetfile`,
 `--symmetrize_spin`, `--adet_comm_size`, `--bdet_comm_size`,
 `--task_comm_size`, `--method`, `--tolerance`, `--iteration`,
-`--rdm_output`. (These keep their unprefixed names here: this driver *is*
-SBD. The SQD drivers prefix them `--sbd_*`.) Run `python run_sbd_diag.py
+`--initial_adet`/`--initial_bdet` (start Davidson from this alpha x beta
+determinant instead of the first one in sorted order; it must be in the
+subspace), `--rdm_output`. (These keep their unprefixed names here: this driver
+*is* SBD. The SQD drivers prefix them `--sbd_*`.) Run `python run_sbd_diag.py
 --help` for the full list.
 
 **Requirements:** `sbd`, `mpi4py`
@@ -282,6 +284,8 @@ Per diagonalization, not per loop:
 | `--sbd_method` | 0=Davidson, 1=Davidson+Ham, 2=Lanczos, 3=Lanczos+Ham | `0` |
 | `--sbd_use_precalculated_dets` | Thrust only. `1` precomputes a determinant index for **every** (α,β) pair — the whole subspace, on the GPU. `0` uses per-thread storage: slower per matvec, far less memory | `1` |
 | `--sbd_max_memory_gb_for_determinants` | Thrust only, and **only consulted when `--sbd_use_precalculated_dets 0`** (`mult_thrust.h:257-273`). Caps the per-thread buffer in GB | `-1` (uncapped) |
+| `--sbd_thrust_collapse_loops` | Thrust only, and **only consulted when `--sbd_use_precalculated_dets 1`**. `1` runs each task's loops as one flattened GPU loop; `0` as nested loops, which need less GPU memory. Upstream switches to `0` by itself if the flattened size would overflow. Energies are unchanged | `1` |
+| `--sbd_cpu_subspace` | Thrust only. `1` keeps the Davidson subspace vectors in CPU memory instead of GPU memory; H is still applied on the GPU. For runs whose subspace vectors do not fit in GPU memory. Needs `OMP_NUM_THREADS` of 2 or more; ignored on the other backends | `0` |
 
 For reference, upstream's own `TPB_SBD` struct defaults are looser still (`max_it=1`,
 `eps=1e-4`), and `run_sbd_diag.py` uses `eps=1e-3`. On the h2o counts case,

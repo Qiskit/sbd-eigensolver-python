@@ -168,9 +168,10 @@ def parse_args():
 
     parser.add_argument('--device', default='cpu',
                        choices=['cpu', 'gpu', 'gpu-omp', 'auto'],
-                       help="Compute backend. 'gpu' is NVHPC Thrust, which is the "
-                            "only GPU backend with GDB kernels; 'gpu-omp' has none, "
-                            "so GDB runs on the host there")
+                       help="Compute backend: 'cpu', or 'gpu' (NVHPC Thrust, NVIDIA "
+                            "only), the one GPU backend with GDB kernels. 'gpu-omp' is "
+                            "refused, as upstream has no OpenMP-offload GDB code; 'auto' "
+                            "is refused too if it resolves to 'gpu-omp'")
 
     # --- input ------------------------------------------------------------
     parser.add_argument('--skip-weight-check', action='store_true',
@@ -235,10 +236,20 @@ def parse_args():
                        dest='eps', help='Convergence tolerance')
     parser.add_argument('--max_time', type=float, default=1e10,
                        help='Maximum wall time in seconds')
+    parser.add_argument('--cpu_subspace', type=int, default=0, choices=[0, 1],
+                       help='Keep the Davidson subspace vectors in CPU memory instead of '
+                            'GPU memory (Thrust backend only; ignored elsewhere). For runs '
+                            'too large for GPU memory. Needs OMP_NUM_THREADS of 2 or more')
     parser.add_argument('--init', type=int, default=0,
                        help='Initial vector policy')
     parser.add_argument('--seed', type=int, default=1729,
                        help='Seed for a random initial vector (init != 0)')
+    parser.add_argument('--initial_det', '--initial_determinant_bitstring', default='',
+                       dest='initial_det', metavar='BITS',
+                       help='Start from unit weight on this full determinant (2*NORB '
+                            'characters, alpha and beta interleaved, as in --detfiles) '
+                            'instead of --init. It must be in the subspace, or the run '
+                            'stops')
     parser.add_argument('--bit_length', type=int, default=62,
                        help='Bits per packed word: even, at most 62. Words per '
                             'determinant is ceil(2*norb / bit_length)')
@@ -275,6 +286,10 @@ def parse_args():
                        help='Save the final wavefunction under this prefix')
 
     args = parser.parse_args()
+    if args.loadname and args.initial_det:
+        # SBD starts from the loaded state and ignores the explicit start.
+        parser.error("--loadname and --initial_det both set the starting vector, and "
+                     "--loadname would win silently: give one of them")
     # Even, and at most 62. 64 overflows the shift in SBD's bitadvance(), reached
     # whenever a placement scheme redistributes determinants. SBD's alpha/beta
     # conversions assume an even word size once a determinant spans two words:
@@ -347,6 +362,17 @@ def main():
     rank = sbd.get_rank()
     size = sbd.get_world_size()
     device = sbd.get_device()
+    # gdb_diag refuses the OpenMP-offload backend itself; refusing here first says
+    # so before any input is read, and covers --device auto resolving to it. Every
+    # rank resolves the same device, so every rank exits.
+    if device == 'gpu-omp':
+        if rank == 0:
+            print(f"ERROR: GDB does not run on the OpenMP-offload backend "
+                  f"(--device {args.device} -> 'gpu-omp'): upstream SBD has no "
+                  f"OpenMP-offload GDB kernels. Use --device cpu, or --device gpu "
+                  f"(NVHPC Thrust, NVIDIA GPUs only; there is no GDB GPU path for AMD "
+                  f"GPUs).", file=sys.stderr)
+        return 2
 
     if rank == 0:
         print("=" * 70)
@@ -448,8 +474,12 @@ def main():
     config.max_nb = args.max_nb
     config.eps = args.eps
     config.max_time = args.max_time
+    # Thrust only; the other backends' GDB_SBD has no such field and needs none.
+    if hasattr(config, 'cpu_subspace'):
+        config.cpu_subspace = bool(args.cpu_subspace)
     config.init = args.init
     config.seed = args.seed
+    config.initial_determinant_bitstring = args.initial_det
     config.do_rdm = 1 if args.rdm_output else 0
     config.bit_length = args.bit_length
     config.carryover_type = args.carryover_type
@@ -479,11 +509,6 @@ def main():
             print("  ERROR: GDB on the Thrust backend requires helper == 1, i.e. "
                   "t_comm_size * b_comm_size == ranks. Give every rank to "
                   "--b_comm_size (with --t_comm_size <= it).")
-        if device == 'gpu-omp':
-            print("  WARNING: the OMP-offload backend has no GDB kernels -- there is "
-                  "no `omp target` code under include/sbd/chemistry/gdb/ at all. "
-                  "This run pins a device and then diagonalizes on the host. Use "
-                  "--device gpu (Thrust, NVIDIA only) for GDB on a GPU.")
         print()
         print("Subspace:")
         print(f"  Source: {source}")
