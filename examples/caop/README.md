@@ -70,6 +70,43 @@ basis yourself from every alpha and beta occupation: `gen_bits.py` fixes only th
 - **Carryover type 2** returns a grown basis; the driver prints this rank's share. Feed
   it to the next run's `--basisfiles` to iterate. The expansion runs on the CPU.
 
+## Green's function
+
+`run_caop_spectrum.py` continues from a saved ground state: upstream's
+[`caop-spectrum`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop-spectrum) app
+in Python, with its option names and CSV output; see
+[its README](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop-spectrum/README.md)
+for the options, conventions and limits. For the 2-site Hubbard file above:
+
+```bash
+# 1. ground state, saved; note the "Ground state energy:" line (10 decimals), not
+#    upstream's rounded "Energy =" log line
+python run_caop_diag.py --hamfile hub2.txt --basisfiles hub2_basis.txt --system_size 4 \
+    --tolerance 1e-10 --savename gs-
+# 2. the N+1 sector, written sorted (here 3 electrons: 2 alpha + 1 beta, or 1 + 2)
+printf '0111\n1011\n1101\n1110\n' > add_basis.txt
+# 3. G+ for alpha site 0 and beta site 0, from the saved state
+python run_caop_spectrum.py --hamfile hub2.txt --sites 4 --loadname gs- \
+    --reference-energy <E0 from step 1> --orbitals 0,2 --channel addition \
+    --extra-detfile add_basis.txt --save-coefficients add.coeff --output add.csv \
+    --omega-min -6 --omega-max 8 --points 141 --eta 0.1
+# 4. a narrower broadening from the saved coefficients, without rerunning
+python run_caop_spectrum.py --read-coefficients add.coeff --output narrow.csv \
+    --omega-min -6 --omega-max 8 --points 281 --eta 0.05
+```
+
+- **Give the whole N±1 sector as `--extra-detfile`.** Upstream builds the excitation
+  basis only from what the operators reach from the state, which is usually not
+  enough. For orbitals of both spins, include both sectors (removing an alpha or a
+  beta electron gives different sectors).
+- **Match the ground-state run:** `--sites` is its `--system_size`, `--bit-length`
+  its `--bit_length`, `--wavefunction-shards` its `--b_comm_size`, and
+  `--scalar-type complex` if it used `--complex`. The files record none of these.
+- **Add both channels** for the full retarded Green's function: run `addition` and
+  `removal` on the same orbitals and grid, and sum.
+- **Only `--hamiltonian-mode on-the-fly` uses the GPU**, as for the ground state; the
+  default `stored` runs on the CPU, and the driver says so.
+
 ## MPI
 
 The ranks form a grid `ranks = h × b × t`. **b** (`--b_comm_size`) splits the basis and
