@@ -7,5 +7,6 @@
 
    sbd
    sbd.sbd_solver
+   sbd.analysis
    sbd.device_config
    sbd.mpi_util
