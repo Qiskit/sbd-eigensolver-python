@@ -34,6 +34,7 @@ import pathlib
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 
 import sbd
@@ -250,15 +251,23 @@ def test_the_tpb_driver_refuses_symmetric_mode_on_an_open_shell(device):
     assert "1 beta electrons, but the beta determinants" in completed.stdout + completed.stderr
 
 
-def test_the_tpb_driver_runs_an_unrestricted_file(device):
+def test_the_tpb_driver_runs_an_unrestricted_file(device, tmp_path):
+    """The energy is exact. With --rdm_output the spin-summed RDMs are saved, as upstream
+    writes them, but no natural-orbital occupations are printed: rdm1 sums alpha and beta
+    blocks given in different orbitals, so its eigenvalues are not occupations."""
     completed = subprocess.run(
         [sys.executable, "run_sbd_diag.py", "--device", device, "--symmetrize_spin", "0",
          "--tolerance", "1e-10", "--fcidump", str(UHF),
-         "--adetfile", str(DATA / "h3_alpha.txt"), "--bdetfile", str(DATA / "h3_beta.txt")],
+         "--adetfile", str(DATA / "h3_alpha.txt"), "--bdetfile", str(DATA / "h3_beta.txt"),
+         "--rdm_output", str(tmp_path / "rdms.npz")],
         cwd=REPO_ROOT / "examples" / "tpb", capture_output=True, text=True, timeout=300)
     assert completed.returncode == 0, completed.stdout[-2000:] + completed.stderr[-2000:]
     energy = float(completed.stdout.split("Ground state energy:")[1].split()[0])
     assert energy == pytest.approx(REFERENCE["e_fci"], abs=1e-8)
+    assert "not printed for a UHF FCIDUMP" in completed.stdout
+    assert "Natural orbital occupations (sorted)" not in completed.stdout
+    rdm1 = np.load(tmp_path / "rdms.npz")["rdm1"]
+    assert np.trace(rdm1) == pytest.approx(sum(REFERENCE["nelec"]), abs=1e-8)
 
 
 # --- multi-rank ------------------------------------------------------------------

@@ -385,13 +385,23 @@ def main():
                 print()
                 print(f"1-RDM trace: {np.trace(rdm1):.6f} "
                       "(should equal the total electron count)")
-                occupations = np.sort(np.linalg.eigvalsh(rdm1))[::-1]
-                print(f"Natural orbital occupations (sorted): "
-                      f"{np.round(occupations, 6).tolist()}")
-                print("  -- occupations near 2 or 0 indicate a "
-                      "single-reference-like orbital; occupations near 1 "
-                      "(or several clustered together) flag multi-reference "
-                      "character / a candidate active space.")
+                if sbd.fcidump_format(args.fcidump) == 'uhf':
+                    # rdm1 sums the alpha and beta blocks, which a UHF file
+                    # gives in different orbitals: its eigenvalues are not
+                    # natural-orbital occupations.
+                    print("Natural orbital occupations: not printed for a UHF "
+                          "FCIDUMP. rdm1/rdm2 are summed over spin, as upstream "
+                          "SBD writes them, and the alpha and beta orbitals "
+                          "differ; for the spin blocks use sbd.tpb_diag, whose "
+                          "one_p_rdm and two_p_rdm are per spin.")
+                else:
+                    occupations = np.sort(np.linalg.eigvalsh(rdm1))[::-1]
+                    print(f"Natural orbital occupations (sorted): "
+                          f"{np.round(occupations, 6).tolist()}")
+                    print("  -- occupations near 2 or 0 indicate a "
+                          "single-reference-like orbital; occupations near 1 "
+                          "(or several clustered together) flag multi-reference "
+                          "character / a candidate active space.")
                 # rdm1 is only non-None when --rdm_output was given (that's
                 # what turns config.do_rdm on above), so this always fires
                 # here -- no separate on/off check needed.

@@ -124,6 +124,10 @@ exact energy).
 - **Builds:** the unrestricted builds are made alongside the restricted ones by
   default; `SBD_BUILD_UHF=0` at install time skips them.
 - **SQD:** the SQD loop (`sbd.sbd_solver.solve_sci`) is restricted only for now.
+- **RDMs:** the drivers' `--rdm_output` saves `rdm1`/`rdm2` summed over spin, as upstream
+  SBD writes them. For a UHF state the alpha and beta orbitals differ, so the per-spin
+  blocks are the useful ones: `sbd.tpb_diag` and `sbd.gdb_diag` return them as
+  `one_p_rdm` and `two_p_rdm`.
 - **Memory:** the unrestricted two-body store is `4*NORB^4` doubles against about
   `NORB^4/8` restricted, about 32 times larger, and like the restricted one it is
   replicated on every rank.
