@@ -58,6 +58,11 @@ python run_gdb_diag.py \
 # list comes back as carryover_det)
 python run_gdb_diag.py --carryover_type 2 --heatbath_cutoff 1e-4
 
+# The same, writing the expanded list as next-000000.txt, ... (one file per rank, as
+# upstream's --carryovername does) and printing the --detfiles list for the next run
+mpirun -np 4 python run_gdb_diag.py --b_comm_size 4 --carryover_type 2 \
+    --heatbath_cutoff 1e-4 --carryovername /tmp/next-
+
 # On GPUs, use --device gpu (Thrust). It requires helper == 1, so every rank has
 # to go to t*b -- which means --b_comm_size is not optional for multi-GPU GDB.
 mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4
