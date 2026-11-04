@@ -1058,9 +1058,11 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             // ---- Thrust: every b shard must hold something, after placement -------
             // Upstream's Thrust mult never returns when a b shard is empty: the ring
             // exchange (MpiSlider::Sync, gdb/helper_thrust.h) waits forever, while the
-            // CPU backend handles the same input. Placement can empty a shard the
-            // input filled: equal-bra-a deals out whole alpha strings, so fewer
-            // distinct alpha strings than b_comm_size leaves ranks with nothing.
+            // CPU backend handles the same input. A seed smaller than b_comm_size (one
+            // Hartree-Fock determinant, say) is the usual way to get there, and
+            // placement can empty a shard the input filled: equal-bra-a deals out
+            // whole alpha strings, so fewer distinct alpha strings than b_comm_size
+            // leaves ranks with nothing.
             if (b_comm_size > 1 && !sbd_all_ranks_ok(det.size() > 0, comm)) {
                 throw std::invalid_argument(
                     std::string("gdb_diag on the gpu (Thrust) backend needs determinants "
@@ -1068,9 +1070,10 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                                 "distribution='")
                     + sbd_det_distribution_name(distribution)
                     + "'), but at least one is empty: upstream's Thrust solve then waits "
-                      "forever. Use fewer shards (a smaller b_comm_size), "
-                      "determinant_distribution='input' with a non-empty slice per rank, "
-                      "or device='cpu'");
+                      "forever. A subspace smaller than b_comm_size, such as a single "
+                      "starting determinant, cannot fill every shard. Use fewer shards "
+                      "(a smaller b_comm_size), determinant_distribution='input' with a "
+                      "non-empty slice per rank, or device='cpu'");
             }
 #endif
 

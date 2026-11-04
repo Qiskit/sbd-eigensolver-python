@@ -832,23 +832,6 @@ def gdb_diag(fcidump, det, sbd_data,
     """
     _ensure_initialized()
     backend = get_backend(device)
-    # The Thrust GDB solve never returns when a b_comm shard is empty: every rank
-    # waits in its ring exchange (MpiSlider::Sync, gdb/helper_thrust.h) whatever the
-    # placement, while the CPU backend handles the same input. A seed smaller than
-    # b_comm_size -- one Hartree-Fock determinant, say -- is the usual way to get
-    # there, so refuse it up front rather than hang until the job's time limit.
-    if (getattr(backend, "__name__", "").endswith("_core_gpu_thrust")
-            and getattr(sbd_data, "b_comm_size", 1) > 1 and _global_comm is not None):
-        import numpy as np
-
-        empty = _global_comm.allreduce(int(np.asarray(det).shape[0] == 0))
-        if empty:
-            raise ValueError(
-                "gdb_diag on the gpu (Thrust) backend needs determinants on every "
-                f"b_comm shard, but {empty} of the ranks hold "
-                "none: upstream's Thrust solve then waits forever instead of failing. "
-                "Use b_comm_size 1 (or fewer shards) until the subspace has at least "
-                "b_comm_size determinants, or the cpu backend")
     return backend.gdb_diag(
         _global_comm, sbd_data, fcidump, det, loadname, savename,
         determinant_distribution, determinant_grid_a, determinant_grid_b,

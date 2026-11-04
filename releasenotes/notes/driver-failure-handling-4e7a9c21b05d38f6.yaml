@@ -9,10 +9,13 @@ features:
     while the other ranks waited for it in a collective until the job's time limit.
     Ctrl-C is reported in one line.
   - |
-    :func:`sbd.gdb_diag` on the ``gpu`` (Thrust) backend raises ``ValueError`` when a
-    ``b_comm`` shard is empty, instead of waiting forever: upstream's Thrust solve
-    never returns in that case. A one-determinant start over several GPUs is the
-    usual way to get there.
+    :func:`sbd.gdb_diag` on the ``gpu`` (Thrust) backend raises ``ValueError`` on every
+    rank when a ``b_comm`` shard is empty after placement, instead of waiting forever:
+    upstream's Thrust solve never returns in that case. A one-determinant start over
+    several GPUs is the usual way to get there. Placement can also empty a shard that
+    the input filled: ``equal-bra-a``, the default, deals out whole alpha strings, so a
+    subspace with fewer distinct alpha strings than ``b_comm_size`` leaves ranks with
+    nothing.
   - |
     ``examples/tpb/run_sbd_diag.py`` and ``examples/gdb/run_gdb_diag.py`` check that
     the directory for ``--savename`` exists before solving. SBD does not report a file

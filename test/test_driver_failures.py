@@ -19,10 +19,11 @@
 The drivers run in a **subprocess**, as a user runs them, so their ``__main__`` and
 argument handling are exercised; they test the backend ``SBD_TEST_DEVICE`` names
 (cpu when unset). The multi-rank cases are ``mpi``-marked: under ``tox -e mpi``, rank 0
-starts the driver under its own ``mpirun -n 2``, with the launching job's
-process-manager variables removed, and every rank checks the outcome. That a failure
-on one rank aborts the job is ``test_mpi_util.py``'s, since every driver starts
-through ``sbd.mpi_util.run``.
+starts the driver under its own ``mpirun -n $SBD_TEST_NPROCS``, with the launching job's
+process-manager variables removed, and every rank checks the outcome. A driver has to
+run in its own job: a refusal ends it through ``sbd.mpi_util.run``, which aborts. That
+a failure on one rank aborts the job is ``test_mpi_util.py``'s, since every driver
+starts through ``sbd.mpi_util.run``.
 """
 
 from __future__ import annotations
@@ -50,7 +51,18 @@ def _device(device_config):
     return device_config.device if device_config is not None else "cpu"
 
 
-def _driver_args(script, device, tmp_path, ranks=2):
+def _nprocs():
+    """The rank count for a driver started under its own launcher: ``SBD_TEST_NPROCS``,
+    as ``tox -e mpi`` sets it (default 2).
+
+    The inner job runs while the test's own ranks wait, so the machine holds twice that.
+    CI keeps the default 2, which an MPI that will not oversubscribe a small runner
+    (Open MPI) can still start.
+    """
+    return int(os.environ.get("SBD_TEST_NPROCS", "2"))
+
+
+def _driver_args(script, device, tmp_path, ranks):
     """Arguments for a short h2o run of ``script``, its grid spread over ``ranks``."""
     fcidump = str(H2O / "fcidump.txt")
     alpha = str(H2O / "h2o-1em3-alpha.txt")
@@ -144,8 +156,11 @@ def test_tpb_refuses_a_state_on_a_grid_with_more_blocks_than_files(device_config
 
     One more block than that and SBD calls MPI_Abort with status 0, which looks like
     success, so the driver refuses it. A smaller grid is allowed, and gives the same
-    energy as the run that saved the state.
+    energy as the run that saved the state. The driver runs on ``SBD_TEST_NPROCS``
+    ranks; every rank reads the same variable, so all skip together below two.
     """
+    if _nprocs() < 2:
+        pytest.skip("needs SBD_TEST_NPROCS >= 2")
     _on_rank_zero(lambda mpirun: _check_tpb_layouts(device_config, shared_dir, mpirun))
 
 
@@ -153,67 +168,75 @@ def _check_tpb_layouts(device_config, tmp_path, mpirun):
     script = "tpb/run_sbd_diag.py"
     device = _device(device_config)
     tight = ["--tolerance", "1e-8"]
-    saved = _run(script, _driver_args(script, device, tmp_path) + tight
+    n = _nprocs()
+    saved = _run(script, _driver_args(script, device, tmp_path, ranks=n) + tight
                  + ["--savename", str(tmp_path / "s-")],
-                 env=_clean_env(), launcher=(mpirun, "-n", "2"))
+                 env=_clean_env(), launcher=(mpirun, "-n", str(n)))
     assert saved.returncode == 0, saved.stderr[-2000:]
     energy = [l for l in saved.stdout.splitlines() if "Ground state energy" in l]
 
-    # Two files, one block: allowed.
+    # N files, one block: allowed.
     smaller = _run(script, _driver_args(script, device, tmp_path, ranks=1) + tight
                    + ["--loadname", str(tmp_path / "s-")])
     assert smaller.returncode == 0, smaller.stderr[-2000:]
     assert [l for l in smaller.stdout.splitlines() if "Ground state energy" in l] == energy
 
-    # One file, two blocks: refused. Two ranks, not more, so that an MPI that will
-    # not oversubscribe a small machine (Open MPI on a CI runner) can start it.
+    # One file, N blocks: refused.
     one = _run(script, _driver_args(script, device, tmp_path, ranks=1) + tight
                + ["--savename", str(tmp_path / "one-")])
     assert one.returncode == 0, one.stderr[-2000:]
-    refused = _run(script, _driver_args(script, device, tmp_path)
+    refused = _run(script, _driver_args(script, device, tmp_path, ranks=n)
                    + ["--loadname", str(tmp_path / "one-")],
-                   env=_clean_env(), launcher=(mpirun, "-n", "2"))
+                   env=_clean_env(), launcher=(mpirun, "-n", str(n)))
     assert refused.returncode != 0
     assert "at most 1" in refused.stderr
 
 
 @pytest.mark.mpi
 def test_gdb_refuses_a_state_on_fewer_shards_than_files(device_config, shared_dir):
-    """A GDB state loaded onto fewer shards than files starts Davidson from part of it."""
+    """A GDB state loaded onto fewer shards than files starts Davidson from part of it.
+
+    Saved on ``SBD_TEST_NPROCS`` shards and loaded onto one.
+    """
+    if _nprocs() < 2:
+        pytest.skip("needs SBD_TEST_NPROCS >= 2")
     _on_rank_zero(lambda mpirun: _check_gdb_layouts(device_config, shared_dir, mpirun))
 
 
 def _check_gdb_layouts(device_config, tmp_path, mpirun):
     script = "gdb/run_gdb_diag.py"
     device = _device(device_config)
-    saved = _run(script, _driver_args(script, device, tmp_path)
+    n = _nprocs()
+    saved = _run(script, _driver_args(script, device, tmp_path, ranks=n)
                  + ["--savename", str(tmp_path / "g-")],
-                 env=_clean_env(), launcher=(mpirun, "-n", "2"))
+                 env=_clean_env(), launcher=(mpirun, "-n", str(n)))
     assert saved.returncode == 0, saved.stderr[-2000:]
     refused = _run(script, _driver_args(script, device, tmp_path, ranks=1)
                    + ["--loadname", str(tmp_path / "g-")])
     assert refused.returncode != 0
-    assert "has 2 files but --b_comm_size is 1" in refused.stderr
+    assert f"has {n} files but --b_comm_size is 1" in refused.stderr
 
 
 @pytest.mark.mpi
 def test_thrust_gdb_refuses_an_empty_shard(backend):
     """Upstream's Thrust GDB solve never returns when a shard is empty; refuse instead.
 
-    Runs in the MPI job (``tox -e mpi``), on two ranks, one of which holds nothing.
-    Through the ``backend`` fixture, like the rest of the suite, so this test does
-    not initialize the package itself and leave a different default device for the
-    tests after it.
+    Runs in the MPI job (``tox -e mpi``), on its ranks: rank 0 passes one determinant
+    and the others none, the one-determinant start that usually gets there. Through
+    the ``backend`` fixture, like the rest of the suite, so this test does not
+    initialize the package itself and leave a different default device for the tests
+    after it.
     """
     if "thrust" not in getattr(backend, "__name__", ""):
         pytest.skip("the Thrust backend only (SBD_TEST_DEVICE=gpu)")
     from mpi4py import MPI
 
-    if MPI.COMM_WORLD.Get_size() != 2:
-        pytest.skip("needs exactly two ranks")
+    size = MPI.COMM_WORLD.Get_size()
+    if size < 2:
+        pytest.skip("needs two ranks or more")
     fcidump = backend.LoadFCIDump(str(H2O / "fcidump.txt"))
     config = backend.GDB_SBD()
-    config.b_comm_size, config.bit_length = 2, 62
+    config.b_comm_size, config.bit_length = size, 62
     strings = ["0" * 38 + "1" * 10] if MPI.COMM_WORLD.Get_rank() == 0 else []
     det = sbd.from_strings(strings, 62, 48) if strings else np.zeros((0, 1), np.uint64)
     with pytest.raises(ValueError, match="needs determinants on every"):
