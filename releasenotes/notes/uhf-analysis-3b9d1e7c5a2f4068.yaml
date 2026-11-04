@@ -2,7 +2,6 @@
 features:
   - |
     :func:`sbd.analysis.variance` now accepts a state solved with an unrestricted (UHF)
-    FCIDUMP, such as a broken-symmetry UHF one: its stochastic method uses the
-    unrestricted (``-D_UHF``) build of upstream SBD's evaluator, as upstream's
-    ``gdb-stat-evaluator-uhf`` does. The exact method supports restricted FCIDUMPs only
-    and says so for an unrestricted one.
+    FCIDUMP: its stochastic method uses the unrestricted (``-D_UHF``) build of upstream
+    SBD's evaluator, as upstream's ``gdb-stat-evaluator-uhf`` does. The exact method
+    supports restricted FCIDUMPs only and says so for an unrestricted one.

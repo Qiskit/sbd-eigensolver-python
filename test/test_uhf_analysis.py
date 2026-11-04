@@ -17,8 +17,8 @@ Two cases:
 - Upstream SBD's own UHF fixture for its ``gdb-stat-evaluator-uhf``
   (``apps/gdb-stat-evaluator/tests/make_cli_fixture.cc``). It never reaches a beta
   index, so it is also a valid restricted file; the test pins how it is classified.
-- A broken-symmetry UHF state, as BS-UHF-SQD starts from: stretched H4, whose UHF
-  solution puts the alpha and beta electrons on alternate atoms. Its full space through
+- A UHF state whose alpha and beta orbitals differ: stretched H4, started from a guess
+  that puts the alpha and beta electrons on alternate atoms. Its full space through
   the unrestricted solver must give PySCF's FCI energy, which no orbital basis changes,
   and over a subspace its variance and PT2 are checked against the exact values from
   PySCF's ``fci.direct_uhf`` applying the same integrals, so the reference does not
@@ -150,7 +150,7 @@ def test_upstream_uhf_fixture_is_ambiguous_and_read_as_restricted(backend, tmp_p
     integrals in one, spin-free ones in the other). SBD's layout check marks a file
     unrestricted only when an index exceeds NORB, so it reads this one as restricted,
     and stating ``uhf=True`` is refused rather than overriding that. A file meant as
-    unrestricted therefore has to reach a beta index; the broken-symmetry case below
+    unrestricted therefore has to reach a beta index; the stretched H4 case below
     does, and is the one that checks unrestricted results.
     """
     fcidump = tmp_path / "FCIDUMP"
@@ -161,17 +161,18 @@ def test_upstream_uhf_fixture_is_ambiguous_and_read_as_restricted(backend, tmp_p
         sbd.LoadFCIDump(str(fcidump), uhf=True)
 
 
-def test_broken_symmetry_uhf_state(uhf_available, tmp_path):
-    """Stretched H4 in broken-symmetry UHF orbitals, as BS-UHF-SQD starts from."""
+def test_uhf_state_with_distinct_alpha_beta_orbitals(uhf_available, tmp_path):
+    """Stretched H4 in UHF orbitals whose alpha and beta orbitals differ."""
     mol = gto.M(atom="; ".join(f"H 0 0 {2.0 * i:.1f}" for i in range(4)), basis="sto-3g",
                 spin=0, verbose=0)
     mf = scf.UHF(mol)
     dm_a, dm_b = mf.get_init_guess()
-    # Break the symmetry: alpha on atoms 0 and 2, beta on 1 and 3.
+    # Start with alpha on atoms 0 and 2, beta on 1 and 3, so that UHF does not converge
+    # to the restricted solution, where the alpha and beta orbitals would be the same.
     for atom, (da, db) in enumerate(((1, 0), (0, 1), (1, 0), (0, 1))):
         dm_a[atom, atom], dm_b[atom, atom] = da, db
     mf.kernel(dm0=(dm_a, dm_b))
-    assert abs(mf.spin_square()[0]) > 0.5, "the UHF solution must break spin symmetry"
+    assert abs(mf.spin_square()[0]) > 0.5, "the UHF alpha and beta orbitals must differ"
     ca, cb = mf.mo_coeff
     norb, nelec = mol.nao, mol.nelec
     hcore = scf.hf.get_hcore(mol)
