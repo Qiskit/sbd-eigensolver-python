@@ -46,7 +46,7 @@ from pyscf import ao2mo, fci, gto, scf  # noqa: E402
 from pyscf.fci import cistring  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "examples" / "uhf"))
+sys.path.insert(0, str(REPO / "examples" / "tools"))
 from make_uhf_fcidump import write_uhf_fcidump  # noqa: E402
 
 BITS = 20

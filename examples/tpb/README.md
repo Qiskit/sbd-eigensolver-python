@@ -7,6 +7,10 @@ Examples demonstrating SBD's capabilities for quantum chemistry calculations.
 These examples all use TPB, where the subspace is the Cartesian product of an alpha and
 a beta determinant list.
 
+The FCIDUMP may be restricted (RHF, ROHF) or unrestricted (UHF): `sbd.tpb_diag`,
+`sbd.gdb_diag` and the drivers read its layout and use the matching build of SBD, with no
+option to set. See [Unrestricted (UHF) FCIDUMPs](#unrestricted-uhf-fcidumps).
+
 ## Examples
 
 ### 1. run_sbd_diag.py — Standalone SBD Diagonalization
@@ -474,6 +478,55 @@ reports what the current process has actually imported.
 
 `'cpu'` and `'gpu'` (Thrust) *can* share a process — Thrust does not route its device
 work through OpenMP, so it has no equivalent interaction.
+
+## Unrestricted (UHF) FCIDUMPs
+
+TPB and GDB take a UHF FCIDUMP through the same calls and drivers as a restricted one.
+The package reads the file's layout and uses upstream SBD built with `-D_UHF`, which it
+builds next to the `cpu` and `gpu` backends.
+
+**The layout** is upstream SBD's own:
+
+- `NORB` stays the number of **spatial** orbitals.
+- Integrals are indexed by interleaved, 1-based **spin** orbitals: alpha of spatial
+  orbital `p` (0-based) is `2p+1`, beta is `2p+2`, so indices run to `2*NORB`.
+- One-body lines are `h i j 0 0`; two-body lines are chemist-notation `(ij|kl)` with `i, j`
+  of one spin and `k, l` of one spin, each unique integral written once.
+
+A restricted file indexes spatial orbitals, up to `NORB`, so the largest index tells the
+two apart; `sbd.fcidump_format(path)` reports `'uhf'` or `'restricted'`. A file that fits
+neither is refused: an index above `2*NORB`, indices above `NORB` whose pair mixes spins,
+or a `UHF=`/`IUHF=` header flag, which marks another program's layout.
+
+**Making one.** [`../tools/make_uhf_fcidump.py`](../tools/make_uhf_fcidump.py) writes a
+UHF FCIDUMP with PySCF (which you install): its `write_uhf_fcidump` takes the spin blocks
+as `pyscf.ao2mo.general` gives them. As an example, the NH2 radical in 6-31G, with every
+alpha and beta string (920,205 determinants) and its exact energy:
+
+```bash
+python ../tools/make_uhf_fcidump.py nh2 --outdir nh2
+python run_sbd_diag.py --fcidump nh2/nh2_uhf.fcidump --symmetrize_spin 0 \
+    --adetfile nh2/nh2_alpha.txt --bdetfile nh2/nh2_beta.txt --tolerance 1e-8
+# Ground state energy: the e_fci in nh2/reference.json
+```
+
+`--symmetrize_spin 0` is needed for an open-shell system, restricted or not: the default
+reuses the alpha list as the beta one, which holds the wrong number of electrons. The
+driver says so if it is left out.
+
+**Limits:**
+
+- **Backends:** `cpu` and `gpu` (Thrust). `gpu-omp` has no unrestricted build and refuses
+  a UHF file; `sbd.has_uhf(device)` reports whether a device has one. `SBD_BUILD_UHF=0`
+  at install time skips the unrestricted builds.
+- **SQD:** the SQD loop (`sbd.sbd_solver.solve_sci`) is restricted only for now.
+- **RDMs:** `--rdm_output` saves `rdm1`/`rdm2` summed over spin, as upstream SBD writes
+  them. The alpha and beta orbitals of a UHF state differ, so the per-spin blocks are the
+  useful ones: `sbd.tpb_diag` and `sbd.gdb_diag` return them as `one_p_rdm`/`two_p_rdm`.
+- **Variance:** [`../analysis/variance.py`](../analysis/README.md) detects a UHF file and
+  uses the stochastic method; the exact method is restricted only.
+- **Memory:** the unrestricted two-body store is `4*NORB^4` doubles, about 32 times the
+  restricted one, and like it is replicated on every rank.
 
 ## Available Test Data
 

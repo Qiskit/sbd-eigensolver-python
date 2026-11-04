@@ -176,7 +176,8 @@ functions as a restricted one. Each diagonalization reads the layout from the
 integrals and uses the matching build: upstream SBD compiled with ``-D_UHF``, which
 the package builds alongside the ``cpu`` and ``gpu`` backends unless
 ``SBD_BUILD_UHF=0``. ``gpu-omp`` has no unrestricted build and refuses such a file.
-``examples/uhf`` has data, a generator, and the drivers run on it.
+``examples/tools/make_uhf_fcidump.py`` writes such a file with PySCF, and the TPB
+example README covers the layout and running the drivers on it.
 
 .. autofunction:: fcidump_format
 .. autofunction:: has_uhf

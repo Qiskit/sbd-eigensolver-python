@@ -18,11 +18,10 @@ features:
     ``uhf=True`` or ``uhf=False`` to state the layout, raising if the file is
     the other one.
   - |
-    ``examples/uhf`` provides unrestricted data -- the NH2 radical, a UHF
-    FCIDUMP with its ROHF twin, the full determinant space and the exact
-    energy -- and ``make_uhf_fcidump.py``, which generates such files from
-    PySCF and whose ``write_uhf_fcidump`` writes any spin-resolved integrals in
-    SBD's layout.
+    ``examples/tools/make_uhf_fcidump.py`` writes unrestricted FCIDUMPs from
+    PySCF -- for example the NH2 radical, with its ROHF twin, the full
+    determinant space and the exact energy -- and its ``write_uhf_fcidump``
+    writes any spin-resolved integrals in SBD's layout.
 upgrade:
   - |
     Installing builds the CPU and Thrust extensions twice, once restricted and

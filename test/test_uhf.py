@@ -18,7 +18,7 @@ wrong build loads and diagonalizes without complaint and returns a wrong energy.
 These tests pin the three things standing between a user and that: the layout
 classification, the choice of build from it, and the guard in each binding.
 
-The data is the H3 doublet in ``test/data/uhf`` (``examples/uhf/make_uhf_fcidump.py``
+The data is the H3 doublet in ``test/data/uhf`` (``examples/tools/make_uhf_fcidump.py``
 wrote it): one geometry, two FCIDUMPs, UHF orbitals in the unrestricted layout and
 ROHF orbitals in the restricted one. The full-space energy does not depend on the
 orbitals, so both must give the same exact number -- which a misread layout would
@@ -317,26 +317,3 @@ def test_unrestricted_tpb_is_exact_under_mpi(device):
     fcidump = sbd.LoadFCIDump(UHF)
     energy = sbd.tpb_diag(fcidump, _half(ALPHA), _half(BETA), _tpb())["energy"]
     assert energy == pytest.approx(REFERENCE["e_fci"], abs=1e-9)
-
-
-# --- the example data --------------------------------------------------------------
-
-NH2 = REPO_ROOT / "examples" / "uhf" / "nh2"
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize("layout", ["uhf", "rohf"])
-def test_nh2_example_full_space_is_exact(device, layout):
-    """The example's 920,205 determinants, both layouts, against PySCF's FCI."""
-    reference = json.loads((NH2 / "reference.json").read_text())
-    norb = reference["norb"]
-    bits = 32           # 26 spin orbitals in one word, the width the suite shares
-
-    def half(name):
-        lines = (NH2 / f"nh2_{name}.txt").read_text().split()
-        return sbd.sort_bitarray([sbd.from_string(s, bits, norb) for s in lines])
-
-    fcidump = sbd.LoadFCIDump(NH2 / f"nh2_{layout}.fcidump")
-    config = _tpb(eps=1e-8, bit_length=bits)
-    energy = sbd.tpb_diag(fcidump, half("alpha"), half("beta"), config)["energy"]
-    assert energy == pytest.approx(reference["e_fci"], abs=1e-7)

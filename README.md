@@ -32,7 +32,7 @@ constraints. Reach for GDB when the subspace is not a product.
 - MPI parallelization
 - Integration with [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) for SQD workflows
 - **Unrestricted (UHF) integrals** through the same TPB and GDB calls, detected from
-  the FCIDUMP — see [`examples/uhf/README.md`](examples/uhf/README.md)
+  the FCIDUMP — see [`examples/tpb/README.md`](examples/tpb/README.md#unrestricted-uhf-fcidumps)
 - **Energy variance and Epstein–Nesbet PT2** of saved TPB and GDB states
   (`sbd.analysis`), estimated with **MPI + OpenMP across multiple nodes and cores** —
   see [Energy variance and PT2](#energy-variance-and-pt2)

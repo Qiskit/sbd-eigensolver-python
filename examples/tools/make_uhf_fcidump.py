@@ -16,8 +16,8 @@
 Write unrestricted (UHF) FCIDUMPs in SBD's layout, with a restricted twin and
 exact references.
 
-    python make_uhf_fcidump.py h3  --outdir ../../test/data/uhf
-    python make_uhf_fcidump.py nh2 --outdir nh2
+    python make_uhf_fcidump.py nh2 --outdir nh2                   # an example to run on
+    python make_uhf_fcidump.py h3  --outdir ../../test/data/uhf   # the unit tests' data
 
 For each system this writes, from one PySCF run:
 
@@ -39,9 +39,11 @@ are chemist-notation ``(ij|kl)`` with ``i, j`` of one spin and ``k, l`` of one
 spin, each unique integral written once: SBD fills the permutations itself, and
 the ``(alpha alpha|beta beta)`` block fills ``(beta beta|alpha alpha)``.
 
-Requires PySCF. The files are committed rather than regenerated in CI: a UHF
-calculation can land on a different solution across PySCF versions, which
-would change the integrals (though not the FCI energy).
+Requires PySCF. The unit tests' H3 files are committed rather than regenerated in
+CI: a UHF calculation can land on a different solution across PySCF versions,
+which would change the integrals (though not the FCI energy).
+
+To write integrals of your own, import ``write_uhf_fcidump`` from this script.
 """
 
 import argparse
