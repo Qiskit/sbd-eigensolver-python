@@ -83,12 +83,12 @@ and the energy from step 1 as `--energy`:
 cd ../analysis
 
 # h2o
-mpirun -np 32 -x OMP_NUM_THREADS=2 python variance.py \
+OMP_NUM_THREADS=2 mpirun -np 32 python variance.py \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
     --state /path/to/run1/h2o- --bit_length 20 --energy -76.2359466308
 
 # Fe4S4
-mpirun -np 32 -x OMP_NUM_THREADS=2 python variance.py \
+OMP_NUM_THREADS=2 mpirun -np 32 python variance.py \
     --fcidump ../../vendor/sbd-upstream/apps/chemistry_gdb_selected_basis_diagonalization/fcidump_Fe4S4.txt \
     --state /path/to/run2/fe4s4- --bit_length 62 --energy <the Fe4S4 run's energy>
 ```
@@ -170,9 +170,9 @@ mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 --fcidump $FCID
 
 # Variance and PT2 of both states
 cd $SBD/examples/analysis
-mpirun -np 32 -x OMP_NUM_THREADS=2 python variance.py --fcidump $FCIDUMP \
+OMP_NUM_THREADS=2 mpirun -np 32 python variance.py --fcidump $FCIDUMP \
     --state /path/to/fe4s4/tpb/next- --bit_length 20 --samples 5000 --batches 5 --json tpb.json
-mpirun -np 32 -x OMP_NUM_THREADS=2 python variance.py --fcidump $FCIDUMP \
+OMP_NUM_THREADS=2 mpirun -np 32 python variance.py --fcidump $FCIDUMP \
     --state /path/to/fe4s4/gdb/next- --bit_length 62 --samples 5000 --batches 5 --json gdb.json
 ```
 
