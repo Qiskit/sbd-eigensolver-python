@@ -53,8 +53,12 @@ Fields shared by ``TPB_SBD`` and ``GDB_SBD``:
    * - ``max_time``
      - Wall-clock limit, in seconds.
    * - ``init``
-     - Starting vector: ``0`` puts unit weight on the first determinant of the basis,
-       ``1`` is random.
+     - Starting vector: ``0`` puts unit weight on the first determinant of the basis
+       in sorted order, ``1`` is random. Davidson only reaches states its start
+       overlaps with, so a poor start converges on a higher state without any error.
+       To choose the start, set the ``initial_*`` fields below. The start comes from,
+       in order: a state loaded with ``loadname``, then the ``initial_*`` fields, then
+       ``init``.
    * - ``seed``
      - Seed for the random starting vector; used only with ``init = 1``.
    * - ``do_rdm``
@@ -91,6 +95,13 @@ Fields of ``TPB_SBD`` only:
      - ``1`` ranks half-determinants by marginal weight; ``2`` also adds their single
        excitations; ``3`` ranks whole determinants by amplitude, then adds single
        excitations.
+   * - ``initial_adeterminant_bitstring``, ``initial_bdeterminant_bitstring``
+     - Start Davidson with unit weight on this alpha string times this beta string
+       (``NORB`` characters each, character ``NORB - 1 - i`` is orbital ``i``, so the
+       rightmost is orbital 0), instead of ``init``. Empty
+       (the default) uses ``init``. An empty beta string means the alpha one; beta
+       cannot be set alone. Each string must occur exactly once in its list, or the
+       solve raises ``ValueError``.
    * - ``do_shuffle``
      - Shuffle the determinants loaded from file before use.
    * - ``dump_matrix_form_wf``
@@ -127,6 +138,12 @@ Fields of ``GDB_SBD`` only:
        the parents the expansion needs.
    * - ``heatbath_batch_size``
      - Number of candidates processed per batch during expansion.
+   * - ``initial_determinant_bitstring``
+     - Start Davidson with unit weight on this full determinant (``2*NORB``
+       characters; from the right, bit ``2*i`` is alpha orbital ``i`` and bit
+       ``2*i + 1`` beta orbital ``i``, as in :func:`from_strings`), instead of
+       ``init``. Empty (the default) uses ``init``. It must occur exactly once across
+       all shards, or the solve raises ``ValueError``.
 
 Inputs
 ======

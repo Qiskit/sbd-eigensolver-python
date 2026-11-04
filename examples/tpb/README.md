@@ -50,8 +50,10 @@ alpha/beta determinant sets instead; `--bdetfile` is otherwise ignored
 **Key options:** `--device`, `--fcidump`, `--adetfile`, `--bdetfile`,
 `--symmetrize_spin`, `--adet_comm_size`, `--bdet_comm_size`,
 `--task_comm_size`, `--method`, `--tolerance`, `--iteration`,
-`--rdm_output`. (These keep their unprefixed names here: this driver *is*
-SBD. The SQD drivers prefix them `--sbd_*`.) Run `python run_sbd_diag.py
+`--initial_adet`/`--initial_bdet` (start Davidson from this alpha x beta
+determinant instead of the first one in sorted order; it must be in the
+subspace), `--rdm_output`. (These keep their unprefixed names here: this driver
+*is* SBD. The SQD drivers prefix them `--sbd_*`.) Run `python run_sbd_diag.py
 --help` for the full list.
 
 **Requirements:** `sbd`, `mpi4py`

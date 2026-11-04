@@ -64,10 +64,14 @@ mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4
 
 # One rank, one GPU is the exception: b=1 already leaves helper == 1.
 python run_gdb_diag.py --device gpu
+
+# Start Davidson from this determinant (2*NORB bits, in the order below) instead
+# of the first one in sorted order. It must be in the subspace
+python run_gdb_diag.py --initial_det <bitstring>
 ```
 
 The determinant bit order is the one the upstream app documents: reading from the
-right, alpha orbital 1, beta orbital 1, alpha orbital 2, and so on — i.e. bit
+right, alpha orbital 0, beta orbital 0, alpha orbital 1, and so on — i.e. bit
 `2*i` is alpha orbital `i` and bit `2*i + 1` is beta orbital `i`.
 
 ## run_gdb_heatbath.py — grow the subspace, round after round
