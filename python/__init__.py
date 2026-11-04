@@ -715,7 +715,8 @@ def tpb_diag(fcidump, adet, bdet, sbd_data,
         package's own SQD integration uses.
 
         ``savename`` instead writes one file per b_comm position,
-        ``f"{savename}{rank_b:06d}.bin"``, each holding only **that rank's
+        ``f"{savename}{rank_b:06d}"`` (no extension, unlike GDB's ``.bin``), each
+        holding only **that rank's
         block** of the subspace: three ``size_t`` headers
         (``adet_range``, ``bdet_range``, ``det_length``), then that block's
         alpha and then beta determinant words, then

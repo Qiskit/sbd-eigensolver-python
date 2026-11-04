@@ -275,7 +275,7 @@ Neither return dict holds the wavefunction amplitudes. Two separate mechanisms w
 | | `sbd_data.dump_matrix_form_wf` | `savename` argument |
 |---|---|---|
 | Writes | the full `len(adet) × len(bdet)` subspace, gathered onto one rank | one file per b_comm position, each holding **only that rank's block** |
-| Path | exactly what you set | `f"{savename}{rank_b:06d}.bin"` |
+| Path | exactly what you set | `f"{savename}{rank_b:06d}"` (no extension) |
 | Header | **none** | three `size_t` (`adet_range`, `bdet_range`, `det_length`), then that block's alpha and beta determinant words |
 | Payload | `float64`, row-major over α×β | `adet_range × bdet_range` `float64` |
 | Intended for | analysis | checkpoint/restart, paired with `loadname` |

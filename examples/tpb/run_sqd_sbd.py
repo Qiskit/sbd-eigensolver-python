@@ -42,6 +42,7 @@ Multi-node note:
 import argparse
 import json
 import re
+import sys
 import time
 from functools import partial
 from pathlib import Path
@@ -450,6 +451,24 @@ def main():
                   "(a checkpoint written under --sbd_carryover_type != 0 holds "
                   "SBD's carryover, not the whole solved subspace)")
     include_configurations = (include_a, include_b) if (include_a or include_b) else None
+    if rank == 0 and args.max_dim and include_configurations:
+        # include_configurations are always kept, so at --max_dim they take the whole
+        # budget: no sampled or recovered string can enter, and every iteration
+        # re-solves the same subspace. Easy to hit by resuming a run that had reached
+        # its cap.
+        n_a, n_b = len(set(include_a)), len(set(include_b))
+        full = [name for name, n in (("alpha", n_a), ("beta", n_b)) if n >= args.max_dim]
+        if full:
+            if len(full) == 2:
+                effect = (f"no new strings can enter either sector, so every iteration "
+                          f"will repeat the same subspace")
+            else:
+                effect = (f"no new {full[0]} strings can enter, so the subspace can "
+                          f"grow only in the other sector")
+            print(f"WARNING: {n_a} alpha / {n_b} beta strings are carried in, and the "
+                  f"{' and '.join(full)} sector{'s are' if len(full) == 2 else ' is'} "
+                  f"already at --max_dim {args.max_dim} (a cap per sector): {effect}."
+                  "\n", flush=True)
 
     if args.counts:
         bit_array = load_counts_as_bitarray(args.counts, norb * 2)
@@ -652,4 +671,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from sbd.mpi_util import run
+    sys.exit(run(main))
