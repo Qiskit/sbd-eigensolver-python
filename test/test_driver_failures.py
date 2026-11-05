@@ -202,6 +202,8 @@ def test_gdb_refuses_a_state_on_fewer_shards_than_files(device_config, shared_di
     """
     if _nprocs() < 2:
         pytest.skip("needs SBD_TEST_NPROCS >= 2")
+    if _device(device_config) == "gpu-omp":
+        pytest.skip("the GDB drivers refuse the OpenMP-offload backend before this check")
     _on_rank_zero(lambda mpirun: _check_gdb_layouts(device_config, shared_dir, mpirun))
 
 
