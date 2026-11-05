@@ -49,6 +49,14 @@ def shared_dir():
         shutil.rmtree(path, ignore_errors=True)
 
 
+def _skip_gdb_on_offload(device_config):
+    """Skip a GDB case on the OpenMP-offload backend, where both GDB drivers refuse to
+    run (test_gdb_drivers.py checks that refusal). Every rank reads the same setting,
+    so under MPI they all skip together."""
+    if _device(device_config) == "gpu-omp":
+        pytest.skip("the GDB drivers refuse the OpenMP-offload backend")
+
+
 def _device(device_config):
     """``SBD_TEST_DEVICE``, else cpu, as in ``test_wide_orbitals.py``."""
     return device_config.device if device_config is not None else "cpu"
@@ -147,6 +155,7 @@ def _check_gdb_carryover_files_start_the_next_run(tmp_path, device, launcher=(),
 @pytest.mark.parametrize("carryover_type", [1, 2])
 def test_gdb_carryover_files_start_the_next_run_standalone(tmp_path, device_config,
                                                            carryover_type):
+    _skip_gdb_on_offload(device_config)
     _check_gdb_carryover_files_start_the_next_run(tmp_path, _device(device_config),
                                                   carryover_type=carryover_type)
 
@@ -154,11 +163,13 @@ def test_gdb_carryover_files_start_the_next_run_standalone(tmp_path, device_conf
 @pytest.mark.mpi
 def test_gdb_carryover_files_start_the_next_run_mpi(shared_dir, device_config):
     """Type 2 sharded over SBD_TEST_NPROCS ranks, one file per rank."""
+    _skip_gdb_on_offload(device_config)
     _on_rank_zero(_check_gdb_carryover_files_start_the_next_run, shared_dir, device_config)
 
 
 def test_gdb_type_1_files_are_refused_over_several_shards(tmp_path, device_config):
     """Each shard keeps its own selection, so the files would overlap and not reload."""
+    _skip_gdb_on_offload(device_config)
     driver = REPO_ROOT / "examples" / "gdb" / "run_gdb_diag.py"
     done = subprocess.run([sys.executable, driver.name, "--device", _device(device_config),
                            "--fcidump", str(H2O_DIR / "fcidump.txt"), "--b_comm_size", "2",
@@ -178,6 +189,8 @@ def test_gdb_type_1_files_are_refused_over_several_shards(tmp_path, device_confi
 ], ids=["no-type", "no-directory"])
 def test_carryover_files_are_refused_before_the_solve(tmp_path, device_config, script, flag,
                                                       extra, path, message):
+    if script.startswith("gdb/"):
+        _skip_gdb_on_offload(device_config)
     driver = REPO_ROOT / "examples" / script
     done = subprocess.run([sys.executable, driver.name, "--device", _device(device_config),
                            "--fcidump", str(H2O_DIR / "fcidump.txt"), flag, str(tmp_path / path),
