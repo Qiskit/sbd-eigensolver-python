@@ -118,6 +118,61 @@ def test_caop_variance_and_pt2_match_the_exact_values(caop_device, tmp_path):
     assert np.isfinite(out["only_variance"]) and out["only_pt2"] != out["only_pt2"]   # NaN
 
 
+@pytest.mark.mpi
+def test_caop_variance_with_the_state_over_every_rank(caop_device):
+    """The state solved and saved over every rank (b_comm_size = ranks), then evaluated
+    from those shards on the same ranks: the exact values, and the same on every rank.
+
+    In the job's own ranks rather than a subprocess: one word per determinant, as the
+    CAOP solves under MPI in test_caop.py.
+    """
+    import shutil
+    import tempfile
+
+    from mpi4py import MPI
+
+    import sbd
+    from sbd import analysis
+
+    comm = MPI.COMM_WORLD
+    size = comm.Get_size()
+    path = pathlib.Path(comm.bcast(tempfile.mkdtemp(prefix="sbd-caop-var-")
+                                   if comm.Get_rank() == 0 else None, root=0))
+    try:
+        if comm.Get_rank() == 0:
+            _, _, full = _hubbard(path)
+            (path / "subspace.txt").write_text(
+                "\n".join(format(s, f"0{MODES}b") for s in full[:KEEP]) + "\n")
+        comm.Barrier()
+        ham, basis = path / "hubbard.txt", path / "subspace.txt"
+        kept = [int(s, 2) for s in basis.read_text().split()]
+        full = [int(s, 2) for s in (path / "hubbard_basis.txt").read_text().split()]
+        e, variance, pt2 = _exact(ham, kept, full)
+        config = sbd.CAOP_SBD()
+        config.system_size, config.bit_length = MODES, BITS
+        config.method, config.max_it, config.max_nb, config.eps = 1, 300, 20, 1e-13
+        config.b_comm_size, config.do_redist_basis = size, True
+        # A fixed start, since the default start is random and every rank must agree.
+        config.initial_determinant_bitstring = basis.read_text().split()[0]
+        ground = sbd.caop_diag_from_files(ham, [basis], config, savename=str(path / "gs-"),
+                                          device=caop_device)
+        assert ground["energy"] == pytest.approx(e, abs=1e-9)
+        runs = [analysis.caop_variance(path / "gs-", ham, [basis], ground["energy"],
+                                       sites=MODES, bit_length=BITS, shards=size,
+                                       samples=4000, batches=10, seed=100 + s,
+                                       device=caop_device) for s in range(8)]
+        assert runs[0].dimension == KEEP
+        for name, exact in (("variance", variance), ("pt2", pt2)):
+            values = np.array([getattr(r, name) for r in runs])
+            error = values.std(ddof=1) / np.sqrt(len(values))
+            assert abs(values.mean() - exact) < 5 * error + 1e-12, (name, values.mean(), exact)
+            assert len(set(comm.allgather(values.tobytes()))) == 1, f"ranks disagree on {name}"
+    finally:
+        comm.Barrier()
+        if comm.Get_rank() == 0:
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def test_variance_alone_needs_no_energy_and_pt2_does(backend, saved):
     """As upstream: --reference-energy is required for pt2 and both, not for variance."""
     from sbd import analysis
