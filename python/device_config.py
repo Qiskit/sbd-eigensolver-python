@@ -32,14 +32,20 @@ class DeviceConfig:
 
         device = DeviceConfig.auto()               # best backend that is built
         device = DeviceConfig.cpu()                # or force one
-        device = DeviceConfig.gpu(max_memory_gb=16)
+        device = DeviceConfig.gpu()
 
         results = solve_sci_batch(..., device_config=device)
+
+    It chooses the backend only. The solver's options, including the Thrust-only
+    ``use_precalculated_dets`` and ``max_memory_gb_for_determinants``, go in
+    ``sbd_config``. The two ``DeviceConfig`` arguments of the same purpose are
+    deprecated: they still work, but a value given in ``sbd_config`` takes
+    precedence over them.
     """
     
     def __init__(self, device: str = 'cpu',
-                 use_precalculated_dets: bool = True,
-                 max_memory_gb: int = -1,
+                 use_precalculated_dets: bool | None = None,
+                 max_memory_gb: int | None = None,
                  use_gpu: bool | None = None):
         """
         Initialize device configuration.
@@ -49,8 +55,12 @@ class DeviceConfig:
                 NVIDIA-only), 'gpu-omp' (OpenMP target offload, NVIDIA or
                 AMD), or any alias known to ``sbd._device_aliases``.
                 Default 'cpu'.
-            use_precalculated_dets: Use precalculated determinants (GPU only)
-            max_memory_gb: Maximum GPU memory in GB (-1 = auto)
+            use_precalculated_dets: Deprecated; set ``use_precalculated_dets`` in
+                ``sbd_config`` instead. ``None`` (the default) leaves the field to
+                ``sbd_config`` and then to upstream's default.
+            max_memory_gb: Deprecated; set ``max_memory_gb_for_determinants`` in
+                ``sbd_config`` instead. ``None`` (the default) leaves the field to
+                ``sbd_config`` and then to upstream's default.
             use_gpu: Deprecated boolean. If supplied without ``device``,
                 ``True`` maps to 'gpu' (Thrust) and ``False`` to 'cpu'
                 for backward compatibility with pre-OMP-offload code.
@@ -60,11 +70,27 @@ class DeviceConfig:
             device = 'gpu' if use_gpu else 'cpu'
         self.device = device
         self.use_gpu = device != 'cpu'
+        if use_precalculated_dets is not None or max_memory_gb is not None:
+            import sys
+            import warnings
+            # Point at the caller's line, whether it called DeviceConfig(...)
+            # directly or through the constructors below (gpu_nvidia_omp goes
+            # through gpu_omp): skip every frame in this module.
+            stacklevel, frame = 1, sys._getframe(0)
+            while frame is not None and frame.f_code.co_filename == __file__:
+                stacklevel, frame = stacklevel + 1, frame.f_back
+            warnings.warn(
+                "DeviceConfig's use_precalculated_dets and max_memory_gb are "
+                "deprecated: set use_precalculated_dets and "
+                "max_memory_gb_for_determinants in sbd_config instead, which "
+                "takes precedence over them.",
+                DeprecationWarning, stacklevel=stacklevel,
+            )
         self.use_precalculated_dets = use_precalculated_dets
         self.max_memory_gb = max_memory_gb
     
     @classmethod
-    def auto(cls, max_memory_gb: int = -1) -> 'DeviceConfig':
+    def auto(cls, max_memory_gb: int | None = None) -> 'DeviceConfig':
         """
         Auto-detect the best available backend and use it.
 
@@ -75,7 +101,7 @@ class DeviceConfig:
         ``sbd.get_backend('auto')`` uses.
 
         Args:
-            max_memory_gb: Maximum GPU memory in GB (-1 = auto)
+            max_memory_gb: Deprecated; see :class:`DeviceConfig`.
 
         Returns:
             DeviceConfig for the best backend that is both built and runnable
@@ -113,8 +139,8 @@ class DeviceConfig:
         return cls(device='cpu')
 
     @classmethod
-    def gpu(cls, use_precalculated_dets: bool = True,
-            max_memory_gb: int = -1) -> 'DeviceConfig':
+    def gpu(cls, use_precalculated_dets: bool | None = None,
+            max_memory_gb: int | None = None) -> 'DeviceConfig':
         """Force NVHPC Thrust GPU execution. **NVIDIA only.**
 
         Requires SBD compiled with THRUST (the ``_core_gpu_thrust`` extension,
@@ -129,7 +155,7 @@ class DeviceConfig:
                    max_memory_gb=max_memory_gb)
 
     @classmethod
-    def gpu_omp(cls, max_memory_gb: int = -1) -> 'DeviceConfig':
+    def gpu_omp(cls, max_memory_gb: int | None = None) -> 'DeviceConfig':
         """Force OpenMP target-offload GPU execution. Works on NVIDIA **and AMD**.
 
         Requires SBD compiled with the OMP-offload backend (the
@@ -154,7 +180,7 @@ class DeviceConfig:
         return cls(device='gpu-omp', max_memory_gb=max_memory_gb)
 
     @classmethod
-    def gpu_nvidia_omp(cls, max_memory_gb: int = -1) -> 'DeviceConfig':
+    def gpu_nvidia_omp(cls, max_memory_gb: int | None = None) -> 'DeviceConfig':
         """Deprecated alias for :meth:`gpu_omp`.
 
         The old name dates from when SBD shipped a LLVM-with-NVPTX
@@ -219,7 +245,11 @@ class DeviceConfig:
     
     def apply(self, sbd_config) -> None:
         """
-        Apply device configuration to an SBD TPB_SBD configuration object.
+        Apply the deprecated Thrust arguments, if given, to a TPB_SBD object.
+
+        Only the arguments that were passed are written; one left at ``None``
+        does not touch the field. The solver wrappers call this before applying
+        ``sbd_config``, so a value there takes precedence.
 
         Args:
             sbd_config: sbd.TPB_SBD configuration object
@@ -229,10 +259,16 @@ class DeviceConfig:
         # sbdiag.h). The OMP-offload backend doesn't expose them — that
         # path doesn't have the precalculated-dets cache yet, so there's
         # nothing to wire up.
-        if self.device == 'gpu':
+        given = {
+            name: value for name, value in (
+                ("use_precalculated_dets", self.use_precalculated_dets),
+                ("max_memory_gb_for_determinants", self.max_memory_gb),
+            ) if value is not None
+        }
+        if self.device == 'gpu' and given:
             try:
-                sbd_config.use_precalculated_dets = self.use_precalculated_dets
-                sbd_config.max_memory_gb_for_determinants = self.max_memory_gb
+                for name, value in given.items():
+                    setattr(sbd_config, name, value)
             except AttributeError:
                 print("WARNING: Thrust GPU knobs not exposed by this "
                       "backend module — likely a CPU/OMP-offload build "
@@ -242,6 +278,8 @@ class DeviceConfig:
     def __repr__(self) -> str:
         if self.device == 'cpu':
             return "DeviceConfig(CPU)"
+        if self.use_precalculated_dets is None and self.max_memory_gb is None:
+            return f"DeviceConfig(device={self.device!r})"
         return (f"DeviceConfig(device={self.device!r}, "
                 f"precalc_dets={self.use_precalculated_dets}, "
                 f"max_mem={self.max_memory_gb}GB)")

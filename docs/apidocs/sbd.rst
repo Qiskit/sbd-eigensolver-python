@@ -112,6 +112,11 @@ Fields of ``TPB_SBD`` only:
    * - ``max_memory_gb_for_determinants``
      - Thrust backend only, and used only when ``use_precalculated_dets`` is off: a
        per-thread buffer cap in GB, or ``-1`` for none.
+   * - ``thrust_collapse_loops``
+     - Thrust backend only, and used only when ``use_precalculated_dets`` is on. On
+       (the default), each task's loops run as one flattened GPU loop; off, as nested
+       loops, which need less GPU memory. Upstream turns it off by itself when the
+       flattened size would overflow. Energies do not change.
 
 Fields of ``GDB_SBD`` only:
 

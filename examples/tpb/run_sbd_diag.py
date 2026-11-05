@@ -183,6 +183,9 @@ def parse_args():
     parser.add_argument('--max_memory_gb_for_determinants', '--gpu-memory', type=int, default=-1,
                        dest='max_memory_gb_for_determinants',
                        help='Maximum GPU memory in GB for determinants (-1=auto, GPU only)')
+    parser.add_argument('--thrust_collapse_loops', type=int, default=1, choices=[0, 1],
+                       help='Thrust only, and only with --use_precalculated_dets 1: 1 runs '
+                            'the loops flattened (faster), 0 nested (less GPU memory)')
     
     args = parser.parse_args()
     if args.initial_bdet and not args.initial_adet:
@@ -317,6 +320,8 @@ def main():
         config.use_precalculated_dets = bool(args.use_precalculated_dets)
     if hasattr(config, 'max_memory_gb_for_determinants'):
         config.max_memory_gb_for_determinants = args.max_memory_gb_for_determinants
+    if hasattr(config, 'thrust_collapse_loops'):
+        config.thrust_collapse_loops = bool(args.thrust_collapse_loops)
     
     if rank == 0:
         print("Configuration:")
