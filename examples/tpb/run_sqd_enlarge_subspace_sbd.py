@@ -162,6 +162,7 @@ def parse_args():
     sbd.add_argument("--sbd_use_precalculated_dets", type=int, default=1,
                       choices=[0, 1])
     sbd.add_argument("--sbd_max_memory_gb_for_determinants", type=int, default=-1)
+    sbd.add_argument("--sbd_thrust_collapse_loops", type=int, default=1, choices=[0, 1])
     sbd.add_argument("--sbd_bit_length", type=int, default=20, dest="bit_length")
 
     # ---- MPI decomposition ------------------------------------------------------
@@ -449,6 +450,7 @@ def main():
         "max_nb": args.max_nb, "max_time": 3600.0, "bit_length": args.bit_length,
         "use_precalculated_dets": bool(args.sbd_use_precalculated_dets),
         "max_memory_gb_for_determinants": args.sbd_max_memory_gb_for_determinants,
+        "thrust_collapse_loops": bool(args.sbd_thrust_collapse_loops),
         "adet_comm_size": args.adet_comm_size, "bdet_comm_size": args.bdet_comm_size,
         "task_comm_size": args.task_comm_size,
     }

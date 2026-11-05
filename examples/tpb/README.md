@@ -290,6 +290,7 @@ Per diagonalization, not per loop:
 | `--sbd_method` | 0=Davidson, 1=Davidson+Ham, 2=Lanczos, 3=Lanczos+Ham | `0` |
 | `--sbd_use_precalculated_dets` | Thrust only. `1` precomputes a determinant index for **every** (α,β) pair — the whole subspace, on the GPU. `0` uses per-thread storage: slower per matvec, far less memory | `1` |
 | `--sbd_max_memory_gb_for_determinants` | Thrust only, and **only consulted when `--sbd_use_precalculated_dets 0`** (`mult_thrust.h:257-273`). Caps the per-thread buffer in GB | `-1` (uncapped) |
+| `--sbd_thrust_collapse_loops` | Thrust only, and **only consulted when `--sbd_use_precalculated_dets 1`**. `1` runs each task's loops as one flattened GPU loop; `0` as nested loops, which need less GPU memory. Upstream switches to `0` by itself if the flattened size would overflow. Energies are unchanged | `1` |
 
 For reference, upstream's own `TPB_SBD` struct defaults are looser still (`max_it=1`,
 `eps=1e-4`), and `run_sbd_diag.py` uses `eps=1e-3`. On the h2o counts case,

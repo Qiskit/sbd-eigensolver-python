@@ -1,0 +1,21 @@
+---
+features:
+  - |
+    ``TPB_SBD`` gains ``thrust_collapse_loops`` on the Thrust backend, upstream SBD's
+    switch between flattened (the default) and nested GPU loops when
+    ``use_precalculated_dets`` is on. The TPB drivers expose it as
+    ``--thrust_collapse_loops`` and ``--sbd_thrust_collapse_loops``.
+fixes:
+  - |
+    On the Thrust backend, ``use_precalculated_dets`` and
+    ``max_memory_gb_for_determinants`` given in ``sbd_config`` were reset to their
+    defaults whenever a ``DeviceConfig`` was passed, so ``run_sqd_sbd.py`` and
+    ``run_sqd_enlarge_subspace_sbd.py`` ignored ``--sbd_use_precalculated_dets`` and
+    ``--sbd_max_memory_gb_for_determinants``. A value in ``sbd_config`` now takes
+    precedence.
+deprecations:
+  - |
+    The ``use_precalculated_dets`` and ``max_memory_gb`` arguments of ``DeviceConfig``
+    and its constructors are deprecated: set ``use_precalculated_dets`` and
+    ``max_memory_gb_for_determinants`` in ``sbd_config`` instead. They still apply
+    when given, below anything set in ``sbd_config``.

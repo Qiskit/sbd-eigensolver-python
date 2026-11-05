@@ -341,6 +341,12 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                       "Use precalculated determinants (THRUST)")
         .def_readwrite("max_memory_gb_for_determinants", &sbd::tpb::SBD::max_memory_gb_for_determinants,
                       "Maximum memory in GB for determinants (THRUST)")
+        .def_readwrite("thrust_collapse_loops", &sbd::tpb::SBD::thrust_collapse_loops,
+                      "Run each task's bra x excitation loops as one flattened GPU "
+                      "loop (THRUST; default true). Only used when "
+                      "use_precalculated_dets is on; false uses nested loops, which "
+                      "need less GPU memory. Upstream turns it off by itself when "
+                      "the flattened size would overflow. Energies are unchanged.")
 #endif
         ;
 
