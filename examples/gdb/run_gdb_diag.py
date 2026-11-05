@@ -63,6 +63,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 import time
 
@@ -284,6 +285,13 @@ def parse_args():
                        help='Load an initial wavefunction from this file')
     parser.add_argument('--savename', default='',
                        help='Save the final wavefunction under this prefix')
+    parser.add_argument('--carryovername', default='', metavar='PREFIX',
+                       help='Write the carryover SBD returned (needs --carryover_type '
+                            '1-3) as determinant strings, PREFIX000000.txt ..., as '
+                            "upstream's app does: one file per b_comm rank for type 1, "
+                            'one per rank for types 2/3. With types 2/3 that is the '
+                            'heat-bath-expanded next subspace, which --detfiles reads '
+                            'back.')
 
     args = parser.parse_args()
     if args.loadname and args.initial_det:
@@ -333,6 +341,26 @@ def interleave_spin_strings(alpha, beta):
     return ''.join(a_rev[i] + b_rev[i] for i in range(len(a_rev)))[::-1]
 
 
+def write_carryover(args, carryover, total_bits, rank):
+    """Write this rank's carryover as determinant strings, as upstream's app does.
+
+    The same files ``chemistry_gdb_selected_basis_diagonalization --carryovername``
+    writes: for type 1 the ranks at t = 0, h = 0 (world ranks below b_comm_size)
+    each write their shard, numbered by b_comm rank, since the other ranks hold
+    copies; for types 2/3 every rank writes its share of the globally sorted
+    expansion, numbered by world rank. Returns the file written, or None.
+    """
+    import sbd
+
+    if args.carryover_type == 1 and rank >= args.b_comm_size:
+        return None
+    path = f"{args.carryovername}{rank:06d}.txt"
+    with open(path, "w", encoding="ascii") as handle:
+        for row in carryover:
+            handle.write(sbd.makestring(list(row), args.bit_length, total_bits) + "\n")
+    return path
+
+
 def shard_bounds(total, b_comm_size, index):
     """This rank's slice of a globally sorted list of ``total`` determinants.
 
@@ -350,6 +378,26 @@ def product_basis(alpha_strings):
     return [interleave_spin_strings(a, b)
             for a in alpha_strings for b in alpha_strings]
 
+
+
+def count_state_files(prefix, suffix):
+    """How many consecutive files ``prefix000000{suffix}``, ... a saved state has.
+
+    Returns ``(count, gap)``: ``gap`` is the first missing index when a file with a
+    higher index exists -- a partly copied checkpoint -- else None.
+    """
+    import glob
+    import os
+    import re
+
+    count = 0
+    while os.path.exists(f"{prefix}{count:06d}{suffix}"):
+        count += 1
+    pattern = re.compile(re.escape(os.path.basename(prefix)) + r"(\d{6})"
+                         + re.escape(suffix) + "$")
+    later = [int(m.group(1)) for f in glob.glob(f"{glob.escape(prefix)}[0-9]*{suffix}")
+             if (m := pattern.match(os.path.basename(f))) and int(m.group(1)) > count]
+    return count, (count if later else None)
 
 def main():
     args = parse_args()
@@ -373,6 +421,58 @@ def main():
                   f"(NVHPC Thrust, NVIDIA GPUs only; there is no GDB GPU path for AMD "
                   f"GPUs).", file=sys.stderr)
         return 2
+
+    # SBD writes the state without checking that its file opened, so a missing
+    # directory would lose the save while the run reports success. Checked by
+    # every rank: each one writes its own file there.
+    if args.savename and not os.path.isdir(os.path.dirname(os.path.abspath(args.savename))):
+        print(f"[rank {rank}] ERROR: --savename {args.savename!r}: directory "
+              f"{os.path.dirname(os.path.abspath(args.savename))!r} does not exist; "
+              f"create it first", file=sys.stderr, flush=True)
+        return 1
+    if args.loadname:
+        # SBD reads file b of a saved state onto b_comm position b, then passes what
+        # does not belong there around the ring; files past b_comm_size are never
+        # read. Davidson would then start from part of the state -- the right answer,
+        # slower, and without a word -- so say so instead.
+        count, gap = count_state_files(args.loadname, ".bin")
+        if gap is not None:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r}: file "
+                  f"{args.loadname}{gap:06d}.bin is missing, though later ones exist: "
+                  f"the saved state is incomplete. Copy the whole state, or save it "
+                  f"again.", file=sys.stderr, flush=True)
+            return 1
+        if count == 0:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r}: no saved state "
+                  f"({args.loadname}000000.bin ...)", file=sys.stderr, flush=True)
+            return 1
+        if count > args.b_comm_size:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r} has {count} files "
+                  f"but --b_comm_size is {args.b_comm_size}: SBD loads a saved state "
+                  f"only onto at least as many shards as it has files, and would start "
+                  f"from part of it. Use --b_comm_size {count} or more, or leave out "
+                  f"--loadname.", file=sys.stderr, flush=True)
+            return 1
+    if args.carryovername:
+        if not args.carryover_type:
+            print(f"[rank {rank}] ERROR: --carryovername needs --carryover_type 1, 2 "
+                  f"or 3: with 0, SBD selects no carryover", file=sys.stderr, flush=True)
+            return 1
+        if args.carryover_type == 1 and args.b_comm_size > 1:
+            # Each b_comm rank keeps the top determinants of its own shard, so the
+            # files' ranges interleave and --detfiles (ours and upstream's loader)
+            # refuses them. Types 2/3 end with a global sort, so their files reload.
+            print(f"[rank {rank}] ERROR: --carryovername with --carryover_type 1 needs "
+                  f"--b_comm_size 1: each shard keeps its own selection, so the files "
+                  f"overlap and a next run cannot read them back. Use carryover type 2 "
+                  f"or 3, or one shard", file=sys.stderr, flush=True)
+            return 1
+        directory = os.path.dirname(os.path.abspath(args.carryovername))
+        if not os.path.isdir(directory):
+            print(f"[rank {rank}] ERROR: --carryovername {args.carryovername!r}: "
+                  f"directory {directory!r} does not exist; create it first",
+                  file=sys.stderr, flush=True)
+            return 1
 
     if rank == 0:
         print("=" * 70)
@@ -530,6 +630,11 @@ def main():
     )
     elapsed = time.perf_counter() - start
 
+    # Collective, so every rank must reach it: before the rank-0-only report below,
+    # which the other ranks skip by returning.
+    if args.carryovername:
+        write_carryover(args, results['carryover_det'], total_bits, rank)
+
     if rank != 0:
         return 0
 
@@ -573,6 +678,12 @@ def main():
                   "(gdb/expansion.h:543), so this is the next subspace, not just "
                   "the new candidates.")
 
+    if args.carryovername:
+        writers = args.b_comm_size if args.carryover_type == 1 else size
+        files = [f"{args.carryovername}{i:06d}.txt" for i in range(writers)]
+        print(f"Carryover written to {len(files)} file(s)\n"
+              f"  next run: --detfiles {','.join(files)}")
+
     if args.rdm_output:
         # assemble_rdms' layout was verified against PySCF on the TPB path; the
         # keys and flat-index convention are shared with GDB, but that
@@ -590,4 +701,5 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from sbd.mpi_util import run
+    sys.exit(run(main))
