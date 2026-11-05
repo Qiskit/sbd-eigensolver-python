@@ -169,9 +169,10 @@ def parse_args():
 
     parser.add_argument('--device', default='cpu',
                        choices=['cpu', 'gpu', 'gpu-omp', 'auto'],
-                       help="Compute backend. 'gpu' is NVHPC Thrust, which is the "
-                            "only GPU backend with GDB kernels; 'gpu-omp' has none, "
-                            "so GDB runs on the host there")
+                       help="Compute backend: 'cpu', or 'gpu' (NVHPC Thrust, NVIDIA "
+                            "only), the one GPU backend with GDB kernels. 'gpu-omp' is "
+                            "refused, as upstream has no OpenMP-offload GDB code; 'auto' "
+                            "is refused too if it resolves to 'gpu-omp'")
 
     # --- input ------------------------------------------------------------
     parser.add_argument('--skip-weight-check', action='store_true',
@@ -405,6 +406,17 @@ def main():
     rank = sbd.get_rank()
     size = sbd.get_world_size()
     device = sbd.get_device()
+    # gdb_diag refuses the OpenMP-offload backend itself; refusing here first says
+    # so before any input is read, and covers --device auto resolving to it. Every
+    # rank resolves the same device, so every rank exits.
+    if device == 'gpu-omp':
+        if rank == 0:
+            print(f"ERROR: GDB does not run on the OpenMP-offload backend "
+                  f"(--device {args.device} -> 'gpu-omp'): upstream SBD has no "
+                  f"OpenMP-offload GDB kernels. Use --device cpu, or --device gpu "
+                  f"(NVHPC Thrust, NVIDIA GPUs only; there is no GDB GPU path for AMD "
+                  f"GPUs).", file=sys.stderr)
+        return 2
 
     # SBD writes the state without checking that its file opened, so a missing
     # directory would lose the save while the run reports success. Checked by
@@ -590,11 +602,6 @@ def main():
             print("  ERROR: GDB on the Thrust backend requires helper == 1, i.e. "
                   "t_comm_size * b_comm_size == ranks. Give every rank to "
                   "--b_comm_size (with --t_comm_size <= it).")
-        if device == 'gpu-omp':
-            print("  WARNING: the OMP-offload backend has no GDB kernels -- there is "
-                  "no `omp target` code under include/sbd/chemistry/gdb/ at all. "
-                  "This run pins a device and then diagonalizes on the host. Use "
-                  "--device gpu (Thrust, NVIDIA only) for GDB on a GPU.")
         print()
         print("Subspace:")
         print(f"  Source: {source}")

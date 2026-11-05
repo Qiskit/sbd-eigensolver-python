@@ -84,9 +84,12 @@ def parse_args():
 
     parser.add_argument('--device', default='cpu',
                        choices=['cpu', 'gpu', 'gpu-omp', 'auto'],
-                       help="Compute backend. 'gpu' (Thrust) is the only GPU backend "
-                            "with GDB kernels, and it requires the helper dimension "
-                            "to be 1, i.e. t_comm_size * b_comm_size == ranks")
+                       help="Compute backend: 'cpu', or 'gpu' (NVHPC Thrust, NVIDIA "
+                            "only), the one GPU backend with GDB kernels, which requires "
+                            "the helper dimension to be 1, i.e. t_comm_size * "
+                            "b_comm_size == ranks. 'gpu-omp' is refused, as upstream has "
+                            "no OpenMP-offload GDB code; 'auto' is refused too if it "
+                            "resolves to 'gpu-omp'")
     parser.add_argument('--fcidump', default=_DEFAULT_FCIDUMP,
                        help='FCIDUMP file defining the Hamiltonian')
 
@@ -414,6 +417,16 @@ def main():
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
+    # As in run_gdb_diag.py: gdb_diag refuses this backend itself, and this says so
+    # before the seed is built, on every rank, --device auto included.
+    if sbd.get_device() == 'gpu-omp':
+        if rank == 0:
+            print(f"ERROR: GDB does not run on the OpenMP-offload backend "
+                  f"(--device {args.device} -> 'gpu-omp'): upstream SBD has no "
+                  f"OpenMP-offload GDB kernels. Use --device cpu, or --device gpu "
+                  f"(NVHPC Thrust, NVIDIA GPUs only; there is no GDB GPU path for AMD "
+                  f"GPUs).", file=sys.stderr)
+        return 2
 
     fcidump = backend.LoadFCIDump(args.fcidump)
     header = fcidump.header

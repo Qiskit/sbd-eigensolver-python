@@ -725,6 +725,19 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
            int determinant_grid_a,
            int determinant_grid_b) {
 
+#ifdef USE_OMP_OFFLOAD
+            // Upstream has no OpenMP-offload GDB code -- there is no `omp target`
+            // anywhere under include/sbd/chemistry/gdb/ -- so this build would run
+            // GDB entirely on the host while the caller asked for a GPU. Refuse
+            // rather than do that. Every rank loads the same module, so every rank
+            // raises here and none is left waiting in a collective.
+            throw std::invalid_argument(
+                "gdb_diag is not supported on the OpenMP-offload backend ('gpu-omp'): "
+                "upstream SBD has no OpenMP-offload GDB kernels, so it would run on "
+                "the CPU. Use device='cpu', or device='gpu' (NVHPC Thrust, NVIDIA GPUs "
+                "only; there is no GDB GPU path for AMD GPUs).");
+#endif
+
             MPI_Comm comm = get_mpi_comm(py_comm);
             int mpi_rank; MPI_Comm_rank(comm, &mpi_rank);
             int mpi_size; MPI_Comm_size(comm, &mpi_size);

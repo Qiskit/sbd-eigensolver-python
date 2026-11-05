@@ -143,6 +143,8 @@ def _on_rank_zero(check):
 @pytest.mark.parametrize("script", ["tpb/run_sbd_diag.py", "gdb/run_gdb_diag.py"])
 def test_a_missing_save_directory_is_refused_before_solving(script, device_config, tmp_path):
     """SBD would drop the save silently; the driver must stop first."""
+    if script.startswith("gdb/") and _device(device_config) == "gpu-omp":
+        pytest.skip("the GDB drivers refuse the OpenMP-offload backend before this check")
     args = _driver_args(script, _device(device_config), tmp_path, ranks=1)
     completed = _run(script, args + ["--savename", str(tmp_path / "missing" / "x-")])
     assert completed.returncode != 0

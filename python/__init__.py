@@ -798,11 +798,11 @@ def gdb_diag(fcidump, det, sbd_data,
             writes one file per b_comm position, ``f"{savename}{rank_b:06d}.bin"``,
             each holding only that shard; rank 0's file is not the whole
             wavefunction. GDB has no combined matrix-form dump.
-        device: Backend to run on: 'cpu', 'gpu' (Thrust), 'gpu-omp' (OpenMP
-            offload), or an alias accepted by :func:`init`. None uses the
-            default; see :func:`get_backend`. 'gpu-omp' is accepted, but SBD
-            has no OpenMP-offload GDB code, so the run executes on the host;
-            use 'gpu' for GDB on GPUs.
+        device: Backend to run on: 'cpu', 'gpu' (Thrust, NVIDIA GPUs only), or
+            an alias accepted by :func:`init`. None uses the default; see
+            :func:`get_backend`. 'gpu-omp' (OpenMP offload) is refused with
+            ``ValueError``: upstream SBD has no OpenMP-offload GDB code, so it
+            would run on the host. There is no GDB GPU path for AMD GPUs.
         determinant_distribution: How to place determinants across b_comm — one
             of ``input`` (keep the shards as given), ``equal-bra-a`` (default;
             equal distinct-alpha count per rank, which is what balances the
