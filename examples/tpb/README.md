@@ -31,6 +31,12 @@ mpirun -np 8 python -u run_sbd_diag.py \
 
 # Retrieve the 1-/2-particle RDMs and save them to a file
 mpirun -np 2 python -u run_sbd_diag.py --rdm_output /tmp/h2o_rdms.npz
+
+# Write the carryover SBD selects, then start the next run from it
+mpirun -np 2 python -u run_sbd_diag.py --carryover_type 1 --carryover_ratio 0.5 \
+    --carryover_adetfile /tmp/next-a.txt --carryover_bdetfile /tmp/next-b.txt
+mpirun -np 2 python -u run_sbd_diag.py --symmetrize_spin 0 \
+    --adetfile /tmp/next-a.txt --bdetfile /tmp/next-b.txt
 ```
 
 `--rdm_output` takes the file to save to (`/tmp/h2o_rdms.npz` above) and
