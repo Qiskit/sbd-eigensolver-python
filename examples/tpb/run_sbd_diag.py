@@ -158,6 +158,17 @@ def parse_args():
     parser.add_argument('--carryover_threshold', '--threshold', type=float, default=0.0, dest='threshold',
                        help='Carryover threshold')
     
+    parser.add_argument('--carryover_adetfile', default='', metavar='FILE',
+                       help='Write the alpha strings SBD carried over (needs '
+                            '--carryover_type 1-3) to FILE, one NORB-bit string per '
+                            'line: the format --adetfile reads, so a next run can '
+                            'start from them. Written by rank 0; every rank holds '
+                            'the same list.')
+    parser.add_argument('--carryover_bdetfile', default='', metavar='FILE',
+                       help='The same for the beta strings. With --symmetrize_spin 1 '
+                            '(the default) the next run builds beta from --adetfile '
+                            'alone, so this is only needed with --symmetrize_spin 0.')
+
     # Determinant representation
     parser.add_argument('--bit_length', type=int, default=20,
                        help='Bit length for determinant representation')
@@ -190,6 +201,36 @@ def parse_args():
     return args
 
 
+def count_state_files(prefix, suffix):
+    """How many consecutive files ``prefix000000{suffix}``, ... a saved state has.
+
+    Returns ``(count, gap)``: ``gap`` is the first missing index when a file with a
+    higher index exists -- a partly copied checkpoint -- else None.
+    """
+    import glob
+    import os
+    import re
+
+    count = 0
+    while os.path.exists(f"{prefix}{count:06d}{suffix}"):
+        count += 1
+    pattern = re.compile(re.escape(os.path.basename(prefix)) + r"(\d{6})"
+                         + re.escape(suffix) + "$")
+    later = [int(m.group(1)) for f in glob.glob(f"{glob.escape(prefix)}[0-9]*{suffix}")
+             if (m := pattern.match(os.path.basename(f))) and int(m.group(1)) > count]
+    return count, (count if later else None)
+
+
+def write_strings(path, strings):
+    """Write one string per line, replacing ``path`` only once the file is complete."""
+    import os
+
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="ascii") as handle:
+        handle.write("\n".join(strings) + ("\n" if strings else ""))
+    os.replace(tmp, path)
+
+
 def main():
     args = parse_args()
     
@@ -202,6 +243,52 @@ def main():
 
     rank = sbd.get_rank()
     size = sbd.get_world_size()
+
+    # SBD writes the state without checking that its file opened, so a missing
+    # directory would lose the save while the run reports success. Checked by
+    # every rank: each one writes its own file there.
+    import os
+    if args.savename and not os.path.isdir(os.path.dirname(os.path.abspath(args.savename))):
+        print(f"[rank {rank}] ERROR: --savename {args.savename!r}: directory "
+              f"{os.path.dirname(os.path.abspath(args.savename))!r} does not exist; "
+              f"create it first", file=sys.stderr, flush=True)
+        return 1
+    if args.loadname:
+        # SBD's TPB loader opens one file per alpha x beta block. It loads a state onto
+        # a grid of any shape with at most as many blocks as there are files, but with
+        # more it calls MPI_Abort with exit status 0, which looks like success.
+        count, gap = count_state_files(args.loadname, "")
+        if gap is not None:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r}: file "
+                  f"{args.loadname}{gap:06d} is missing, though later ones exist: "
+                  f"the saved state is incomplete. Copy the whole state, or save it "
+                  f"again.", file=sys.stderr, flush=True)
+            return 1
+        grid = args.adet_comm_size * args.bdet_comm_size
+        if count == 0:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r}: no saved state "
+                  f"({args.loadname}000000 ...)", file=sys.stderr, flush=True)
+            return 1
+        if grid > count:
+            print(f"[rank {rank}] ERROR: --loadname {args.loadname!r} has {count} file(s) "
+                  f"but the grid --adet_comm_size x --bdet_comm_size has {grid} blocks: "
+                  f"SBD loads a saved TPB state only onto a grid of at most {count} "
+                  f"blocks. Use a smaller grid, or leave out --loadname.",
+                  file=sys.stderr, flush=True)
+            return 1
+    if args.carryover_adetfile or args.carryover_bdetfile:
+        if not args.carryover_type:
+            print(f"[rank {rank}] ERROR: --carryover_adetfile/--carryover_bdetfile need "
+                  f"--carryover_type 1, 2 or 3: with 0, SBD selects no carryover",
+                  file=sys.stderr, flush=True)
+            return 1
+        for flag, path in (("--carryover_adetfile", args.carryover_adetfile),
+                           ("--carryover_bdetfile", args.carryover_bdetfile)):
+            directory = os.path.dirname(os.path.abspath(path)) if path else ""
+            if path and not os.path.isdir(directory):
+                print(f"[rank {rank}] ERROR: {flag} {path!r}: directory {directory!r} "
+                      f"does not exist; create it first", file=sys.stderr, flush=True)
+                return 1
     
     if rank == 0:
         print("="*70)
@@ -323,6 +410,14 @@ def main():
 
             print(f"Density: {combined_density}")
             print(f"Carryover determinants: {len(results['carryover_adet'])}")
+            for path, key in ((args.carryover_adetfile, 'carryover_adet'),
+                              (args.carryover_bdetfile, 'carryover_bdet')):
+                if path:
+                    norb = len(results['density']) // 2
+                    strings = [sbd.makestring(det, args.bit_length, norb)
+                               for det in results[key]]
+                    write_strings(path, strings)
+                    print(f"  wrote {len(strings)} {key[10:]} strings to {path}")
 
             norb = len(density) // 2
             rdm1, rdm2 = assemble_rdms(results, norb)
@@ -350,18 +445,19 @@ def main():
         return_code = 0
 
     except FileNotFoundError as e:
-        if rank == 0:
-            print(f"\n✗ Error: {e}")
-            print("\nPlease check file paths:")
-            print(f"  FCIDUMP: {args.fcidump}")
-            print(f"  Alpha dets: {args.adetfile}")
+        # Printed by the rank that failed, as for any other error below.
+        print(f"\n[rank {rank}] ✗ Error: {e}\n"
+              f"Please check file paths:\n"
+              f"  FCIDUMP: {args.fcidump}\n"
+              f"  Alpha dets: {args.adetfile}", file=sys.stderr)
         return_code = 1
 
     except Exception as e:
-        if rank == 0:
-            print(f"\n✗ Error during calculation: {e}")
-            import traceback
-            traceback.print_exc()
+        # Printed by the rank that failed, which need not be rank 0: run() then aborts
+        # the job, so this is the only report of what went wrong.
+        import traceback
+        print(f"\n[rank {rank}] ✗ Error during calculation: {e}", file=sys.stderr)
+        traceback.print_exc()
         return_code = 1
 
     finally:
@@ -372,5 +468,7 @@ def main():
 
     return return_code
 
+
 if __name__ == "__main__":
-    sys.exit(main())
+    from sbd.mpi_util import run
+    sys.exit(run(main))
