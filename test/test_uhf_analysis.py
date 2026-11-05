@@ -161,8 +161,9 @@ def test_upstream_uhf_fixture_is_ambiguous_and_read_as_restricted(backend, tmp_p
         sbd.LoadFCIDump(str(fcidump), uhf=True)
 
 
-def test_uhf_state_with_distinct_alpha_beta_orbitals(uhf_available, tmp_path):
-    """Stretched H4 in UHF orbitals whose alpha and beta orbitals differ."""
+def _stretched_h4():
+    """Stretched H4 in UHF orbitals whose alpha and beta orbitals differ: the molecule,
+    its one- and two-electron integrals in those orbitals, and the norb and nelec."""
     mol = gto.M(atom="; ".join(f"H 0 0 {2.0 * i:.1f}" for i in range(4)), basis="sto-3g",
                 spin=0, verbose=0)
     mf = scf.UHF(mol)
@@ -180,12 +181,39 @@ def test_uhf_state_with_distinct_alpha_beta_orbitals(uhf_available, tmp_path):
     eri = (ao2mo.restore(1, ao2mo.kernel(mol, ca), norb),
            ao2mo.restore(1, ao2mo.general(mol, (ca, ca, cb, cb)), norb),
            ao2mo.restore(1, ao2mo.kernel(mol, cb), norb))
-    fcidump = tmp_path / "h4_bs_uhf.fcidump"
-    write_uhf_fcidump(str(fcidump), h1, eri, norb, sum(nelec), nelec[0] - nelec[1], 0.0)
+    return mol, h1, eri, norb, nelec
 
+
+def _subspace_reference(h1, eri, norb, nelec, kept):
+    """The subspace ground state built in PySCF: its energy, variance and PT2."""
     sa = cistring.make_strings(range(norb), nelec[0])
     sb = cistring.make_strings(range(norb), nelec[1])
-    full = [(int(a), int(b)) for a in sa for b in sb]
+    h2e = fci.direct_uhf.absorb_h1e(h1, eri, norb, nelec, 0.5)
+    ia = {int(s): i for i, s in enumerate(sa)}
+    ib = {int(s): i for i, s in enumerate(sb)}
+    basis = []
+    for a, b in kept:
+        v = np.zeros((len(sa), len(sb)))
+        v[ia[a], ib[b]] = 1.0
+        basis.append(v)
+    hsub = np.array([[np.vdot(u, fci.direct_uhf.contract_2e(h2e, v, norb, nelec))
+                      for v in basis] for u in basis])
+    psi = np.linalg.eigh(hsub)[1][:, 0]
+    return _exact_external(h1, eri, norb, nelec, kept, psi)
+
+
+def _full_pairs(norb, nelec):
+    sa = cistring.make_strings(range(norb), nelec[0])
+    sb = cistring.make_strings(range(norb), nelec[1])
+    return [(int(a), int(b)) for a in sa for b in sb]
+
+
+def test_uhf_state_with_distinct_alpha_beta_orbitals(uhf_available, tmp_path):
+    """Stretched H4 in UHF orbitals whose alpha and beta orbitals differ."""
+    mol, h1, eri, norb, nelec = _stretched_h4()
+    fcidump = tmp_path / "h4_bs_uhf.fcidump"
+    write_uhf_fcidump(str(fcidump), h1, eri, norb, sum(nelec), nelec[0] - nelec[1], 0.0)
+    full = _full_pairs(norb, nelec)
 
     # The full space: the exact energy, which the orbital basis cannot change, so a
     # restricted FCI of the same molecule is the reference.
@@ -203,18 +231,66 @@ def test_uhf_state_with_distinct_alpha_beta_orbitals(uhf_available, tmp_path):
                        "bits": BITS, "norb": norb, "solve": True,
                        "dets": [_interleave(a, b, norb) for a, b in kept]})
     # The state SBD saved is the subspace ground state; build the same state in PySCF.
-    h2e = fci.direct_uhf.absorb_h1e(h1, eri, norb, nelec, 0.5)
-    ia = {int(s): i for i, s in enumerate(sa)}
-    ib = {int(s): i for i, s in enumerate(sb)}
-    basis = []
-    for a, b in kept:
-        v = np.zeros((len(sa), len(sb)))
-        v[ia[a], ib[b]] = 1.0
-        basis.append(v)
-    hsub = np.array([[np.vdot(u, fci.direct_uhf.contract_2e(h2e, v, norb, nelec))
-                      for v in basis] for u in basis])
-    psi = np.linalg.eigh(hsub)[1][:, 0]
-    energy, variance, pt2 = _exact_external(h1, eri, norb, nelec, kept, psi)
+    energy, variance, pt2 = _subspace_reference(h1, eri, norb, nelec, kept)
     assert out["energy"] == pytest.approx(energy, abs=1e-8)
     assert variance > 1e-4, "the subspace must leave something outside it"
     _assert_matches(out, variance, pt2)
+
+
+@pytest.mark.mpi
+def test_uhf_variance_with_the_state_over_every_rank(uhf_available):
+    """The UHF subspace solved and saved over every rank (b_comm_size = ranks), then
+    evaluated from those shards on the same ranks: the exact values on each.
+
+    In the job's own ranks rather than a subprocess: one word per determinant, the width
+    the rest of the MPI suite uses. Rank 0 builds the integrals, so every rank has the
+    same orbitals.
+    """
+    import shutil
+    import tempfile
+
+    from mpi4py import MPI
+
+    from sbd import analysis
+
+    if not sbd.has_uhf(sbd.get_device()):
+        pytest.skip(f"no unrestricted build of {sbd.get_device()!r} to solve on")
+    comm = MPI.COMM_WORLD
+    rank, size = comm.Get_rank(), comm.Get_size()
+    path = pathlib.Path(comm.bcast(tempfile.mkdtemp(prefix="sbd-uhf-var-")
+                                   if rank == 0 else None, root=0))
+    try:
+        reference = None
+        if rank == 0:
+            _, h1, eri, norb, nelec = _stretched_h4()
+            write_uhf_fcidump(str(path / "h4.fcidump"), h1, eri, norb, sum(nelec),
+                              nelec[0] - nelec[1], 0.0)
+            pairs = _full_pairs(norb, nelec)
+            kept = pairs[: len(pairs) // 2]
+            reference = (norb, kept, _subspace_reference(h1, eri, norb, nelec, kept))
+        norb, kept, (energy, variance, pt2) = comm.bcast(reference, root=0)
+        assert variance > 1e-4, "the subspace must leave something outside it"
+        fcidump = sbd.LoadFCIDump(str(path / "h4.fcidump"))
+        assert sbd.fcidump_format(fcidump) == "uhf"
+        full = sbd.sort_bitarray_array(sbd.from_strings(
+            [_interleave(a, b, norb) for a, b in kept], BITS, 2 * norb))
+        q, r = divmod(len(full), size)
+        lo = rank * q + min(rank, r)
+        if size > len(full):                 # the same on every rank, so all skip together
+            pytest.skip("more ranks than determinants")
+        config = sbd.GDB_SBD()
+        config.eps, config.max_it, config.max_nb, config.bit_length = 1e-12, 300, 20, BITS
+        config.b_comm_size = size
+        solved = sbd.gdb_diag(fcidump, full[lo:lo + q + (1 if rank < r else 0)], config,
+                              savename=str(path / "sub-"),
+                              determinant_distribution="input")["energy"]
+        assert solved == pytest.approx(energy, abs=1e-8)
+        runs = [analysis.variance(str(path / "sub-"), fcidump, solved, method="stochastic",
+                                  bit_length=BITS, samples=4000, batches=10, seed=100 + s)
+                for s in range(8)]
+        _assert_matches({"variance": [x.variance for x in runs],
+                         "pt2": [x.pt2 for x in runs]}, variance, pt2)
+    finally:
+        comm.Barrier()
+        if rank == 0:
+            shutil.rmtree(path, ignore_errors=True)
