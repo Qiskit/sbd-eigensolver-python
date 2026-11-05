@@ -189,6 +189,59 @@ def test_complex_amplitudes_give_the_same_green_function(caop_device, tmp_path):
         np.testing.assert_allclose(got, exact[channel][0], atol=1e-7, err_msg=channel)
 
 
+@pytest.mark.mpi
+def test_green_function_with_the_state_over_every_rank(caop_device):
+    """The ground state solved and saved over every rank (b_comm_size = ranks), and its
+    Green's function from those shards on the same ranks: the exact Lehmann sum on each.
+
+    In the job's own ranks rather than a subprocess: one word per determinant, as the
+    CAOP solves under MPI in test_caop.py.
+    """
+    import shutil
+    import tempfile
+
+    from mpi4py import MPI
+
+    from sbd.spectrum import green_function
+
+    comm = MPI.COMM_WORLD
+    size = comm.Get_size()
+    path = pathlib.Path(comm.bcast(tempfile.mkdtemp(prefix="sbd-spectrum-")
+                                   if comm.Get_rank() == 0 else None, root=0))
+    try:
+        if comm.Get_rank() == 0:
+            _hubbard(path)
+        comm.Barrier()
+        ham, basis = path / "hubbard.txt", path / "hubbard_basis.txt"
+        e0, exact = _exact_green(ham)
+        if comm.Get_rank() == 0:
+            for channel, (_, states) in exact.items():
+                (path / f"{channel}_sector.txt").write_text(
+                    "\n".join(format(s, f"0{MODES}b") for s in states) + "\n")
+        comm.Barrier()
+        config = sbd.CAOP_SBD()
+        config.system_size, config.bit_length = MODES, BITS
+        config.method, config.max_it, config.max_nb, config.eps = 1, 200, 20, 1e-13
+        config.b_comm_size, config.do_redist_basis = size, True
+        # A fixed start, since the default start is random and every rank must agree.
+        config.initial_determinant_bitstring = basis.read_text().split()[0]
+        ground = sbd.caop_diag_from_files(ham, [basis], config, savename=str(path / "gs-"),
+                                          device=caop_device)
+        assert ground["energy"] == pytest.approx(e0, abs=1e-9)
+        for channel in ("addition", "removal"):
+            r = green_function(path / "gs-", ham, ORBITALS, channel, sites=MODES,
+                               bit_length=BITS, reference_energy=ground["energy"],
+                               omegas=OMEGAS, eta=ETA, shards=size,
+                               extra_basis=[path / f"{channel}_sector.txt"], max_steps=200,
+                               device=caop_device)
+            np.testing.assert_allclose(r["green_function"], exact[channel][0], atol=1e-7,
+                                       err_msg=f"{channel} on rank {comm.Get_rank()}")
+    finally:
+        comm.Barrier()
+        if comm.Get_rank() == 0:
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def test_spectral_function_is_minus_im_g_over_pi_on_the_diagonal():
     from sbd.spectrum import spectral_function
 
