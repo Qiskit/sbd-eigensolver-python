@@ -237,6 +237,10 @@ def parse_args():
                        dest='eps', help='Convergence tolerance')
     parser.add_argument('--max_time', type=float, default=1e10,
                        help='Maximum wall time in seconds')
+    parser.add_argument('--cpu_subspace', type=int, default=0, choices=[0, 1],
+                       help='Keep the Davidson subspace vectors in CPU memory instead of '
+                            'GPU memory (Thrust backend only; ignored elsewhere). For runs '
+                            'too large for GPU memory. Needs OMP_NUM_THREADS of 2 or more')
     parser.add_argument('--init', type=int, default=0,
                        help='Initial vector policy')
     parser.add_argument('--seed', type=int, default=1729,
@@ -570,6 +574,9 @@ def main():
     config.max_nb = args.max_nb
     config.eps = args.eps
     config.max_time = args.max_time
+    # Thrust only; the other backends' GDB_SBD has no such field and needs none.
+    if hasattr(config, 'cpu_subspace'):
+        config.cpu_subspace = bool(args.cpu_subspace)
     config.init = args.init
     config.seed = args.seed
     config.initial_determinant_bitstring = args.initial_det

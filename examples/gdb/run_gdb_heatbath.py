@@ -149,6 +149,10 @@ def parse_args():
                        dest='max_it', help='Maximum Davidson iterations per round')
     parser.add_argument('--block', '--max_nb', type=int, default=10,
                        dest='max_nb', help='Maximum number of basis vectors')
+    parser.add_argument('--cpu_subspace', type=int, default=0, choices=[0, 1],
+                       help='Keep the Davidson subspace vectors in CPU memory instead of '
+                            'GPU memory (Thrust backend only; ignored elsewhere). For runs '
+                            'too large for GPU memory. Needs OMP_NUM_THREADS of 2 or more')
     parser.add_argument('--bit_length', type=int, default=62,
                        help='Bits per packed word: even, at most 62')
     parser.add_argument('--carryover_type', type=int, default=2, choices=[2, 3],
@@ -528,6 +532,8 @@ def main():
             config.eps = args.eps
             config.max_it = args.max_it
             config.max_nb = args.max_nb
+            if hasattr(config, 'cpu_subspace'):        # Thrust only
+                config.cpu_subspace = bool(args.cpu_subspace)
             config.bit_length = args.bit_length
             config.b_comm_size = args.b_comm_size
             config.t_comm_size = args.t_comm_size

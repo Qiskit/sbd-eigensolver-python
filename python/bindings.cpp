@@ -214,6 +214,30 @@ static bool sbd_all_ranks_ok(bool local_ok, MPI_Comm comm) {
 }
 
 /**
+ * Refuse a Thrust solve with one OpenMP thread, before upstream aborts the job.
+ *
+ * Upstream's Thrust builds keep the Davidson subspace and part of the setup on the
+ * host and call MPI_Abort when omp_get_max_threads() == 1 (tpb/sbdiag.h,
+ * basic/subspace_thrust.h, caop/basic/sbdiag.h), which ends the Python process with
+ * no exception to catch. Raise ValueError on every rank first instead. CPU and
+ * OpenMP-offload builds are not affected.
+ */
+static void sbd_require_openmp_threads(const char* where, MPI_Comm comm) {
+#ifdef SBD_THRUST
+    if (!sbd_all_ranks_ok(omp_get_max_threads() > 1, comm)) {
+        throw std::invalid_argument(
+            std::string(where) + " on the gpu (Thrust) backend needs more than one "
+            "OpenMP thread per rank: upstream SBD does part of the work on the host "
+            "and aborts the job otherwise. Set OMP_NUM_THREADS to 2 or more, and give "
+            "each rank that many cores (for example srun --cpus-per-task)");
+    }
+#else
+    (void)where;
+    (void)comm;
+#endif
+}
+
+/**
  * Order-insensitive-after-sort 64-bit fingerprint of a shard (FNV-1a).
  *
  * Used to compare the replicas that ranks sharing a b_comm position must pass:
@@ -317,6 +341,13 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                       &sbd::tpb::SBD::initial_bdeterminant_bitstring,
                       "Beta half of the explicit start. Empty uses the alpha string "
                       "for beta; it cannot be set without the alpha one")
+#ifdef SBD_THRUST
+        .def_readwrite("cpu_subspace", &sbd::tpb::SBD::cpu_subspace,
+                      "gpu (Thrust) backend only: keep the Davidson/Lanczos subspace "
+                      "vectors in host memory instead of GPU memory, so the GPU memory "
+                      "they use no longer grows with max_nb; H is still applied on the "
+                      "GPU. Energies agree with the default to within rounding")
+#endif
         .def_readwrite("do_shuffle", &sbd::tpb::SBD::do_shuffle,
                       "Shuffle determinants flag")
         .def_readwrite("do_rdm", &sbd::tpb::SBD::do_rdm,
@@ -421,6 +452,13 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
                       "Weight truncation threshold applied before heatbath expansion")
         .def_readwrite("heatbath_batch_size", &sbd::gdb::SBD::heatbath_batch_size,
                       "Heatbath expansion batch size")
+#ifdef SBD_THRUST
+        .def_readwrite("cpu_subspace", &sbd::gdb::SBD::cpu_subspace,
+                      "gpu (Thrust) backend only: keep the Davidson subspace vectors in "
+                      "host memory instead of GPU memory, so the GPU memory they use no "
+                      "longer grows with max_nb; H is still applied on the GPU. Energies "
+                      "agree with the default to within rounding")
+#endif
         .def_readwrite("bit_length", &sbd::gdb::SBD::bit_length,
                       "Bit length for determinant representation")
         ;
@@ -565,6 +603,7 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             
             // Convert MPI communicator
             MPI_Comm comm = get_mpi_comm(py_comm);
+            sbd_require_openmp_threads("tpb_diag", comm);
             
             // Get MPI rank for GPU assignment
             int mpi_rank;
@@ -739,6 +778,7 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
 #endif
 
             MPI_Comm comm = get_mpi_comm(py_comm);
+            sbd_require_openmp_threads("gdb_diag", comm);
             int mpi_rank; MPI_Comm_rank(comm, &mpi_rank);
             int mpi_size; MPI_Comm_size(comm, &mpi_size);
 
@@ -1379,6 +1419,7 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             
             // Convert MPI communicator
             MPI_Comm comm = get_mpi_comm(py_comm);
+            sbd_require_openmp_threads("tpb_diag_from_files", comm);
             
             // Get MPI rank for GPU assignment
             int mpi_rank;

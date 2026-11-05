@@ -213,6 +213,10 @@ def parse_args():
                      help="Thrust only, and only with --sbd_use_precalculated_dets 1: "
                           "1 runs each task's loops as one flattened GPU loop (faster), "
                           "0 as nested loops (less GPU memory). Energies are unchanged.")
+    sbd.add_argument("--sbd_cpu_subspace", type=int, default=0, choices=[0, 1],
+                     help="Thrust only: keep the Davidson subspace vectors in CPU memory "
+                          "instead of GPU memory, for runs too large for GPU memory. "
+                          "Needs OMP_NUM_THREADS of 2 or more.")
     sbd.add_argument("--sbd_bit_length", "--bit_length", type=int, default=20,
                      dest="bit_length",
                      help="Bits packed into each size_t of the bitstring "
@@ -509,6 +513,7 @@ def main():
         "use_precalculated_dets": bool(args.sbd_use_precalculated_dets),
         "max_memory_gb_for_determinants": args.sbd_max_memory_gb_for_determinants,
         "thrust_collapse_loops": bool(args.sbd_thrust_collapse_loops),
+        "cpu_subspace": bool(args.sbd_cpu_subspace),
         "adet_comm_size": args.adet_comm_size,
         "bdet_comm_size": args.bdet_comm_size,
         "task_comm_size": args.task_comm_size,
