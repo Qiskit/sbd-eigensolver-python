@@ -168,12 +168,15 @@ mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 --fcidump $FCID
     --bit_length 62 --tolerance 1e-8 --savename /path/to/fe4s4/gdb/next- \
     --detfiles /path/to/fe4s4/gdb/list-000000.txt,/path/to/fe4s4/gdb/list-000001.txt,/path/to/fe4s4/gdb/list-000002.txt,/path/to/fe4s4/gdb/list-000003.txt
 
-# Variance and PT2 of both states
+# Variance and PT2 of both states. --energy is the "Ground state energy:" each
+# expanded solve above printed; the values here are the table's below
 cd $SBD/examples/analysis
 OMP_NUM_THREADS=2 mpirun -np 32 python variance.py --fcidump $FCIDUMP \
-    --state /path/to/fe4s4/tpb/next- --bit_length 20 --samples 5000 --batches 5 --json tpb.json
+    --state /path/to/fe4s4/tpb/next- --bit_length 20 --energy -326.7074213157 \
+    --samples 5000 --batches 5 --json tpb.json
 OMP_NUM_THREADS=2 mpirun -np 32 python variance.py --fcidump $FCIDUMP \
-    --state /path/to/fe4s4/gdb/next- --bit_length 62 --samples 5000 --batches 5 --json gdb.json
+    --state /path/to/fe4s4/gdb/next- --bit_length 62 --energy -326.7583051690 \
+    --samples 5000 --batches 5 --json gdb.json
 ```
 
 Measured on an 8× H100 server (Ha):
