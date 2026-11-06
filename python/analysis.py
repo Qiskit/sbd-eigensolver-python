@@ -48,8 +48,8 @@ from math import comb
 
 import numpy as np
 
-__all__ = ["SavedState", "VarianceResult", "load_gdb_shards", "load_state", "state_energy",
-           "variance"]
+__all__ = ["SavedState", "VarianceResult", "caop_variance", "load_gdb_shards", "load_state",
+           "state_energy", "variance"]
 
 
 @dataclass
@@ -764,6 +764,110 @@ def variance(source, fcidump, energy, *, method="auto", norb=None, bit_length=No
     k = len(v)
     stderr = (lambda x: float(x.std(ddof=1) / np.sqrt(k))) if k > 1 else (lambda x: float("nan"))
     return VarianceResult(float(v.mean()), stderr(v), float(p.mean()), stderr(p), float(energy),
+                          "stochastic", dimension,
+                          batches={"variance": v.tolist(), "pt2": p.tolist(),
+                                   "seconds": list(out["seconds"]),
+                                   "batch_id": [int(i) for i in out["batch_id"]]},
+                          settings=settings)
+
+
+def _caop_evaluator_backend(device):
+    """A backend module with the CAOP evaluator: the CPU or Thrust one, never offload.
+
+    Upstream builds the CAOP evaluator wherever CAOP is built, which here is the CPU and
+    Thrust modules; it runs on CPU in either. Prefer a module already loaded, as
+    :func:`variance` does, else the CPU one.
+    """
+    from . import available_backends, get_backend, loaded_backends
+
+    if device is not None:
+        backend = get_backend(device)
+        if not getattr(backend, "__sbd_has_caop__", False):
+            raise ValueError(f"the {device!r} backend has no CAOP evaluator: upstream SBD's "
+                             "CAOP code has CPU and Thrust paths only. Use 'cpu', or 'gpu' "
+                             "(NVHPC Thrust, NVIDIA GPUs only; there is no CAOP GPU path "
+                             "for AMD GPUs)")
+        return backend
+    for name in loaded_backends():
+        backend = get_backend(name)
+        if getattr(backend, "__sbd_has_caop__", False):
+            return backend
+    if "cpu" in available_backends():
+        return get_backend("cpu")
+    raise RuntimeError("no backend with the CAOP evaluator is available; build the CPU one")
+
+
+def caop_variance(loadname, hamfile, basisfiles, energy, *, sites, bit_length, shards=1,
+                  samples=20000, batches=10, seed=1729, cutoff=0.0, observable="both",
+                  first_batch=0, minimum_abs_denominator=0.0, h_comm_size=1,
+                  complex=False, comm=None, device=None):
+    """Energy variance and Epstein-Nesbet PT2 of a saved CAOP state, stochastically.
+
+    Upstream SBD's ``caop-stat-evaluator``, called from Python: the CAOP counterpart of
+    :func:`variance`, for a ground state saved by :func:`sbd.caop_diag_from_files`.
+    It reads the state as upstream's tool does, the basis files and then the saved
+    amplitudes onto them.
+
+    Args:
+        loadname: The ``savename`` prefix the state was saved under.
+        hamfile: The CAOP Hamiltonian file the state was solved with.
+        basisfiles: The basis files the state was solved over.
+        energy: The state's energy, the PT2 reference: the energy the solve that saved
+            the state returned. Required for ``observable`` ``"both"`` and ``"pt2"``,
+            as upstream requires ``--reference-energy``; ``None`` is allowed for
+            ``"variance"``, which does not use it.
+        sites: Number of modes, as the state's ``system_size``.
+        bit_length: Bits per packed word, as the state was saved with.
+        shards: Number of files the state was saved in.
+        samples, batches, seed, cutoff, observable, first_batch,
+            minimum_abs_denominator: As for :func:`variance`'s stochastic method.
+        h_comm_size: Helper ranks the Hamiltonian is sharded over; it must divide the
+            rank count.
+        complex: The state was solved with complex amplitudes
+            (``caop_diag_from_files(..., complex=True)``). Upstream's saved state does
+            not record its type, so this must match the solve; a mismatch is refused.
+        comm: MPI communicator; default ``MPI.COMM_WORLD``.
+        device: ``"cpu"`` or ``"gpu"``; the evaluator runs on CPU in either. Default:
+            a module already loaded that has it, else the CPU one.
+
+    Returns:
+        A :class:`VarianceResult`, identical on every rank.
+    """
+    from mpi4py import MPI
+
+    comm = comm or MPI.COMM_WORLD
+    if observable not in ("both", "variance", "pt2"):
+        raise ValueError(f"observable must be 'both', 'variance' or 'pt2', got {observable!r}")
+    if energy is None and observable != "variance":
+        raise ValueError(
+            f"caop_variance needs the state's energy, the PT2 reference, for "
+            f"observable={observable!r}: pass the energy the solve that saved the state "
+            f"returned. Only observable='variance' does without it")
+    if isinstance(basisfiles, (str, os.PathLike)):
+        basisfiles = [basisfiles]
+    backend = _caop_evaluator_backend(device)
+    out = backend.caop_external_observables(
+        comm, str(hamfile), [str(f) for f in basisfiles], str(loadname), int(shards),
+        int(sites), int(bit_length), float("nan") if energy is None else float(energy),
+        sample_count=samples,
+        batch_count=batches, seed=seed, first_batch_id=first_batch, heatbath_cutoff=cutoff,
+        observable=observable, minimum_abs_denominator=minimum_abs_denominator,
+        h_comm_size=h_comm_size, complex=complex)
+    v, p = np.asarray(out["variance"]), np.asarray(out["pt2"])
+    k = len(v)
+    stderr = (lambda x: float(x.std(ddof=1) / np.sqrt(k))) if k > 1 else (lambda x: float("nan"))
+    settings = {"method": "stochastic", "kind": "caop", "samples": samples, "batches": batches,
+                "seed": seed, "cutoff": cutoff, "ranks": comm.Get_size(),
+                "bit_length": bit_length, "observable": observable, "first_batch": first_batch,
+                "minimum_abs_denominator": minimum_abs_denominator}
+    # The evaluator does not report the subspace size; count the distinct basis states.
+    dimension = None
+    if comm.Get_rank() == 0:
+        dimension = len({line.strip() for f in basisfiles
+                         for line in open(f, encoding="ascii") if line.strip()})
+    dimension = comm.bcast(dimension, root=0)
+    return VarianceResult(float(v.mean()), stderr(v), float(p.mean()), stderr(p),
+                          float("nan") if energy is None else float(energy),
                           "stochastic", dimension,
                           batches={"variance": v.tolist(), "pt2": p.tolist(),
                                    "seconds": list(out["seconds"]),

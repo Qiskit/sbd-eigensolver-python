@@ -1,0 +1,21 @@
+---
+features:
+  - |
+    New :mod:`sbd.spectrum` binds upstream SBD's ``caop-spectrum``: the Green's
+    function of a CAOP ground state by block Lanczos. :func:`sbd.spectrum.green_function`
+    takes a state saved by :func:`sbd.caop_diag_from_files`, the modes to add an electron
+    to or remove one from, and a frequency grid, and returns the Green's function on it;
+    :func:`sbd.spectrum.spectral_function` gives the spectral function. The conventions
+    are upstream's. Real and complex amplitudes are both available. It runs with MPI and
+    OpenMP on the CPU; as upstream's, only applying the Hamiltonian on the fly
+    (``store_hamiltonian=False``) runs on the GPU, on the ``gpu`` (Thrust) backend. The
+    stored Hamiltonian, the default, stays on the CPU there too.
+
+    As upstream's app, it also takes general operators instead of ``c``/``cdag``
+    (``operator_files``) and the block-Lanczos deflation tolerances, and
+    :func:`sbd.spectrum.green_function_from_coefficients` reevaluates saved
+    coefficients on a new frequency grid or broadening without rerunning.
+  - |
+    New ``examples/caop/run_caop_spectrum.py`` runs it from the command line with
+    upstream's option names and CSV output, on a state saved by
+    ``run_caop_diag.py --savename``.

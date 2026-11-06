@@ -1,0 +1,11 @@
+---
+features:
+  - |
+    New :func:`sbd.caop_diag_from_files` and :class:`sbd.CAOP_SBD` bind upstream SBD's
+    CAOP solver: the ground state of a Hamiltonian written as creation and annihilation
+    operators (hard-core bosons, spins or fermions, as for lattice models such as the
+    Hubbard model), over a selected basis, as upstream's
+    ``caop_selected_basis_diagonalization`` app runs it. Real and complex amplitudes are
+    both available, chosen per call with ``complex=``. ``examples/caop/run_caop_diag.py``
+    is the command-line driver, with upstream's option names. CAOP runs on the ``cpu``
+    and ``gpu`` (Thrust) backends; upstream has no OpenMP-offload path for it.

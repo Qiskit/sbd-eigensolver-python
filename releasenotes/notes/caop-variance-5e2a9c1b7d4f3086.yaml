@@ -1,0 +1,9 @@
+---
+features:
+  - |
+    New :func:`sbd.analysis.caop_variance` binds upstream SBD's ``caop-stat-evaluator``:
+    the stochastic external energy variance and Epstein-Nesbet PT2 of a CAOP state saved
+    by :func:`sbd.caop_diag_from_files`, as :func:`sbd.analysis.variance` gives for TPB
+    and GDB states. It reads the state as upstream's tool does and takes the same
+    evaluator options, and returns a :class:`sbd.analysis.VarianceResult`. It runs on
+    CPU, from the ``cpu`` or ``gpu`` (Thrust) module.

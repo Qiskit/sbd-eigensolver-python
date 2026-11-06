@@ -37,7 +37,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <complex>
+#include <type_traits>
 #include <cstring>
+#include <fstream>
+#include <iomanip>
+#include <numeric>
+#include <sstream>
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -212,6 +218,257 @@ static bool sbd_all_ranks_ok(bool local_ok, MPI_Comm comm) {
     MPI_Allreduce(&local, &all, 1, MPI_INT, MPI_LAND, comm);
     return all != 0;
 }
+
+/**
+ * The problem the lowest-numbered rank found, on every rank; empty if none did.
+ *
+ * For checks only some ranks can make (the one that reads a file), so every rank
+ * raises the same, informative message rather than "another rank failed".
+ */
+static std::string sbd_first_problem(const std::string& local, MPI_Comm comm) {
+    int rank = 0, size = 1;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+    int mine = local.empty() ? size : rank, first = size;
+    MPI_Allreduce(&mine, &first, 1, MPI_INT, MPI_MIN, comm);
+    if (first == size) return std::string();
+    int length = rank == first ? int(local.size()) : 0;
+    MPI_Bcast(&length, 1, MPI_INT, first, comm);
+    std::string message(rank == first ? local : std::string(size_t(length), ' '));
+    MPI_Bcast(message.data(), length, MPI_CHAR, first, comm);
+    return message;
+}
+
+#ifndef USE_OMP_OFFLOAD
+/**
+ * Read a CAOP Hamiltonian file's coefficients on every rank, as upstream's loader
+ * would, and refuse together if any cannot be read.
+ *
+ * Upstream reads the file on h-rank 0 only and sends the terms on
+ * (caop/basic/loadmodel.h:92-96), so a line it cannot read raises on that rank while
+ * the others wait for terms: the job hangs on more than one rank. This uses
+ * upstream's line rules (blank and '#' lines skipped, the first other line the
+ * statistics, then one term per line, coefficient first). A real call reads a
+ * coefficient as a double, so "(re,im)" is refused there with a pointer to
+ * complex=True.
+ */
+struct CaopFileFacts {
+    bool fermion = false;     // statistics zero or negative, as upstream's loader reads it
+    size_t max_mode = 0;      // highest mode index any term uses
+};
+
+static CaopFileFacts caop_check_hamfile(const std::string& hamfile, bool complex,
+                                        MPI_Comm comm, const char* where) {
+    std::string problem;
+    CaopFileFacts facts;
+    std::ifstream ifs(hamfile);
+    if (!ifs) {
+        problem = "cannot open the Hamiltonian file " + hamfile;
+    } else {
+        std::string line;
+        bool statistics_read = false;
+        size_t number = 0;
+        while (problem.empty() && std::getline(ifs, line)) {
+            ++number;
+            const auto first = line.find_first_not_of(" \t");
+            if (first == std::string::npos || line[first] == '#') continue;
+            std::istringstream iss(line);
+            if (!statistics_read) {
+                int statistics;
+                if (!(iss >> statistics)) {
+                    problem = "line " + std::to_string(number) + " of " + hamfile
+                        + ": the first line must be the statistics (an integer: positive "
+                          "for hard-core bosons or spins, zero or negative for fermions)";
+                }
+                facts.fermion = statistics <= 0;
+                statistics_read = true;
+                continue;
+            }
+            bool read;
+            if (complex) {
+                std::complex<double> c;
+                read = static_cast<bool>(iss >> c);
+            } else {
+                double c;
+                read = static_cast<bool>(iss >> c);
+            }
+            // The operator tokens, each followed by its mode, up to a '#' comment.
+            std::string op;
+            size_t mode = 0;
+            while (read && iss >> op && op[0] != '#') {
+                if (iss >> mode) facts.max_mode = std::max(facts.max_mode, mode);
+                else problem = "line " + std::to_string(number) + " of " + hamfile
+                         + ": operator " + op + " has no mode index after it";
+            }
+            if (!read) {
+                const bool looks_complex = line[first] == '(';
+                problem = "line " + std::to_string(number) + " of " + hamfile
+                    + ": cannot read the coefficient '"
+                    + line.substr(first, line.find_first_of(" \t", first) - first) + "'"
+                    + (looks_complex && !complex
+                        ? ". It is written as a complex number (re,im): use complex=True "
+                          "(--complex in the drivers)"
+                        : ". A coefficient is a real number, or (re,im) with complex=True");
+            }
+        }
+        if (problem.empty() && !statistics_read) {
+            problem = hamfile + " has no statistics line";
+        }
+    }
+    const std::string first = sbd_first_problem(problem, comm);
+    if (!first.empty()) {
+        throw std::invalid_argument(std::string(where) + ": " + first);
+    }
+    return facts;
+}
+
+/**
+ * Refuse, on every rank, a CAOP file whose terms use a mode at or beyond sites.
+ *
+ * Upstream checks max_index() on the h-sharded operator, so with h_comm_size > 1 only
+ * the shard holding the high mode throws and the others hang.
+ */
+static void caop_check_modes(const std::string& file, const CaopFileFacts& facts,
+                             size_t sites, const char* where) {
+    if (facts.max_mode >= sites) {
+        throw std::invalid_argument(
+            std::string(where) + ": " + file + " uses mode " + std::to_string(facts.max_mode)
+            + ", beyond sites=" + std::to_string(sites) + " (modes are 0 .. sites-1)");
+    }
+}
+#endif
+
+#ifndef USE_OMP_OFFLOAD
+/**
+ * Check a CAOP state saved by SaveWavefunction against the scalar type and the basis
+ * files it will be loaded onto, on every rank, before upstream's LoadWavefunction.
+ *
+ * The file is [n][words][n x words determinant words][n amplitudes] with no type tag,
+ * and LoadWavefunction neither checks its size nor reports what it drops: it maps the
+ * saved amplitudes onto the basis by determinant and normalizes the result. So a real
+ * file read as complex (or the reverse), an unnormalized state, or a basis that is
+ * not the saved state's all give a wrong answer with no error. Rank r < shards reads
+ * shard r, as the loader does. The basis is compared by count and an
+ * order-independent hash of its determinants, with duplicates refused, which upstream
+ * otherwise aborts on.
+ */
+static void caop_check_state(const std::string& loadname, size_t shards,
+                             const std::vector<std::string>& basisfiles, size_t sites,
+                             size_t bit_length, bool complex, MPI_Comm comm,
+                             const char* where) {
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+    const size_t words = (sites + bit_length - 1) / bit_length;
+    const size_t elem = complex ? sizeof(std::complex<double>) : sizeof(double);
+    auto mix = [](uint64_t x) {            // splitmix64: a well-spread 64-bit hash
+        x += 0x9e3779b97f4a7c15ULL;
+        x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+        return x ^ (x >> 31);
+    };
+    auto hash_det = [&](const uint64_t* w) {
+        uint64_t h = 0;
+        for (size_t k = 0; k < words; ++k) h = mix(h ^ w[k]);
+        return h;
+    };
+    std::string problem;
+    double norm2 = 0.0;
+    uint64_t state_count = 0, state_hash = 0, basis_count = 0, basis_hash = 0;
+    if (size_t(rank) < shards) {
+        std::ostringstream name;
+        name << loadname << std::setw(6) << std::setfill('0') << rank << ".bin";
+        std::ifstream in(name.str(), std::ios::binary | std::ios::ate);
+        if (!in) {
+            problem = "cannot read the saved state " + name.str();
+        } else {
+            const auto bytes = size_t(in.tellg());
+            in.seekg(0);
+            uint64_t n = 0, w = 0;
+            in.read(reinterpret_cast<char*>(&n), sizeof n);
+            in.read(reinterpret_cast<char*>(&w), sizeof w);
+            const size_t real_bytes = 16 + n * (w * 8 + sizeof(double));
+            const size_t complex_bytes = 16 + n * (w * 8 + sizeof(std::complex<double>));
+            if (!in || w != words) {
+                problem = name.str() + ": its determinants are " + std::to_string(w)
+                    + " words, where sites=" + std::to_string(sites) + " and bit_length="
+                    + std::to_string(bit_length) + " give " + std::to_string(words)
+                    + "; use the run's own system_size and bit_length";
+            } else if (bytes != (complex ? complex_bytes : real_bytes)) {
+                problem = name.str() + (bytes == (complex ? real_bytes : complex_bytes)
+                    ? std::string(" holds ") + (complex ? "real" : "complex")
+                      + " amplitudes: pass complex=" + (complex ? "False" : "True")
+                      + ", as the state was solved with"
+                    : " is truncated or not a saved CAOP state");
+            } else {
+                std::vector<uint64_t> det(n * words);
+                in.read(reinterpret_cast<char*>(det.data()), det.size() * 8);
+                std::vector<double> amp(n * elem / sizeof(double));
+                in.read(reinterpret_cast<char*>(amp.data()), amp.size() * sizeof(double));
+                for (double a : amp) norm2 += a * a;      // |c|^2: re^2 + im^2 if complex
+                std::vector<uint64_t> hashes(n);
+                for (size_t i = 0; i < n; ++i) hashes[i] = hash_det(&det[i * words]);
+                for (uint64_t h : hashes) state_hash += h;
+                state_count = n;
+            }
+        }
+        // The basis lines this rank's loader would read: every file, as the loader
+        // gives each loading rank its share of them; count and hash all of them on
+        // rank 0 only, so the total is not counted once per loading rank.
+        if (rank == 0) {
+            std::vector<uint64_t> hashes;
+            for (const auto& file : basisfiles) {
+                std::ifstream bf(file);
+                if (!bf) {
+                    if (problem.empty()) problem = "cannot open the basis file " + file;
+                    break;
+                }
+                std::string line;
+                std::vector<uint64_t> wv(words);
+                while (std::getline(bf, line)) {
+                    if (line.empty()) continue;
+                    std::fill(wv.begin(), wv.end(), 0);
+                    const size_t len = std::min(line.size(), sites);
+                    for (size_t j = 0; j < len; ++j) {
+                        if (line[j] == '1') {
+                            const size_t bit = sites - 1 - j;
+                            wv[bit / bit_length] |= uint64_t(1) << (bit % bit_length);
+                        }
+                    }
+                    hashes.push_back(hash_det(wv.data()));
+                }
+            }
+            std::sort(hashes.begin(), hashes.end());
+            if (problem.empty()
+                && std::adjacent_find(hashes.begin(), hashes.end()) != hashes.end()) {
+                problem = "the basis files list a determinant more than once";
+            }
+            basis_count = hashes.size();
+            for (uint64_t h : hashes) basis_hash += h;
+        }
+    }
+    const std::string first = sbd_first_problem(problem, comm);
+    if (!first.empty()) {
+        throw std::invalid_argument(std::string(where) + ": " + first);
+    }
+    uint64_t local[4] = {state_count, state_hash, basis_count, basis_hash};
+    uint64_t total[4] = {0, 0, 0, 0};
+    MPI_Allreduce(local, total, 4, MPI_UINT64_T, MPI_SUM, comm);
+    double norm2_total = 0.0;
+    MPI_Allreduce(&norm2, &norm2_total, 1, MPI_DOUBLE, MPI_SUM, comm);
+    if (total[0] != total[2] || total[1] != total[3]) {
+        throw std::invalid_argument(
+            std::string(where) + ": the basis files (" + std::to_string(total[2])
+            + " determinants) are not the saved state's (" + std::to_string(total[0])
+            + "); give the basis files the state was solved over");
+    }
+    if (!(std::abs(norm2_total - 1.0) <= 1e-8)) {
+        throw std::invalid_argument(
+            std::string(where) + ": the saved state's norm squared is "
+            + std::to_string(norm2_total) + ", not 1; the evaluator needs a normalized "
+              "state, as the solver saves it");
+    }
+}
+#endif
 
 /**
  * Refuse a Thrust solve with one OpenMP thread, before upstream aborts the job.
@@ -1736,6 +1993,621 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
     // Version information
     // ========================================================================
     
+    // ========================================================================
+    // CAOP: selected-basis diagonalization of a creation/annihilation-operator
+    // Hamiltonian (upstream apps/caop_selected_basis_diagonalization)
+    // ========================================================================
+    //
+    // Upstream's CAOP code has CPU and Thrust paths and no OpenMP-offload one, so the
+    // offload module does not bind it; __sbd_has_caop__ says which modules do. The
+    // library is templated on the scalar type, so both real and complex
+    // Hamiltonians are bound here, chosen per call; upstream's app picks one at
+    // compile time with -D_COMPLEX.
+#ifndef USE_OMP_OFFLOAD
+    m.attr("__sbd_has_caop__") = true;
+
+    py::class_<sbd::caop::SBD>(m, "CAOP_SBD", py::module_local(),
+                               "Configuration for CAOP diagonalization")
+        .def(py::init<>())
+        .def_readwrite("t_comm_size", &sbd::caop::SBD::t_comm_size,
+                      "Task communicator size (column-wise Hamiltonian application)")
+        .def_readwrite("b_comm_size", &sbd::caop::SBD::b_comm_size,
+                      "Basis communicator size: how many shards the basis is split into")
+        // h_comm_size is deliberately NOT exposed, as on TPB_SBD and GDB_SBD.
+        // Upstream declares the field but never reads it: caop::diag derives
+        //     h_comm_size = mpi_size / (t_comm_size * b_comm_size)
+        // (caop/basic/sbdiag.h:263, :564). An attribute that silently does nothing
+        // is worse than an absent one; change the rank count or the other two
+        // sizes instead.
+        .def_readwrite("method", &sbd::caop::SBD::method,
+                      "0/1: Davidson, Hamiltonian on the fly / stored; "
+                      "2/3: Lanczos, on the fly / stored")
+        .def_readwrite("max_it", &sbd::caop::SBD::max_it, "Restart cycles")
+        .def_readwrite("max_nb", &sbd::caop::SBD::max_nb,
+                      "Largest reduced-space dimension before a restart")
+        .def_readwrite("max_iv", &sbd::caop::SBD::max_iv,
+                      "Initial vectors (initial subspace dimension) for Davidson")
+        .def_readwrite("eps", &sbd::caop::SBD::eps, "Convergence threshold on the residual")
+        .def_readwrite("init", &sbd::caop::SBD::init,
+                      "Initial vector; only 0 (random) is supported upstream")
+        .def_readwrite("initial_determinant_bitstring",
+                      &sbd::caop::SBD::initial_determinant_bitstring,
+                      "Start with unit weight on this basis bitstring (system_size "
+                      "characters) instead of init. It must occur exactly once in the "
+                      "basis. A loadname takes precedence")
+        .def_readwrite("seed", &sbd::caop::SBD::seed, "Seed for the random initial vector")
+        .def_readwrite("system_size", &sbd::caop::SBD::system_size,
+                      "Number of modes, i.e. the length of each basis bitstring")
+        .def_readwrite("bit_length", &sbd::caop::SBD::bit_length,
+                      "Bits stored per 64-bit word of a packed bitstring")
+        .def_readwrite("do_sort_basis", &sbd::caop::SBD::do_sort_basis,
+                      "Sort the basis across ranks after loading (for overlapping files)")
+        .def_readwrite("do_redist_basis", &sbd::caop::SBD::do_redist_basis,
+                      "Redistribute the basis evenly over b_comm after loading")
+        .def_readwrite("carryover_type", &sbd::caop::SBD::carryover_type,
+                      "0: none; 1: keep the largest-weight fraction; 2: deterministic "
+                      "heat-bath expansion")
+        .def_readwrite("ratio", &sbd::caop::SBD::ratio,
+                      "carryover_type 1: fraction of basis states kept")
+        .def_readwrite("heatbath_cutoff", &sbd::caop::SBD::heatbath_cutoff,
+                      "carryover_type 2: accept a term when |a_k c_j| exceeds this")
+        .def_readwrite("heatbath_truncation", &sbd::caop::SBD::heatbath_truncation,
+                      "carryover_type 2: drop a parent unless |c_j|^2 exceeds this")
+        .def_readwrite("heatbath_batch_size", &sbd::caop::SBD::heatbath_batch_size,
+                      "carryover_type 2: candidate batch size per rank")
+        .def_readwrite("heatbath_parent_distribution",
+                      &sbd::caop::SBD::heatbath_parent_distribution,
+                      "carryover_type 2: 0 keeps the basis layout for expansion, 1 "
+                      "deals parents out by weight")
+        .def("__repr__", [](const sbd::caop::SBD& s) {
+            return "CAOP_SBD(method=" + std::to_string(s.method)
+                + ", system_size=" + std::to_string(s.system_size)
+                + ", bit_length=" + std::to_string(s.bit_length)
+                + ", b_comm_size=" + std::to_string(s.b_comm_size) + ")";
+        });
+
+    m.def("caop_diag_from_files",
+        [](py::object py_comm,
+           const sbd::caop::SBD& sbd_data,
+           const std::string& hamfile,
+           const std::vector<std::string>& basisfiles,
+           const std::string& loadname,
+           const std::string& savename,
+           bool complex) {
+            MPI_Comm comm = get_mpi_comm(py_comm);
+            sbd_require_openmp_threads("caop_diag_from_files", comm);
+            int mpi_rank;
+            MPI_Comm_rank(comm, &mpi_rank);
+            int mpi_size;
+            MPI_Comm_size(comm, &mpi_size);
+
+            // ---- what upstream does not check ---------------------------------
+            // These depend only on the config and the rank count, which every rank
+            // sees identically, so every rank throws together without a vote. Each
+            // was observed upstream to return a wrong energy with exit 0, or hang.
+            const int t_comm_size = sbd_data.t_comm_size;
+            const int b_comm_size = sbd_data.b_comm_size;
+            if (t_comm_size < 1 || b_comm_size < 1) {
+                throw std::invalid_argument(
+                    "caop_diag_from_files requires t_comm_size >= 1 and b_comm_size >= 1");
+            }
+            // caop::diag derives h_comm_size = ranks / (t * b) by integer division
+            // (caop/basic/sbdiag.h:263) and setup_communicator then splits ranks into
+            // groups of t * b (helper.h:22-27). With a remainder, the last group is
+            // short, so ranks disagree on the grid (of 3 ranks with b = 2, one sees
+            // b = 1): a wrong energy, with exit 0. With fewer ranks than t * b the
+            // grid is consistent but smaller than asked (2 ranks, b = 4 run b = 2).
+            if (mpi_size % (t_comm_size * b_comm_size) != 0) {
+                throw std::invalid_argument(
+                    "caop_diag_from_files: the rank count (" + std::to_string(mpi_size)
+                    + ") must be a multiple of t_comm_size * b_comm_size ("
+                    + std::to_string(t_comm_size) + " * " + std::to_string(b_comm_size)
+                    + " = " + std::to_string(t_comm_size * b_comm_size)
+                    + "). Upstream derives the helper size as ranks / (t * b) and "
+                      "returns a wrong energy otherwise");
+            }
+            // caop::diag's dispatch is `if (method == 0 || method == 2) {...} else
+            // {...}`, so any other value silently runs a stored-Hamiltonian method.
+            if (sbd_data.method < 0 || sbd_data.method > 3) {
+                throw std::invalid_argument(
+                    "caop_diag_from_files: method must be 0-3 (0/1 Davidson, 2/3 "
+                    "Lanczos; odd stores the Hamiltonian), got "
+                    + std::to_string(sbd_data.method));
+            }
+            // Davidson (methods 0 and 1) starts from max_iv vectors and grows the
+            // reduced space up to max_nb before a restart, so it needs room to grow:
+            // max_iv == max_nb returns a wrong energy, and max_iv > max_nb or 0
+            // hangs. Lanczos (methods 2 and 3) does not use max_iv.
+            if ((sbd_data.method == 0 || sbd_data.method == 1)
+                && (sbd_data.max_iv < 1 || sbd_data.max_iv >= sbd_data.max_nb)) {
+                throw std::invalid_argument(
+                    "caop_diag_from_files: Davidson (method 0 or 1) needs "
+                    "1 <= max_iv < max_nb, got max_iv=" + std::to_string(sbd_data.max_iv)
+                    + ", max_nb=" + std::to_string(sbd_data.max_nb)
+                    + ". Upstream returns a wrong energy at max_iv == max_nb and hangs "
+                      "above it or at 0");
+            }
+#ifdef SBD_THRUST
+            // make_slide deals the b ring stations out over the t task ranks
+            // (caop/basic/helper.h:41-55), so with t > b some ranks get none. The CPU
+            // mult guards an empty slide (mult.h:19); the Thrust one returns early
+            // (mult_thrust.h:583) and skips the Allreduce the other ranks wait in, so
+            // the job hangs; the stored-Hamiltonian methods run the CPU mult. The
+            // same t <= b holds for GDB on every backend.
+            if ((sbd_data.method == 0 || sbd_data.method == 2) && t_comm_size > b_comm_size) {
+                throw std::invalid_argument(
+                    "caop_diag_from_files on the gpu (Thrust) backend with method "
+                    + std::to_string(sbd_data.method) + " needs t_comm_size <= b_comm_size, "
+                    "got t_comm_size=" + std::to_string(t_comm_size) + ", b_comm_size="
+                    + std::to_string(b_comm_size) + ": a task rank with no basis-ring "
+                    "station hangs upstream's GPU kernel. Raise b_comm_size, lower "
+                    "t_comm_size, or use device='cpu'");
+            }
+#endif
+#ifdef SBD_THRUST
+            int numDevices, myDevice;
+#ifdef __CUDACC__
+            cudaGetDeviceCount(&numDevices);
+            myDevice = mpi_rank % numDevices;
+            cudaSetDevice(myDevice);
+#else
+            hipGetDeviceCount(&numDevices);
+            myDevice = mpi_rank % numDevices;
+            hipSetDevice(myDevice);
+#endif
+#endif
+            if (basisfiles.empty()) {
+                throw std::invalid_argument("caop_diag_from_files needs at least one basis file");
+            }
+            // Upstream reads the hamfile on h-rank 0 only and sends the terms on
+            // (caop/basic/loadmodel.h:92-96), so a file it cannot read hangs the other
+            // ranks; see caop_check_hamfile.
+            // Upstream's solve does not check the terms' modes against system_size.
+            caop_check_modes(hamfile,
+                             caop_check_hamfile(hamfile, complex, comm,
+                                                "caop_diag_from_files"),
+                             sbd_data.system_size, "caop_diag_from_files");
+            // As upstream's caop-spectrum app: the stored Hamiltonian (methods 1/3) keeps
+            // per-thread slots that need a fixed OpenMP team (caop/basic/mkham.h).
+            omp_set_dynamic(0);
+            double energy = 0.0;
+            sbd::det_vector<size_t> co_basis;
+            {
+                py::gil_scoped_release release;
+                if (complex) {
+                    sbd::caop::diag<std::complex<double>>(comm, sbd_data, hamfile, basisfiles,
+                                                          loadname, savename, energy, co_basis);
+                } else {
+                    sbd::caop::diag<double>(comm, sbd_data, hamfile, basisfiles,
+                                            loadname, savename, energy, co_basis);
+                }
+            }
+            const size_t words = co_basis.empty() ? 0 : co_basis.elem_size();
+            py::array_t<size_t> co_out(std::vector<py::ssize_t>{
+                static_cast<py::ssize_t>(co_basis.size()), static_cast<py::ssize_t>(words)});
+            if (!co_basis.empty()) {
+                std::memcpy(co_out.mutable_data(), co_basis.cflat().data(),
+                            co_basis.size() * words * sizeof(size_t));
+            }
+            py::dict results;
+            results["energy"] = energy;
+            results["carryover_basis"] = co_out;
+            return results;
+        },
+        "CAOP diagonalization of a Hamiltonian file over a basis given as files, "
+        "as upstream's caop_selected_basis_diagonalization app",
+        py::arg("comm"),
+        py::arg("sbd_data"),
+        py::arg("hamfile"),
+        py::arg("basisfiles"),
+        py::arg("loadname") = "",
+        py::arg("savename") = "",
+        py::arg("complex") = false);
+
+    // CAOP spectrum: a Green's function of a saved CAOP ground state by block Lanczos
+    // (upstream apps/caop-spectrum). Upstream's pipeline, run in one call: read the
+    // checkpoint and the extra basis, load H, build the response coefficients with
+    // sbd::caop::spectrum::spectrum, then evaluate G(omega) on a grid.
+    m.def("caop_spectrum",
+        [](py::object py_comm,
+           const std::string& loadname,
+           size_t shards,
+           const std::string& hamfile,
+           const std::vector<size_t>& orbitals,
+           bool addition,
+           size_t sites,
+           size_t bit_length,
+           double reference_energy,
+           const std::vector<std::string>& extra_basis,
+           const std::vector<double>& omegas,
+           double eta,
+           size_t max_steps,
+           size_t h_comm_size,
+           size_t t_comm_size,
+           bool store_hamiltonian,
+           bool complex,
+           bool wavefunction_complex,
+           const std::string& save_coefficients,
+           const std::vector<std::string>& operator_files,
+           double rank_atol,
+           double rank_rtol) {
+            namespace cs = sbd::caop::spectrum;
+            const bool general = !operator_files.empty();
+            if (wavefunction_complex && !complex) {
+                throw std::invalid_argument(
+                    "caop_spectrum: a complex saved state needs complex=True");
+            }
+            MPI_Comm comm = get_mpi_comm(py_comm);
+            sbd_require_openmp_threads("caop_spectrum", comm);
+            int world = 1, rank = 0;
+            MPI_Comm_size(comm, &world);
+            MPI_Comm_rank(comm, &rank);
+            if (h_comm_size == 0 || t_comm_size == 0 || world % (h_comm_size * t_comm_size)) {
+                throw std::invalid_argument(
+                    "caop_spectrum: h_comm_size * t_comm_size must divide the rank count");
+            }
+            if (general && !orbitals.empty()) {
+                throw std::invalid_argument(
+                    "caop_spectrum: give orbitals (single-particle c/cdag) or operator "
+                    "files (general operators), not both");
+            }
+            if (!general && orbitals.empty()) {
+                throw std::invalid_argument(
+                    "caop_spectrum needs at least one orbital or operator file");
+            }
+            if (!(rank_atol >= 0) || !(rank_rtol >= 0)) {
+                throw std::invalid_argument(
+                    "caop_spectrum: rank_atol and rank_rtol must be non-negative");
+            }
+            if (sites == 0 || bit_length == 0 || bit_length > 8 * sizeof(size_t)) {
+                throw std::invalid_argument("caop_spectrum: invalid sites or bit_length");
+            }
+            // Upstream reads the hamfile on h-rank 0 only, as for the solve; see
+            // caop_check_hamfile. The operator files are read the same way.
+            const auto ham_facts = caop_check_hamfile(hamfile, complex, comm, "caop_spectrum");
+            caop_check_modes(hamfile, ham_facts, sites, "caop_spectrum");
+            // Upstream compares each operator's statistics with H on the h=t=0 ranks
+            // only, so a mismatch there would hang the rest: refuse it here, everywhere.
+            for (const auto& file : operator_files) {
+                const auto facts = caop_check_hamfile(file, complex, comm, "caop_spectrum");
+                caop_check_modes(file, facts, sites, "caop_spectrum");
+                if (facts.fermion != ham_facts.fermion) {
+                    throw std::invalid_argument(
+                        "caop_spectrum: operator file " + file
+                        + " has different statistics from the Hamiltonian");
+                }
+            }
+#ifdef SBD_THRUST
+            // make_slide deals the b ring stations over the t task ranks
+            // (caop/basic/helper.h:41-55); with t > b some get none, and upstream's
+            // Thrust mult returns early on an empty slide (mult_thrust.h:583), skipping
+            // the Allreduce the other ranks wait in. The stored mode runs the CPU mult.
+            if (!store_hamiltonian && t_comm_size > world / (h_comm_size * t_comm_size)) {
+                throw std::invalid_argument(
+                    "caop_spectrum on the gpu (Thrust) backend with the on-the-fly "
+                    "Hamiltonian needs t_comm_size <= the b ranks (ranks / (h_comm_size * "
+                    "t_comm_size)): a task rank with no basis-ring station hangs "
+                    "upstream's GPU kernel. Lower t_comm_size, store the Hamiltonian, or "
+                    "use device='cpu'");
+            }
+#endif
+            // As upstream's app: the stored Hamiltonian's per-thread slots need the
+            // same OpenMP team in every parallel region (caop/basic/mkham.h).
+            omp_set_dynamic(0);
+#ifdef SBD_THRUST
+            {
+                int numDevices = 1;
+#ifdef __CUDACC__
+                cudaGetDeviceCount(&numDevices);
+                cudaSetDevice(rank % numDevices);
+#else
+                hipGetDeviceCount(&numDevices);
+                hipSetDevice(rank % numDevices);
+#endif
+            }
+#endif
+            std::vector<std::complex<double>> g;
+            size_t basis_size = 0, steps = 0;
+            std::string stop_reason;
+            auto run = [&](auto tag) {
+                using ElemT = decltype(tag);
+                sbd::det_vector<size_t>::init_elem_size((sites + bit_length - 1) / bit_length);
+                const int b_size = int(world / h_comm_size / t_comm_size);
+                MPI_Comm h_comm, b_comm, t_comm;
+                sbd::setup_communicator(comm, int(h_comm_size), b_size, int(t_comm_size),
+                                        h_comm, b_comm, t_comm);
+                int h_rank = 0, t_rank = 0;
+                MPI_Comm_rank(h_comm, &h_rank);
+                MPI_Comm_rank(t_comm, &t_rank);
+                cs::Wavefunction<ElemT> state;
+                cs::Basis extra;
+                if (h_rank == 0 && t_rank == 0) {
+                    // Read the checkpoint as the type it was saved with (real and complex
+                    // files are not interchangeable), then promote a real state into a
+                    // complex calculation, as upstream's app does.
+                    if (wavefunction_complex) {
+                        if constexpr (std::is_same_v<ElemT, std::complex<double>>) {
+                            state = cs::ReadWavefunctionCheckpoint<ElemT>(
+                                loadname, shards, sites, bit_length, b_comm);
+                        }
+                    } else {
+                        auto real_state = cs::ReadWavefunctionCheckpoint<double>(
+                            loadname, shards, sites, bit_length, b_comm);
+                        state.basis = std::move(real_state.basis);
+                        state.coefficients.assign(real_state.coefficients.begin(),
+                                                  real_state.coefficients.end());
+                    }
+                    if (!extra_basis.empty()) {
+                        extra = cs::LoadBasis(extra_basis, sites, bit_length, b_comm);
+                    }
+                }
+                sbd::GeneralOp<ElemT> h;
+                bool fermion = false;
+                sbd::load_GeneralOp_from_file(hamfile, h, fermion, h_comm, b_comm, t_comm);
+                sbd::sparse_solver::LanczosOptions options;
+                options.max_steps = max_steps;
+                options.rank_atol = rank_atol;
+                options.rank_rtol = rank_rtol;
+                // General operators, as upstream's app: each file is a CAOP operator,
+                // read on the h=t=0 ranks with the statistics of H, observables 0..n-1,
+                // and the addition-sign resolvent <psi0| O_a^dag (w+E0-H+i eta)^-1 O_b |psi0>.
+                std::vector<sbd::GeneralOp<ElemT>> applied;
+                std::vector<size_t> observables = orbitals;
+                if (general) {
+                    observables.resize(operator_files.size());
+                    std::iota(observables.begin(), observables.end(), size_t{0});
+                    if (h_rank == 0 && t_rank == 0) {
+                        applied.resize(operator_files.size());
+                        for (size_t v = 0; v < applied.size(); ++v) {
+                            bool op_fermion = false;
+                            sbd::load_GeneralOp_from_file(operator_files[v], applied[v],
+                                                          op_fermion, MPI_COMM_SELF, b_comm,
+                                                          MPI_COMM_SELF);
+                            if (op_fermion != fermion) {
+                                throw std::invalid_argument(
+                                    "caop_spectrum: operator file " + operator_files[v]
+                                    + " has different statistics from the Hamiltonian");
+                            }
+                        }
+                    }
+                }
+                auto result = cs::spectrum<ElemT>(state, h, fermion, observables,
+                                                  general || addition, sites, bit_length,
+                                                  extra, reference_energy, h_comm, b_comm,
+                                                  t_comm, options,
+                                                  general ? &applied : nullptr,
+                                                  store_hamiltonian);
+                result.operator_files = operator_files;
+                MPI_Comm_free(&t_comm);
+                MPI_Comm_free(&b_comm);
+                MPI_Comm_free(&h_comm);
+                basis_size = result.basis_size;
+                steps = result.coefficients.A.size();
+                stop_reason = result.coefficients.stop_reason;
+                if (rank == 0 && !save_coefficients.empty()) {
+                    cs::save_coefficients(save_coefficients, result, options);
+                }
+                const size_t n = observables.size();
+                g.assign(omegas.size() * n * n, 0.0);
+                for (size_t k = 0; k < omegas.size(); ++k) {
+                    const auto gk = cs::green_function(result, omegas[k], eta);
+                    std::copy(gk.begin(), gk.end(), g.begin() + k * n * n);
+                }
+            };
+            {
+                py::gil_scoped_release release;
+                if (complex) run(std::complex<double>{});
+                else run(double{});
+            }
+            const size_t n = general ? operator_files.size() : orbitals.size();
+            py::array_t<std::complex<double>> out(std::vector<py::ssize_t>{
+                static_cast<py::ssize_t>(omegas.size()), static_cast<py::ssize_t>(n),
+                static_cast<py::ssize_t>(n)});
+            std::copy(g.begin(), g.end(), out.mutable_data());
+            py::dict results;
+            results["green_function"] = out;
+            results["basis_size"] = basis_size;
+            results["steps"] = steps;
+            results["stop_reason"] = stop_reason;
+            return results;
+        },
+        "Green's function of a saved CAOP ground state by block Lanczos, as upstream's "
+        "caop-spectrum app",
+        py::arg("comm"), py::arg("loadname"), py::arg("shards"), py::arg("hamfile"),
+        py::arg("orbitals"), py::arg("addition"), py::arg("sites"), py::arg("bit_length"),
+        py::arg("reference_energy"), py::arg("extra_basis") = std::vector<std::string>{},
+        py::arg("omegas") = std::vector<double>{}, py::arg("eta") = 0.1,
+        py::arg("max_steps") = 100, py::arg("h_comm_size") = 1, py::arg("t_comm_size") = 1,
+        py::arg("store_hamiltonian") = true, py::arg("complex") = false,
+        py::arg("wavefunction_complex") = false, py::arg("save_coefficients") = "",
+        py::arg("operator_files") = std::vector<std::string>{},
+        py::arg("rank_atol") = 1e-13, py::arg("rank_rtol") = 1e-12);
+
+    // Upstream's --read-coefficients: evaluate saved block-Lanczos coefficients on a new
+    // frequency grid or broadening, without the Hamiltonian or the state. File-only and
+    // rank-local; the scalar type comes from the file's header.
+    m.def("caop_spectrum_from_coefficients",
+        [](const std::string& path, const std::vector<double>& omegas, double eta) {
+            namespace cs = sbd::caop::spectrum;
+            std::vector<std::complex<double>> g;
+            size_t n = 0, basis_size = 0, steps = 0;
+            bool addition = true;
+            std::string stop_reason;
+            std::vector<size_t> labels;
+            std::vector<std::string> operator_files;
+            auto evaluate = [&](auto tag) {
+                using ElemT = decltype(tag);
+                auto result = cs::load_coefficients<ElemT>(path);
+                n = result.orbitals.size();
+                labels = result.orbitals;
+                operator_files = result.operator_files;
+                basis_size = result.basis_size;
+                steps = result.coefficients.A.size();
+                stop_reason = result.coefficients.stop_reason;
+                addition = result.addition;
+                g.assign(omegas.size() * n * n, 0.0);
+                for (size_t k = 0; k < omegas.size(); ++k) {
+                    const auto gk = cs::green_function(result, omegas[k], eta);
+                    std::copy(gk.begin(), gk.end(), g.begin() + k * n * n);
+                }
+            };
+            if (cs::complex_coefficient_file(path)) evaluate(std::complex<double>{});
+            else evaluate(double{});
+            py::array_t<std::complex<double>> out(std::vector<py::ssize_t>{
+                static_cast<py::ssize_t>(omegas.size()), static_cast<py::ssize_t>(n),
+                static_cast<py::ssize_t>(n)});
+            std::copy(g.begin(), g.end(), out.mutable_data());
+            py::dict results;
+            results["green_function"] = out;
+            results["basis_size"] = basis_size;
+            results["steps"] = steps;
+            results["stop_reason"] = stop_reason;
+            results["addition"] = addition;
+            results["orbitals"] = labels;
+            results["operator_files"] = operator_files;
+            return results;
+        },
+        "Green's function from coefficients saved by caop_spectrum, on a new grid, as "
+        "upstream's caop-spectrum --read-coefficients",
+        py::arg("path"), py::arg("omegas"), py::arg("eta"));
+    // CAOP stochastic external variance and Epstein-Nesbet PT2 (upstream's
+    // apps/caop-stat-evaluator, as a library call). It reads the state as upstream's
+    // CLI does: the basis files, then the saved amplitudes onto them with
+    // LoadWavefunction, on one rank per saved shard. It runs on the CPU, like the
+    // GDB evaluator, whichever module calls it.
+    m.def("caop_external_observables",
+        [](py::object py_comm,
+           const std::string& hamfile,
+           const std::vector<std::string>& basisfiles,
+           const std::string& loadname,
+           size_t shards,
+           size_t sites,
+           size_t bit_length,
+           double reference_energy,
+           size_t sample_count,
+           size_t batch_count,
+           uint64_t seed,
+           uint64_t first_batch_id,
+           double heatbath_cutoff,
+           const std::string& observable,
+           size_t expansion_batch_size,
+           double minimum_abs_denominator,
+           size_t h_comm_size,
+           bool complex) {
+            MPI_Comm world = get_mpi_comm(py_comm);
+            int rank = 0, size = 1;
+            MPI_Comm_rank(world, &rank);
+            MPI_Comm_size(world, &size);
+            if (h_comm_size == 0 || size % h_comm_size) {
+                throw std::invalid_argument(
+                    "caop_external_observables: h_comm_size must divide the rank count");
+            }
+            sbd::stat_evaluator::Observable which;
+            try {
+                which = sbd::stat_evaluator::parse_observable(observable);
+            } catch (const std::exception&) {
+                throw std::invalid_argument(
+                    "observable must be 'both', 'variance' or 'pt2', got '" + observable + "'");
+            }
+            if (sample_count < 2) {
+                throw std::invalid_argument("sample_count must be at least 2");
+            }
+            if (batch_count == 0) {
+                throw std::invalid_argument("batch_count must be at least 1");
+            }
+            const int b_size = size / int(h_comm_size);
+            const size_t load_b_size = shards == 0 ? size_t(b_size) : shards;
+            if (load_b_size > size_t(b_size)) {
+                throw std::invalid_argument(
+                    "caop_external_observables: the state has more shards than b ranks");
+            }
+            // Upstream loads the Hamiltonian, the basis and the state on some ranks only;
+            // check what would otherwise hang the others or give a wrong answer silently.
+            caop_check_hamfile(hamfile, complex, world, "caop_external_observables");
+            caop_check_state(loadname, load_b_size, basisfiles, sites, bit_length, complex,
+                             world, "caop_external_observables");
+            std::vector<double> variance, pt2, seconds;
+            std::vector<uint64_t> batch_ids;
+            auto run = [&](auto tag) {
+                using ElemT = decltype(tag);
+                const int h_rank = rank / b_size;
+                MPI_Comm h_comm, b_comm, load_b_comm = MPI_COMM_NULL;
+                MPI_Comm_split(world, rank % b_size, h_rank, &h_comm);
+                MPI_Comm_split(world, h_rank, rank % b_size, &b_comm);
+                const bool load_rank = size_t(rank) < load_b_size;
+                MPI_Comm_split(world, load_rank ? 0 : MPI_UNDEFINED, rank, &load_b_comm);
+                sbd::GeneralOp<ElemT> hamiltonian;
+                bool sign = false;
+                sbd::load_GeneralOp_from_file(hamfile, hamiltonian, sign,
+                                              h_comm, b_comm, MPI_COMM_SELF);
+                if (size_t(hamiltonian.max_index()) >= sites) {
+                    throw std::invalid_argument("a Hamiltonian mode exceeds sites");
+                }
+                sbd::det_vector<size_t>::init_elem_size((sites + bit_length - 1) / bit_length);
+                sbd::det_vector<size_t> parents;
+                std::vector<ElemT> coefficients;
+                if (load_rank) {
+                    sbd::load_basis_from_files(basisfiles, parents, bit_length, sites,
+                                               load_b_comm);
+                    sbd::LoadWavefunction(loadname, parents, MPI_COMM_SELF, load_b_comm,
+                                          MPI_COMM_SELF, coefficients);
+                    MPI_Comm_free(&load_b_comm);
+                }
+                sbd::caop::stat::StatEvaluatorOptions<double> options;
+                options.observable = which;
+                options.bit_length = bit_length;
+                options.sites = sites;
+                options.sample_count = sample_count;
+                options.heatbath_cutoff = heatbath_cutoff;
+                options.reference_energy = reference_energy;
+                options.base_seed = seed;
+                options.expansion_batch_size = expansion_batch_size;
+                options.minimum_abs_denominator = minimum_abs_denominator;
+                std::vector<sbd::caop::stat::BatchRequest> batches(batch_count);
+                for (size_t k = 0; k < batch_count; ++k) {
+                    batches[k].calculation_id = "sbd-python";
+                    batches[k].batch_id = first_batch_id + k;
+                }
+                sbd::caop::stat::evaluate_statistical_batches<ElemT, double>(
+                    parents, coefficients, hamiltonian, sign, options, batches, world,
+                    [&](const sbd::caop::stat::EvaluatedBatch& evaluated) {
+                        const auto& r = evaluated.record;
+                        batch_ids.push_back(r.batch_id);
+                        variance.push_back(r.has_variance ? r.variance_estimate : NAN);
+                        pt2.push_back(r.has_pt2 ? r.pt2_estimate : NAN);
+                        seconds.push_back(r.elapsed_seconds);
+                    },
+                    h_comm, b_comm);
+                MPI_Comm_free(&b_comm);
+                MPI_Comm_free(&h_comm);
+            };
+            {
+                py::gil_scoped_release release;
+                if (complex) run(std::complex<double>{});
+                else run(double{});
+            }
+            py::dict out;
+            out["variance"] = variance;
+            out["pt2"] = pt2;
+            out["batch_id"] = batch_ids;
+            out["seconds"] = seconds;
+            out["mpi_size"] = size;
+            return out;
+        },
+        "Stochastic external variance and EN-PT2 of a saved CAOP state, as upstream's "
+        "caop-stat-evaluator",
+        py::arg("comm"), py::arg("hamfile"), py::arg("basisfiles"), py::arg("loadname"),
+        py::arg("shards"), py::arg("sites"), py::arg("bit_length"),
+        py::arg("reference_energy"), py::arg("sample_count") = 20000,
+        py::arg("batch_count") = 10, py::arg("seed") = 0, py::arg("first_batch_id") = 0,
+        py::arg("heatbath_cutoff") = 0.0, py::arg("observable") = "both",
+        py::arg("expansion_batch_size") = 1000000,
+        py::arg("minimum_abs_denominator") = 0.0, py::arg("h_comm_size") = 1,
+        py::arg("complex") = false);
+#else
+    m.attr("__sbd_has_caop__") = false;
+#endif
+
     m.attr("__version__") = "1.2.0";
 }
 
