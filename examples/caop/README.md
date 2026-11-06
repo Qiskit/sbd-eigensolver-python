@@ -94,7 +94,23 @@ basis yourself from every alpha and beta occupation: `gen_bits.py` fixes only th
 [`caop-spectrum`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop-spectrum) app
 in Python, with its option names and CSV output; see
 [its README](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop-spectrum/README.md)
-for the options, conventions and limits. For the 2-site Hubbard file above:
+for the options, conventions and limits.
+
+**It runs with MPI + OpenMP on the CPU.** The one exception, as upstream's, is applying
+the Hamiltonian on the fly, which runs on the GPU on `--device gpu` (Thrust, NVIDIA
+only):
+
+| | Driver option | Python (`sbd.spectrum.green_function`) | Runs on |
+|---|---|---|---|
+| Stored Hamiltonian (default) | `--hamiltonian-mode stored` | `store_hamiltonian=True` | CPU, also on `--device gpu` |
+| Hamiltonian on the fly | `--hamiltonian-mode on-the-fly` | `store_hamiltonian=False` | GPU on `--device gpu`, else CPU |
+
+Everything else stays on the CPU whichever you choose: building the excitation basis,
+applying the operators to the state, the block-Lanczos vector work, and evaluating the
+Green's function from the coefficients. On `--device gpu` the driver prints which of
+the two it ran. There is no `gpu-omp` path.
+
+For the 2-site Hubbard file above:
 
 ```bash
 # 0. the 2-site Hubbard file above, and its half-filling basis
@@ -126,8 +142,6 @@ python run_caop_spectrum.py --read-coefficients add.coeff --output narrow.csv \
   `--scalar-type complex` if it used `--complex`. The files record none of these.
 - **Add both channels** for the full retarded Green's function: run `addition` and
   `removal` on the same orbitals and grid, and sum.
-- **Only `--hamiltonian-mode on-the-fly` uses the GPU**, as for the ground state; the
-  default `stored` runs on the CPU, and the driver says so.
 
 ## MPI
 
