@@ -98,10 +98,10 @@ for the options, conventions and limits.
 the Hamiltonian on the fly, which runs on the GPU on `--device gpu` (Thrust, NVIDIA
 only):
 
-| | Driver option | Python (`sbd.spectrum.green_function`) | Runs on |
-|---|---|---|---|
-| Stored Hamiltonian (default) | `--hamiltonian-mode stored` | `store_hamiltonian=True` | CPU, also on `--device gpu` |
-| Hamiltonian on the fly | `--hamiltonian-mode on-the-fly` | `store_hamiltonian=False` | GPU on `--device gpu`, else CPU |
+| `--hamiltonian-mode` | Runs on |
+|---|---|
+| `stored` (default) | CPU, also on `--device gpu` |
+| `on-the-fly` | GPU on `--device gpu`, else CPU |
 
 Everything else stays on the CPU whichever you choose: building the excitation basis,
 applying the operators to the state, the block-Lanczos vector work, and evaluating the
