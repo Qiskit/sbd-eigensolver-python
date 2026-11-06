@@ -249,6 +249,4 @@ llvm-objdump --offloading <the built _core_gpu_omp_offload*.so>   # AMD
 ## See Also
 
 - [README](README.md) — what the package is, the backends, and the SQD integration
-- [`examples/tpb/README.md`](examples/tpb/README.md) — backend selection at runtime,
-  bundled test data and performance notes
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — build and runtime symptoms
