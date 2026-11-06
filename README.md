@@ -48,8 +48,8 @@ only when first used. Choose one per call with `device=`:
 `gpu-omp` does not support GDB, CAOP or unrestricted (UHF) FCIDUMPs: upstream has no
 offload code for GDB and CAOP, and its offload kernels read only the restricted integral
 layout. Asking for one raises an error rather than running it on the host. Variance and
-PT2 always run on the CPU, whichever device the solve used. `gpu-omp` is
-one device for both GPU vendors: an install compiles for one, and
+PT2 always run on the CPU, whichever device the solve used. `gpu-omp` is one device for
+both GPU vendors: an install compiles for one, and
 `sbd.get_backend("gpu-omp").__sbd_offload_target__` says which. Vendor-flavoured
 names such as `gpu-amd-omp` or `rocm` resolve to it. The GPU backends expect a
 GPU-aware MPI; see [INSTALL.md](INSTALL.md#gpu-aware-mpi) for the fallbacks.

@@ -478,7 +478,8 @@ not route device work through OpenMP.
 
 GDB has **Thrust kernels only** (`--device gpu`, NVIDIA). There is no `omp target`
 code under `include/sbd/chemistry/gdb/` at all, so `--device gpu-omp` is not supported:
-it raises an error rather than running on the host. AMD has no Thrust build, so AMD GDB is CPU-only.
+it raises an error rather than running on the host. AMD has no Thrust build, so AMD GDB
+is CPU-only.
 
 The Thrust path additionally requires **`helper == 1`** (`gdb/mult_thrust.h:310-314`,
 checked on every kernel launch), so every rank must go to `t_comm_size × b_comm_size`.
