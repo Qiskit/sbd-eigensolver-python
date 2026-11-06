@@ -167,6 +167,22 @@ Inputs
 .. autofunction:: from_strings
 .. autofunction:: sort_bitarray_array
 
+Unrestricted (UHF) integrals
+============================
+
+An FCIDUMP in SBD's unrestricted layout -- ``NORB`` spatial orbitals, integrals
+indexed by interleaved spin orbitals up to ``2 * NORB`` -- runs through the same
+functions as a restricted one. Each diagonalization reads the layout from the
+integrals and uses the matching build: upstream SBD compiled with ``-D_UHF``, which
+the package builds alongside the ``cpu`` and ``gpu`` backends unless
+``SBD_BUILD_UHF=0``. ``gpu-omp`` does not support unrestricted files: it has no
+unrestricted build, and passing one raises an error.
+``examples/tools/make_uhf_fcidump.py`` writes such a file with PySCF, and the TPB
+example README covers the layout and running the drivers on it.
+
+.. autofunction:: fcidump_format
+.. autofunction:: has_uhf
+
 CAOP: creation/annihilation-operator models
 ============================================
 
@@ -183,13 +199,21 @@ Backends and devices
 
 .. autofunction:: init
 .. autofunction:: finalize
+.. autofunction:: is_initialized
+.. autofunction:: get_device
 .. autofunction:: available_backends
+.. autofunction:: loaded_backends
 .. autofunction:: backend_load_errors
+.. autofunction:: has_backend_conflict
 .. autofunction:: get_backend
 .. autofunction:: get_device_id
+.. autofunction:: print_info
 
 MPI
 ===
 
 .. autofunction:: get_rank
 .. autofunction:: get_world_size
+.. autofunction:: get_comm
+.. autofunction:: get_comm_backend
+.. autofunction:: barrier

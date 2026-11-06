@@ -8,6 +8,18 @@ bitstrings used *as sampled*, with no product completion.
 
 For TPB and the SQD loops, see [`../tpb/README.md`](../tpb/README.md).
 
+The FCIDUMP may be restricted (RHF, ROHF) or unrestricted (UHF): `sbd.tpb_diag`,
+`sbd.gdb_diag` and the drivers read its layout and use the matching build of SBD, with no
+option to set. The layout, how to make a UHF file and the limits are in
+[the TPB README](../tpb/README.md#unrestricted-uhf-fcidumps). For example, heat-bath
+selection from the UHF determinant of a file made there:
+
+```bash
+python ../tools/make_uhf_fcidump.py nh2 --outdir nh2      # requires PySCF
+python run_gdb_heatbath.py --fcidump nh2/nh2_uhf.fcidump \
+    --subspace-from hf --cutoffs 1e-2,1e-3,1e-4,1e-5
+```
+
 ## The default data
 
 Both drivers default `--fcidump` and `--detfiles` to upstream's own GDB app data under
@@ -465,8 +477,9 @@ not route device work through OpenMP.
 ### On GPUs
 
 GDB has **Thrust kernels only** (`--device gpu`, NVIDIA). There is no `omp target`
-code under `include/sbd/chemistry/gdb/` at all, so `--device gpu-omp` is refused
-rather than run on the host. AMD has no Thrust build, so AMD GDB is CPU-only.
+code under `include/sbd/chemistry/gdb/` at all, so `--device gpu-omp` is not supported:
+it raises an error rather than running on the host. AMD has no Thrust build, so AMD GDB
+is CPU-only.
 
 The Thrust path additionally requires **`helper == 1`** (`gdb/mult_thrust.h:310-314`,
 checked on every kernel launch), so every rank must go to `t_comm_size × b_comm_size`.

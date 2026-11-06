@@ -65,7 +65,7 @@ notebook-dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/Qiskit/sbd-eigensolver-python"
-Documentation = "https://github.com/Qiskit/sbd-eigensolver-python"
+Documentation = "https://qiskit.github.io/sbd-eigensolver-python/"
 Repository = "https://github.com/Qiskit/sbd-eigensolver-python"
 Issues = "https://github.com/Qiskit/sbd-eigensolver-python/issues"
 

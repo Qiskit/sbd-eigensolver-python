@@ -770,6 +770,32 @@ else:
 
 ext_modules = []
 
+# Unrestricted (UHF) twins. Upstream SBD selects spin-dependent integrals at
+# compile time with -D_UHF (chemistry/basic/integrals.h, makeintegrals.h): the
+# FCIDUMP is read with interleaved spin-orbital indices and the two-body store
+# gains a spin block per index pair. That makes a UHF build a different module,
+# not an option of the restricted one, so each supported backend gets a twin
+# compiled from the same source with the same flags plus -D_UHF. The package
+# picks the twin from the FCIDUMP's format. OpenMP offload gets none: its device
+# kernels (chemistry/basic/omp_offload.h) read the restricted layout regardless
+# of _UHF. SBD_BUILD_UHF=0 skips them.
+build_uhf = os.environ.get('SBD_BUILD_UHF', '1') != '0'
+
+
+def _uhf_twin(ext):
+    """The same extension built with -D_UHF, as sbd.<name>_uhf."""
+    base = ext.name.rsplit('.', 1)[1]
+    args = [f'-DSBD_MODULE_NAME={base}_uhf' if a == f'-DSBD_MODULE_NAME={base}' else a
+            for a in ext.extra_compile_args]
+    assert args != list(ext.extra_compile_args), f"no SBD_MODULE_NAME flag on {ext.name}"
+    return Extension(
+        f'{ext.name}_uhf', list(ext.sources),
+        include_dirs=list(ext.include_dirs), libraries=list(ext.libraries),
+        library_dirs=list(ext.library_dirs), language=ext.language,
+        extra_compile_args=args + ['-D_UHF'],
+        extra_link_args=list(ext.extra_link_args),
+    )
+
 if build_cpu:
     print("\nConfiguring CPU backend (_core_cpu)")
     if platform.system() == 'Darwin':
@@ -880,6 +906,8 @@ if build_cpu:
         extra_link_args=cpu_link_args,
     )
     ext_modules.append(cpu_ext)
+    if build_uhf:
+        ext_modules.append(_uhf_twin(cpu_ext))
 
 
 if build_gpu_thrust:
@@ -993,6 +1021,8 @@ if build_gpu_thrust:
                                            '-lcudart'],
     )
     ext_modules.append(gpu_thrust_ext)
+    if build_uhf:
+        ext_modules.append(_uhf_twin(gpu_thrust_ext))
 
 
 if build_gpu_omp_offload:
@@ -1101,9 +1131,11 @@ setup(
 
 print("\nSetup complete!")
 if build_cpu:
-    print("  - CPU backend:                    sbd._core_cpu")
+    print("  - CPU backend:                    sbd._core_cpu"
+          + ("  (+ sbd._core_cpu_uhf)" if build_uhf else ""))
 if build_gpu_thrust:
-    print("  - Thrust GPU backend:             sbd._core_gpu_thrust")
+    print("  - Thrust GPU backend:             sbd._core_gpu_thrust"
+          + ("  (+ sbd._core_gpu_thrust_uhf)" if build_uhf else ""))
 if build_gpu_omp_offload:
     print("  - OpenMP-offload GPU backend:     sbd._core_gpu_omp_offload"
           f"  ({offload_target})")

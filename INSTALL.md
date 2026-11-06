@@ -126,6 +126,13 @@ export SBD_GPU_ARCH=gfx90a              # AMD
 #       gpu_omp_offload   OpenMP target-offload GPU only (either vendor)
 export SBD_BUILD_BACKEND=cpu
 
+#     Unrestricted (UHF) builds: the CPU and Thrust backends are each also built
+#     with upstream's -D_UHF, as a second module chosen automatically when an
+#     FCIDUMP is in SBD's unrestricted layout (see examples/tpb/README.md).
+#     OpenMP-offload has none. Set 0 to skip them, roughly halving CPU build time;
+#     unrestricted files are then refused with an error naming this variable.
+export SBD_BUILD_UHF=0
+
 #     MPI: defaults to whatever mpi4py is linked against. Set this only
 #     for layouts that cannot be inferred.
 #     NOTE: Every GPU backend hands MPI device pointers, so use a GPU-aware MPI:
@@ -160,8 +167,8 @@ MPICC=$MPI_HOME/bin/mpicc python -m pip install --no-binary=mpi4py --no-cache-di
 # NOTE: If no host MPI is available, let conda pick a compatible one with the
 # command below. A default conda-forge MPI is not GPU-aware, which is fine for the
 # CPU backend; for the GPU backends either install mpi4py against a GPU-aware MPI
-# as above, or see the README's Backend Architecture section for the two build-time options that
-# let the Thrust backend run without one.
+# as above, or see "GPU-aware MPI" below for the two build-time options that let the
+# Thrust backend run without one.
 # conda install -y -c conda-forge mpi4py
 
 # confirm which MPI mpi4py uses -- setup.py builds against exactly this
@@ -175,6 +182,25 @@ pip install sbd-eigensolver
 
 ```
 
+## GPU-aware MPI
+
+**The GPU backends hand MPI device pointers directly**, so they expect a GPU-aware MPI:
+CUDA-aware on NVIDIA, ROCm-aware on AMD. For an MPI that cannot address device memory,
+the Thrust backend has two upstream fallbacks. Both are **off by default**, and both are
+**compile-time**: set them before installing, rebuild to change them, and they do
+nothing if set at run time:
+
+```
+SBD_NON_CUDA_AWARE_MPI=1         stage every device buffer through host memory
+SBD_THRUST_SAFE_MPI_ALLREDUCE=1  stage only the allreduce (a subset of the above)
+```
+
+Both stage device buffers through host memory, adding copies whose cost grows with how
+much data crosses MPI. Treat them as a compatibility fallback, not a tuning knob: reach
+for them when a GPU backend crashes inside the MPI itself rather than in SBD (see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md)). On AMD, a non-ROCm-aware MPI usually still
+runs, slowly, so a working AMD run does not show that the MPI is ROCm-aware.
+
 ## Verify
 
 ```bash
@@ -184,6 +210,22 @@ python -c "import sbd; print(sbd.available_backends())"
 # AMD, default build:             ['cpu', 'gpu-omp']
 # OMP-offload-only install:       ['gpu-omp']
 ```
+
+`available_backends()` lists the backends only. By default the `cpu` and `gpu` backends
+are each also built with upstream's `-D_UHF`, as a second module
+(`sbd._core_cpu_uhf`, `sbd._core_gpu_thrust_uhf`) that a solve uses automatically for an
+unrestricted (UHF) FCIDUMP. To see which backends have one:
+
+```bash
+python -c "import sbd; print({d: sbd.has_uhf(d) for d in sbd.available_backends()})"
+# CPU only:                       {'cpu': True}
+# NVIDIA, default build:          {'cpu': True, 'gpu': True, 'gpu-omp': False}
+# with SBD_BUILD_UHF=0:           every value False
+```
+
+`gpu-omp` never has one: its offload kernels read only the restricted integral layout.
+`sbd.print_info()` prints the same, as a `UHF builds:` line next to the compiled
+backends.
 
 On a GPU build, confirm which vendor and architecture the offload backend
 targets — one `'gpu-omp'` device serves both vendors, so the name alone does not
@@ -195,11 +237,16 @@ python -c "import sbd; print(sbd.get_backend('gpu-omp').__sbd_offload_target__)"
 # nvptx64-nvidia-cuda:cc90        NVIDIA H100
 ```
 
-The Thrust backend is stamped too (`cuda:cc90`); the CPU backend reports `None`.
+The Thrust backend is stamped too (`cuda:cc90`); the CPU backend reports `None`. For the
+architectures compiled into the binaries themselves:
+
+```bash
+cuobjdump --list-elf <the built _core_gpu_thrust*.so>          # NVIDIA
+llvm-objdump --offloading <the built _core_gpu_omp_offload*.so>   # AMD
+```
+
 
 ## See Also
 
-- [README](README.md) — what the package is, the API, and the SQD integration
-- [`examples/tpb/README.md`](examples/tpb/README.md) — backend selection at runtime,
-  bundled test data and performance notes
-- [Troubleshooting](README.md#troubleshooting) — build and runtime symptoms
+- [README](README.md) — what the package is, the backends, and the SQD integration
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — build and runtime symptoms

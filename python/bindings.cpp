@@ -517,6 +517,182 @@ static uint64_t sbd_shard_fingerprint(const sbd::det_vector<size_t>& det) {
     return h;
 }
 
+// ---------------------------------------------------------------------------
+// FCIDUMP layout: restricted, or SBD's unrestricted spin-orbital indexing
+//
+// -D_UHF changes how SBD reads the integral indices, not the file syntax, so a
+// file of the other layout loads and diagonalizes without complaint and returns
+// a wrong energy. Restricted: indices 1..NORB. Unrestricted (makeintegrals.h):
+// NORB is still the spatial count, indices are spin orbitals 1..2*NORB, odd for
+// alpha and even for beta, and each pair (ij) and (kl) is of one spin. A file
+// that fits neither is refused rather than guessed at.
+//
+// The classification is computed from the integrals every time, not stored, so
+// it cannot go stale when a caller edits them after loading.
+// ---------------------------------------------------------------------------
+
+#ifdef _UHF
+static constexpr bool kSbdBuiltUHF = true;
+#else
+static constexpr bool kSbdBuiltUHF = false;
+#endif
+
+class SbdLayoutScan {
+public:
+    explicit SbdLayoutScan(int norb) : norb_(norb) {}
+
+    void add(int i, int j, int k, int l) {
+        max_ = std::max({max_, i, j, k, l});
+        if (i > 0 && j > 0 && ((i ^ j) & 1)) mixed_ = true;
+        if (k > 0 && l > 0 && ((k ^ l) & 1)) mixed_ = true;
+    }
+
+    /** True for the unrestricted layout, false for restricted; throws for neither. */
+    bool uhf(const std::string& what) const {
+        if (max_ <= norb_) return false;
+        const std::string n = std::to_string(norb_);
+        if (max_ > 2 * norb_) {
+            throw std::invalid_argument(
+                what + ": integral index " + std::to_string(max_) + " exceeds 2*NORB = "
+                + std::to_string(2 * norb_) + ", so this is neither a restricted FCIDUMP "
+                "(indices up to NORB) nor SBD's unrestricted one (spin-orbital indices up "
+                "to 2*NORB). Check NORB in the header.");
+        }
+        if (mixed_) {
+            throw std::invalid_argument(
+                what + ": indices above NORB = " + n + " mark SBD's unrestricted layout, "
+                "but some (ij) or (kl) pair mixes an odd (alpha) and an even (beta) "
+                "index, which that layout never does. Check NORB in the header.");
+        }
+        return true;
+    }
+
+private:
+    int norb_;
+    int max_ = 0;
+    bool mixed_ = false;
+};
+
+/** NORB from a parsed header, refusing other programs' UHF header flags. */
+static int sbd_fcidump_norb(const std::map<std::string, std::string>& header,
+                            const std::string& what) {
+    for (const auto& [key, value] : header) {
+        std::string k = key;
+        std::transform(k.begin(), k.end(), k.begin(), ::toupper);
+        if (k == "UHF" || k == "IUHF") {
+            throw std::invalid_argument(
+                what + ": the header sets " + key + ", another program's unrestricted "
+                "layout. SBD reads unrestricted integrals only with interleaved "
+                "spin-orbital indices and NORB = spatial orbitals.");
+        }
+    }
+    auto it = header.find("NORB");
+    const int norb = it == header.end() ? 0 : std::atoi(it->second.c_str());
+    if (norb < 1) throw std::invalid_argument(what + ": no valid NORB in the FCIDUMP header");
+    return norb;
+}
+
+static bool sbd_fcidump_is_uhf(const sbd::FCIDump& fcidump) {
+    SbdLayoutScan scan(sbd_fcidump_norb(fcidump.header, "FCIDUMP"));
+    for (const auto& [v, i, j, k, l] : fcidump.integrals) scan.add(i, j, k, l);
+    return scan.uhf("FCIDUMP");
+}
+
+/**
+ * The same classification straight from a file, without storing the integrals.
+ *
+ * Header and line handling follow sbd::LoadFCIDump (framework/fcidump.h) exactly,
+ * so the two views of one file always agree.
+ */
+static bool sbd_fcidump_file_is_uhf(const std::string& path) {
+    std::ifstream in(path);
+    if (!in.is_open()) throw std::runtime_error("Failed to open FCIDUMP file " + path);
+    std::string line, text;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '!') continue;
+        if (line.find("&END") != std::string::npos) break;
+        const size_t pos = line.find("&FCI");
+        if (pos != std::string::npos) line.erase(pos, 4);
+        text += line;
+    }
+    std::map<std::string, std::string> header;
+    std::stringstream hs(text);
+    std::string token;
+    while (std::getline(hs, token, ',')) {
+        const size_t eq = token.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = token.substr(0, eq), value = token.substr(eq + 1);
+        key.erase(0, key.find_first_not_of(" \t"));
+        key.erase(key.find_last_not_of(" \t") + 1);
+        value.erase(0, value.find_first_not_of(" \t"));
+        value.erase(value.find_last_not_of(" \t") + 1);
+        header[key] = value;
+    }
+    SbdLayoutScan scan(sbd_fcidump_norb(header, path));
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '!') continue;
+        char* end = nullptr;
+        std::strtod(line.c_str(), &end);
+        long idx[4];
+        for (long& x : idx) { const char* s = end; x = std::strtol(s, &end, 10); }
+        scan.add(static_cast<int>(idx[0]), static_cast<int>(idx[1]),
+                 static_cast<int>(idx[2]), static_cast<int>(idx[3]));
+    }
+    return scan.uhf(path);
+}
+
+/** Why `is_uhf` integrals cannot run on this module, or "" if they can. */
+static std::string sbd_layout_mismatch(bool is_uhf) {
+    if (is_uhf == kSbdBuiltUHF) return "";
+    return is_uhf
+        ? "this FCIDUMP is unrestricted (spin-orbital indices up to 2*NORB) but this "
+          "module is the restricted build, which would read it as restricted integrals "
+          "and return a wrong energy. Call sbd.tpb_diag/sbd.gdb_diag, which pick the "
+          "matching build."
+        : "this FCIDUMP is restricted (indices up to NORB) but this module is the "
+          "unrestricted (-D_UHF) build, which would read it as spin-orbital integrals "
+          "and return a wrong energy. Call sbd.tpb_diag/sbd.gdb_diag, which pick the "
+          "matching build.";
+}
+
+/**
+ * Refuse integrals of the other layout, on every rank together.
+ *
+ * Each rank classifies the FCIDump it was handed and the ranks vote, so a
+ * rank-dependent verdict cannot leave the others waiting in a collective.
+ */
+static void sbd_require_layout(const sbd::FCIDump& fcidump, MPI_Comm comm) {
+    std::string why;
+    try {
+        why = sbd_layout_mismatch(sbd_fcidump_is_uhf(fcidump));
+    } catch (const std::exception& e) {
+        why = e.what();
+    }
+    if (!sbd_all_ranks_ok(why.empty(), comm)) {
+        throw std::invalid_argument(
+            why.empty() ? "the FCIDUMP was refused on another rank" : why);
+    }
+}
+
+/** The same guard for a file that only rank 0 reads, as upstream's loader does. */
+static void sbd_require_file_layout(const std::string& path, MPI_Comm comm) {
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+    std::string why;
+    if (rank == 0) {
+        try {
+            why = sbd_layout_mismatch(sbd_fcidump_file_is_uhf(path));
+        } catch (const std::exception& e) {
+            why = e.what();
+        }
+    }
+    int len = static_cast<int>(why.size());
+    MPI_Bcast(&len, 1, MPI_INT, 0, comm);
+    why.resize(len);
+    if (len > 0) MPI_Bcast(why.data(), len, MPI_CHAR, 0, comm);
+    if (!why.empty()) throw std::invalid_argument(why);
+}
+
 PYBIND11_MODULE(SBD_MODULE_NAME, m) {
     // Set module docstring based on backend
 #ifdef SBD_THRUST
@@ -724,6 +900,14 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
     // Utility functions
     // ========================================================================
     
+    m.attr("__sbd_uhf__") = kSbdBuiltUHF;
+    m.def("_fcidump_is_uhf", &sbd_fcidump_is_uhf, py::arg("fcidump"),
+          "Classify an FCIDump: True for SBD's unrestricted layout, False for "
+          "restricted; ValueError for neither. Internal: use sbd.LoadFCIDump.");
+    m.def("_fcidump_file_is_uhf", &sbd_fcidump_file_is_uhf, py::arg("path"),
+          "The same classification read straight from a file. Internal: use "
+          "sbd.fcidump_format.");
+
     m.def("LoadFCIDump", &sbd::LoadFCIDump,
           "Load FCIDUMP file and return FCIDump object",
           py::arg("filename"));
@@ -861,6 +1045,7 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             // Convert MPI communicator
             MPI_Comm comm = get_mpi_comm(py_comm);
             sbd_require_openmp_threads("tpb_diag", comm);
+            sbd_require_layout(fcidump, comm);
             
             // Get MPI rank for GPU assignment
             int mpi_rank;
@@ -1036,6 +1221,7 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
 
             MPI_Comm comm = get_mpi_comm(py_comm);
             sbd_require_openmp_threads("gdb_diag", comm);
+            sbd_require_layout(fcidump, comm);
             int mpi_rank; MPI_Comm_rank(comm, &mpi_rank);
             int mpi_size; MPI_Comm_size(comm, &mpi_size);
 
@@ -1677,6 +1863,7 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
             // Convert MPI communicator
             MPI_Comm comm = get_mpi_comm(py_comm);
             sbd_require_openmp_threads("tpb_diag_from_files", comm);
+            sbd_require_file_layout(fcidumpfile, comm);
             
             // Get MPI rank for GPU assignment
             int mpi_rank;

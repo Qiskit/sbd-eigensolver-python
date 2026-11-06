@@ -84,16 +84,16 @@ call, with ``device=`` or a :class:`~sbd.device_config.DeviceConfig`:
      - NVIDIA GPUs, Thrust
      - NVIDIA HPC SDK (``nvc++``)
    * - ``gpu-omp``
-     - NVIDIA or AMD GPUs, OpenMP offload. TPB only: ``gdb_diag`` refuses this
-       backend, as upstream has no OpenMP-offload GDB code; use ``cpu``, or ``gpu``
-       for GDB on NVIDIA GPUs
+     - NVIDIA or AMD GPUs, OpenMP offload. TPB only: GDB is not supported, as
+       upstream has no OpenMP-offload GDB code, and asking for it raises an error; use
+       ``cpu``, or ``gpu`` for GDB on NVIDIA GPUs
      - ``nvc++`` on NVIDIA, ``amdclang++`` on AMD
 
 The GPU backends pass device memory to MPI, so they expect a GPU-aware MPI. The
 Thrust backend can instead be built to stage transfers through host memory; see
-`Backend Architecture
-<https://github.com/Qiskit/sbd-eigensolver-python/blob/main/README.md#backend-architecture>`__
-in the README.
+`GPU-aware MPI
+<https://github.com/Qiskit/sbd-eigensolver-python/blob/main/INSTALL.md#gpu-aware-mpi>`__
+in INSTALL.md.
 
 TPB or GDB
 ----------

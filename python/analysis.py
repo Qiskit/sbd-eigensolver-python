@@ -396,6 +396,32 @@ def _fcidump_header(fcidump):
     return norb, (n_alpha, nelec - n_alpha)
 
 
+def _uhf_evaluator_backend(device):
+    """The unrestricted build with the evaluator: the CPU one, built without SBD_THRUST."""
+    from . import get_backend, has_uhf
+
+    if device not in (None, "cpu"):
+        raise ValueError(f"an unrestricted FCIDUMP is evaluated by the CPU unrestricted "
+                         f"build; it runs on CPU in any case, so omit device rather than "
+                         f"{device!r}")
+    if not has_uhf("cpu"):
+        raise RuntimeError("an unrestricted FCIDUMP needs the CPU backend's unrestricted "
+                           "build; rebuild without SBD_BUILD_UHF=0")
+    return get_backend("cpu", uhf=True)
+
+
+def _restricted(names):
+    """The restricted devices among ``loaded_backends()``.
+
+    It also lists the unrestricted builds ('cpu-uhf', 'gpu-uhf'), which are separate
+    modules but not device names, so ``get_backend`` refuses them; a restricted state is
+    evaluated by a restricted module in any case.
+    """
+    from . import _UHF_BASE
+
+    return [name for name in names if name not in _UHF_BASE]
+
+
 def _evaluator_backend(device):
     """A backend module that has the evaluator; it runs on CPU whichever is chosen.
 
@@ -415,7 +441,7 @@ def _evaluator_backend(device):
                 f"'cpu' or 'gpu-omp'.")
         return backend
     loaded = loaded_backends()
-    for name in loaded:
+    for name in _restricted(loaded):
         backend = get_backend(name)
         if getattr(backend, "__sbd_has_evaluator__", False):
             return backend
@@ -657,7 +683,9 @@ def variance(source, fcidump, energy, *, method="auto", norb=None, bit_length=No
             ``settings["energy_given"]``. :func:`state_energy` computes it from a
             saved state, where only the state is at hand.
         method: ``"exact"``, ``"stochastic"``, or ``"auto"``: exact when the full CI
-            space has at most ``exact_limit`` determinants, otherwise stochastic.
+            space has at most ``exact_limit`` determinants, otherwise stochastic. The
+            exact method is restricted-only, so ``"auto"`` is always stochastic for an
+            unrestricted (UHF) FCIDUMP.
         norb, bit_length: As for :func:`load_state`; ``norb`` defaults to the
             FCIDUMP's ``NORB``.
         samples: Parent draws per stochastic batch.
@@ -696,10 +724,18 @@ def variance(source, fcidump, energy, *, method="auto", norb=None, bit_length=No
     comm = comm or MPI.COMM_WORLD
     fd_norb, nelec = _fcidump_header(fcidump)
     norb = norb or fd_norb
+    from . import _fcidump_is_uhf
+    uhf = _fcidump_is_uhf(fcidump)
     if method == "auto":
-        method = "exact" if _full_space_size(norb, nelec) <= exact_limit else "stochastic"
+        # The exact method is restricted-only, so auto never picks it for a UHF file.
+        method = ("exact" if not uhf and _full_space_size(norb, nelec) <= exact_limit
+                  else "stochastic")
     if method not in ("exact", "stochastic"):
         raise ValueError(f"method must be 'auto', 'exact' or 'stochastic', got {method!r}")
+    if uhf and method == "exact":
+        # The exact method builds restricted integrals for PySCF's direct_spin1.
+        raise ValueError("method='exact' supports restricted FCIDUMPs only; this one is "
+                         "unrestricted (UHF). Use method='stochastic'")
     if observable not in ("both", "variance", "pt2"):
         raise ValueError(f"observable must be 'both', 'variance' or 'pt2', got {observable!r}")
     if energy is None:
@@ -728,7 +764,9 @@ def variance(source, fcidump, energy, *, method="auto", norb=None, bit_length=No
                                     settings=settings)
         return comm.bcast(result, root=0)
 
-    backend = _evaluator_backend(device)
+    # An unrestricted FCIDUMP needs the -D_UHF build, whose integrals are spin-resolved,
+    # as upstream's gdb-stat-evaluator-uhf; the CPU one has the evaluator.
+    backend = _uhf_evaluator_backend(device) if uhf else _evaluator_backend(device)
     out = backend.external_observables(
         comm, fcidump, state.det, state.coef, state.bit_length, float(energy),
         sample_count=samples, batch_count=batches, seed=seed, heatbath_cutoff=cutoff,
@@ -762,7 +800,7 @@ def _caop_evaluator_backend(device):
                              "(NVHPC Thrust, NVIDIA GPUs only; there is no CAOP GPU path "
                              "for AMD GPUs)")
         return backend
-    for name in loaded_backends():
+    for name in _restricted(loaded_backends()):
         backend = get_backend(name)
         if getattr(backend, "__sbd_has_caop__", False):
             return backend

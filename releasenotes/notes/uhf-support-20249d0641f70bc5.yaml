@@ -1,0 +1,47 @@
+---
+features:
+  - |
+    Unrestricted (UHF) Hamiltonians are supported on the ``cpu`` and ``gpu``
+    (Thrust) backends. An FCIDUMP in SBD's unrestricted layout -- ``NORB``
+    spatial orbitals, integrals indexed by interleaved 1-based spin orbitals
+    (alpha ``2p+1``, beta ``2p+2``) -- is passed to :func:`sbd.LoadFCIDump`,
+    :func:`sbd.tpb_diag`, :func:`sbd.gdb_diag` and
+    :func:`sbd.tpb_diag_from_files` exactly like a restricted one, and both
+    example drivers accept it. Each call reads the layout from the integrals
+    and runs a build of the backend compiled with upstream's ``-D_UHF``, made
+    alongside the restricted one. Sharded GDB, the heat-bath loop, and every
+    MPI decomposition work as for restricted files.
+  - |
+    New :func:`sbd.fcidump_format` reports whether an FCIDUMP (a path, or a
+    loaded object) is ``'restricted'`` or ``'uhf'``, and :func:`sbd.has_uhf`
+    whether a device has an unrestricted build. :func:`sbd.LoadFCIDump` takes
+    ``uhf=True`` or ``uhf=False`` to state the layout, raising if the file is
+    the other one.
+  - |
+    ``examples/tools/make_uhf_fcidump.py`` writes unrestricted FCIDUMPs from
+    PySCF -- for example the NH2 radical, with its ROHF twin, the full
+    determinant space and the exact energy -- and its ``write_uhf_fcidump``
+    writes any spin-resolved integrals in SBD's layout.
+upgrade:
+  - |
+    Installing builds the CPU and Thrust extensions twice, once restricted and
+    once with ``-D_UHF``. Set ``SBD_BUILD_UHF=0`` to skip the unrestricted
+    builds; unrestricted files are then refused with an error naming it.
+  - |
+    A file in neither layout is now refused rather than diagonalized: an
+    integral index above ``2 * NORB``, indices above ``NORB`` whose ``(ij)`` or
+    ``(kl)`` pair mixes spins (usually a wrong ``NORB`` in the header), or a
+    ``UHF``/``IUHF`` header flag, which marks another program's unrestricted
+    layout. Calling a backend module's ``tpb_diag``/``gdb_diag`` directly with
+    integrals of the other layout raises as well.
+fixes:
+  - |
+    ``examples/tpb/run_sbd_diag.py`` checks the determinant files' electron
+    counts against the FCIDUMP's ``NELEC`` and ``MS2``. In its default
+    symmetric mode it reuses the alpha list as the beta one, so on an
+    open-shell system (``MS2`` not 0, restricted or not) it previously
+    diagonalized a different charge state and reported that energy without an
+    error. It now stops and points to ``--symmetrize_spin 0``.
+  - |
+    :func:`sbd.LoadFCIDump` and :func:`sbd.tpb_diag_from_files` accept
+    ``pathlib.Path`` file names; they raised ``TypeError`` before.
