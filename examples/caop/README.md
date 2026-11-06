@@ -2,43 +2,41 @@
 
 > Part of the lattice and spin workflow in [`../README.md`](../README.md#lattice-and-spin-models-caop).
 
-These drivers run upstream SBD's CAOP apps from Python, for lattice and spin models
-(Hubbard, hard-core bosons, spins) written as operator terms over a selected basis of
-occupation bitstrings. For molecules, use TPB or GDB.
+For lattice and spin models (Hubbard, hard-core bosons, spins) written as operator
+terms, over a selected basis of occupation bitstrings. For molecules, use TPB or GDB.
+Three drivers run upstream SBD's CAOP apps from Python:
 
-- **`run_caop_diag.py`**: the ground state, as upstream's
-  [`caop_selected_basis_diagonalization`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop_selected_basis_diagonalization).
-- **`run_caop_spectrum.py`**: the Green's function of a saved ground state, as upstream's
-  [`caop-spectrum`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop-spectrum).
-- **`../analysis/variance.py --hamfile`**: the energy variance and PT2 of a saved ground
-  state, as upstream's
-  [`caop-stat-evaluator`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop-stat-evaluator);
-  see [CAOP states](../analysis/README.md#caop-states).
+| Driver | Computes | Upstream app |
+|---|---|---|
+| `run_caop_diag.py` | the ground state, saved with `--savename` | [`caop_selected_basis_diagonalization`](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop_selected_basis_diagonalization/README.md) |
+| `../analysis/variance.py --hamfile` | how far that state is from exact: its energy variance and PT2 | [`caop-stat-evaluator`](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop-stat-evaluator/README.md) |
+| `run_caop_spectrum.py` | that state's Green's function | [`caop-spectrum`](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop-spectrum/README.md) |
 
-They chain: `run_caop_diag.py --savename gs-` saves the ground state, and
-`run_caop_spectrum.py --loadname gs-` or `variance.py --state gs-` reads it, with the same
-Hamiltonian file and the ground-state energy. Each later run must match the solve's
-`--system_size`, `--bit_length`, `--b_comm_size` and `--complex`, which the saved files do
-not record. See [Green's function](#greens-function) for a worked example, and the
-[lattice and spin workflow](../README.md#lattice-and-spin-models-caop) for all three in
-order.
+**The options are upstream's, with the same names and meanings;** each app's README,
+linked above, documents them, and upstream's `gen_ham.py` and `gen_bits.py` (in the
+first app's folder) write input files. This page covers what differs in the Python
+drivers, and the checks they add.
 
-**The options are upstream's, with the same names and meanings:** see each app's README,
-linked above, and upstream's `gen_ham.py` and `gen_bits.py` for writing input files. This
-page covers what differs in the Python drivers, and the checks they add.
+## How the three fit together
 
-## Differences from upstream's app
+1. **Solve.** `run_caop_diag.py --savename gs-` solves for the ground state and writes
+   it as `gs-000000.bin`, ...; note its `Ground state energy:` line.
+2. **Check.** `variance.py --hamfile ... --state gs-` reads that state and estimates its
+   energy variance and PT2. A large variance means the basis is too small for the state
+   to be trusted: grow it (*Tips*: carryover type 2) and solve again.
+3. **Spectrum.** `run_caop_spectrum.py --loadname gs-` reads the same state and
+   computes its Green's function.
 
-- `--device cpu` or `gpu` (Thrust, NVIDIA only); see *GPU*.
-- `--complex` chooses complex amplitudes per run; upstream's app chooses at compile time
-  (`-D_COMPLEX`). Needed for `(re,im)` coefficients, e.g. `(0,1) cdag 2 c 0`, and for `sy`.
-- Defaults are upstream's, except `--method 1`, `--iteration 10` and
-  `--do_redist_basis 1`, taken from upstream's `run.sh`, and `--bit_length 20`. With no
-  `--hamfile`/`--basisfiles`, it runs upstream's example files.
-- Not exposed: `--init` (only `0`, random, exists) and `--h_comm_size` (listed upstream
-  but never read; see *MPI*).
+Steps 2 and 3 each read the saved state with the same Hamiltonian file and the energy
+step 1 printed, and must be told the solve's settings, which the files do not record:
+the number of modes, `--bit_length`, the number of files (the solve's `--b_comm_size`)
+and whether it used `--complex`. The
+[lattice and spin workflow](../README.md#lattice-and-spin-models-caop) runs all three on
+a 2-site Hubbard model.
 
-## Running it
+## Ground state
+
+`run_caop_diag.py`:
 
 ```bash
 mpirun -np 4 python run_caop_diag.py --b_comm_size 4
@@ -52,14 +50,26 @@ With only `--b_comm_size` given, this runs with the defaults:
   `--system_size` together.
 - **Device:** `--device cpu`. `--device gpu` needs the Thrust build and two or more
   OpenMP threads per rank; upstream's `run.sh` uses one, which the Thrust build refuses.
-- **Amplitudes:** real. Add `--complex` for complex coefficients or `sy`.
+- **Amplitudes:** real. Add `--complex` for complex coefficients or the `sy` spin
+  operator.
 - **Solver:** `--method 1` (Davidson, stored Hamiltonian) to `--tolerance 1e-4`, from a
   random start (`--seed 0`). Converge further and fix the seed before comparing
   energies; see *Tips*.
 - **MPI:** the basis split over all 4 ranks (`--b_comm_size` equal to the rank count),
   the simplest layout; see *MPI*.
 
-## Preparing the input files
+**Differences from upstream's app:**
+
+- `--device cpu` or `gpu` (Thrust, NVIDIA only); see *GPU*.
+- `--complex` chooses complex amplitudes per run; upstream's app chooses at compile time
+  (`-D_COMPLEX`). Needed for `(re,im)` coefficients, e.g. `(0,1) cdag 2 c 0`, and for
+  `sy`.
+- Defaults are upstream's, except `--method 1`, `--iteration 10` and
+  `--do_redist_basis 1`, taken from upstream's `run.sh`, and `--bit_length 20`.
+- Not exposed: `--init` (only `0`, random, exists) and `--h_comm_size` (listed upstream
+  but never read; see *MPI*).
+
+### Preparing the input files
 
 **A fermion Hamiltonian by hand.** `gen_ham.py` writes hard-core boson chains only. For
 fermions, list every term, each with its Hermitian conjugate. Upstream's Hubbard
@@ -88,7 +98,7 @@ single-file output is unsorted. The sorted half-filling basis for the Hubbard fi
 above is `0101`, `0110`, `1001`, `1010`. For a fixed number of each spin, build the
 basis yourself from every alpha and beta occupation: `gen_bits.py` fixes only the total.
 
-## Tips
+### Tips
 
 - **Keep `--do_redist_basis 1`.** Without it the states stay where the files put them:
   one file means one rank holds them all, which unbalances memory.
@@ -102,17 +112,20 @@ basis yourself from every alpha and beta occupation: `gen_bits.py` fixes only th
 - **Carryover type 2** returns a grown basis; the driver prints this rank's share. Feed
   it to the next run's `--basisfiles` to iterate. The expansion runs on the CPU.
 
+## Variance and PT2
+
+The variance and PT2 of a CAOP state go through the same driver as TPB and GDB states,
+[`../analysis/variance.py`](../analysis/README.md), with `--hamfile` and `--basisfiles`
+in place of `--fcidump`. It runs on the CPU with MPI and OpenMP, always stochastically,
+and needs the basis files the state was solved over.
+[CAOP states](../analysis/README.md#caop-states) gives the command and options; the
+rest of that page covers how the estimate works and how to choose its settings.
+
 ## Green's function
 
-`run_caop_spectrum.py` continues from a saved ground state: upstream's
-[`caop-spectrum`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop-spectrum) app
-in Python, with its option names and CSV output; see
-[its README](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop-spectrum/README.md)
-for the options, conventions and limits.
-
-**It runs with MPI + OpenMP on the CPU.** The one exception, as upstream's, is applying
-the Hamiltonian on the fly, which runs on the GPU on `--device gpu` (Thrust, NVIDIA
-only):
+`run_caop_spectrum.py` runs with MPI + OpenMP on the CPU. The one exception, as
+upstream's, is applying the Hamiltonian on the fly, which runs on the GPU on
+`--device gpu` (Thrust, NVIDIA only):
 
 | `--hamiltonian-mode` | Runs on |
 |---|---|
@@ -153,7 +166,7 @@ python run_caop_spectrum.py --read-coefficients add.coeff --output narrow.csv \
   beta electron gives different sectors).
 - **Match the ground-state run:** `--sites` is its `--system_size`, `--bit-length`
   its `--bit_length`, `--wavefunction-shards` its `--b_comm_size`, and
-  `--scalar-type complex` if it used `--complex`. The files record none of these.
+  `--scalar-type complex` if it used `--complex`.
 - **Add both channels** for the full retarded Green's function: run `addition` and
   `removal` on the same orbitals and grid, and sum.
 
@@ -168,21 +181,51 @@ layout is `--b_comm_size` equal to the rank count.
 
 ## GPU
 
-Upstream's GPU code applies the Hamiltonian on the fly, so only `--method 0` and `2`
-use the GPU. The Davidson/Lanczos vector work, the diagonal and the heat-bath expansion
-stay on the CPU, and the vector crosses to the GPU at each application. Methods `1` and
-`3` build and apply a stored Hamiltonian on the CPU even on `--device gpu`, and the
-driver says so. There is no OpenMP-offload (`gpu-omp`) CAOP code, so no AMD GPU path.
+There is no OpenMP-offload (`gpu-omp`) CAOP code, so no AMD GPU path; `--device gpu` is
+NVIDIA Thrust. Upstream's GPU code only applies the Hamiltonian on the fly:
+
+- **Ground state:** only `--method 0` and `2` use the GPU. The Davidson/Lanczos vector
+  work, the diagonal and the heat-bath expansion stay on the CPU, and the vector
+  crosses to the GPU at each application. Methods `1` and `3` build and apply a stored
+  Hamiltonian on the CPU even on `--device gpu`, and the driver says so.
+- **Green's function:** only `--hamiltonian-mode on-the-fly` uses the GPU; see its
+  section.
+- **Variance:** always on the CPU.
+
 Run one rank per GPU. For a small basis, compare with `--device cpu` and a stored
 Hamiltonian, which can come close to the GPU.
 
 ## Checks
 
-Upstream accepts these and returns a wrong energy, a smaller grid than asked, or hangs.
-The bindings refuse them on every rank before any work:
+For each of the inputs below, upstream returns a wrong answer, runs a smaller grid than
+asked, or hangs. Upstream is unchanged; this package's bindings refuse these inputs
+with a `ValueError` before upstream does any work, so the drivers and the Python
+functions they call are both covered. Every rank refuses together, so no rank is left
+waiting in a collective.
+
+All three drivers:
+
+- a Hamiltonian file upstream cannot read, including a `(re,im)` coefficient without
+  `--complex`; upstream reads it on one rank only, so the others hang;
+- a term using a mode at or beyond the number of modes, which upstream does not check.
+
+The ground state:
 
 - a rank count that is not a multiple of `b × t`, or smaller than it;
 - Davidson with `--numivec` ≥ `--block`, or `0`;
 - `--method` outside `0`–`3`;
 - on `gpu`, methods `0`/`2` with `t > b`;
-- a Hamiltonian file upstream cannot read, including `(re,im)` without `--complex`.
+- no basis files.
+
+The Green's function:
+
+- a complex saved state read without `--scalar-type complex`;
+- `--h-comm-size` × `--t-comm-size` not dividing the rank count;
+- both `--orbitals` and `--operator-file`, or neither;
+- an operator file whose statistics differ from the Hamiltonian's, which upstream
+  compares on some ranks only;
+- on `gpu` with `--hamiltonian-mode on-the-fly`, more task ranks than basis ranks.
+
+The variance: a saved state that does not match the basis files given, by its number of
+determinants, which determinants they are, its word size, whether it is real or complex,
+and its norm; and a state saved on more files than there are basis ranks.
