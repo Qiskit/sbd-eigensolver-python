@@ -918,8 +918,10 @@ def tpb_diag(fcidump, adet, bdet, sbd_data,
         ``np.fromfile(path).reshape(len(adet), len(bdet))`` reads it. Naming it
         ``.dat`` or ``.txt`` instead writes a text table in which every
         amplitude is labelled with its own alpha and beta bitstring, which is
-        the easiest form to inspect by hand. This is the mechanism this
-        package's own SQD integration uses.
+        the easiest form to inspect by hand; it is written with the stream's
+        default formatting, about 6 significant digits, so use the binary form
+        for full ``float64`` precision. This is the mechanism this package's own
+        SQD integration uses.
 
         ``savename`` instead writes one file per b_comm position,
         ``f"{savename}{rank_b:06d}"`` (no extension, unlike GDB's ``.bin``), each
@@ -1101,7 +1103,9 @@ def has_backend_conflict():
 
 
 def print_info():
-    """Print SBD information."""
+    """Print the version, the compiled backends and their unrestricted (UHF) builds,
+    and the current session's device and communicator. :func:`available_backends`
+    lists the backends only; this also says which of them have a UHF build."""
     print("=" * 60)
     print("SBD (Selected Basis Diagonalization) Python Bindings")
     print("=" * 60)

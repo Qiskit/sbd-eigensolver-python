@@ -198,13 +198,21 @@ Backends and devices
 
 .. autofunction:: init
 .. autofunction:: finalize
+.. autofunction:: is_initialized
+.. autofunction:: get_device
 .. autofunction:: available_backends
+.. autofunction:: loaded_backends
 .. autofunction:: backend_load_errors
+.. autofunction:: has_backend_conflict
 .. autofunction:: get_backend
 .. autofunction:: get_device_id
+.. autofunction:: print_info
 
 MPI
 ===
 
 .. autofunction:: get_rank
 .. autofunction:: get_world_size
+.. autofunction:: get_comm
+.. autofunction:: get_comm_backend
+.. autofunction:: barrier

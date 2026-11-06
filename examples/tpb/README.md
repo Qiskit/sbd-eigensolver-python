@@ -131,7 +131,7 @@ carries into the next iteration instead of SQD; see
 [SBD-selected carryover](#sbd-selected-carryover). Run
 `python run_sqd_sbd.py --help` for the full list, which is grouped by layer.
 
-**Requirements:** see [Integration with qiskit-addon-sqd](../../README.md#integration-with-qiskit-addon-sqd) in the Python Bindings README (`pyscf`, `qiskit`, `qiskit-addon-sqd`). `--sbd_carryover_type` needs `qiskit-addon-sqd >= 0.14.0`; everything else works from `0.13.1`.
+**Requirements:** see [SBD in an SQD loop](../../README.md#sbd-in-an-sqd-loop) in the top-level README (`pyscf`, `qiskit`, `qiskit-addon-sqd`). `--sbd_carryover_type` needs `qiskit-addon-sqd >= 0.14.0`; everything else works from `0.13.1`.
 
 See [SQD Parameters](#sqd-parameters) below for the full reference, grouped by SQD loop / SBD solver / MPI grid / checkpointing.
 
