@@ -2,23 +2,30 @@
 
 > Part of the lattice and spin workflow in [`../README.md`](../README.md#lattice-and-spin-models-caop).
 
-`run_caop_diag.py` runs upstream SBD's
-[`caop_selected_basis_diagonalization`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop_selected_basis_diagonalization)
-app from Python: the ground state of a Hamiltonian written as operator terms, over a
-selected basis of occupation bitstrings, for lattice and spin models (Hubbard,
-hard-core bosons, spins). For molecules, use TPB or GDB.
+These drivers run upstream SBD's CAOP apps from Python, for lattice and spin models
+(Hubbard, hard-core bosons, spins) written as operator terms over a selected basis of
+occupation bitstrings. For molecules, use TPB or GDB.
 
-**The options are upstream's, with the same names and meanings;** see
-[upstream's README](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop_selected_basis_diagonalization/README.md)
-for each one and for its `gen_ham.py` and `gen_bits.py`. This page covers what is
-specific to the Python driver and what we found running it.
+- **`run_caop_diag.py`**: the ground state, as upstream's
+  [`caop_selected_basis_diagonalization`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop_selected_basis_diagonalization).
+- **`run_caop_spectrum.py`**: the Green's function of a saved ground state, as upstream's
+  [`caop-spectrum`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop-spectrum).
+- **`../analysis/variance.py --hamfile`**: the energy variance and PT2 of a saved ground
+  state, as upstream's
+  [`caop-stat-evaluator`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop-stat-evaluator);
+  see [CAOP states](../analysis/README.md#caop-states).
 
-**The two drivers chain:** `run_caop_diag.py --savename gs-` solves for the ground state
-and saves it; `run_caop_spectrum.py --loadname gs-` then reads it, with the same
-Hamiltonian file and the ground-state energy, and computes its Green's function. The
-second run must match the first's `--system_size`, `--bit_length`, `--b_comm_size` and
-`--complex`, which the saved files do not record. See
-[Green's function](#greens-function) for a worked example.
+They chain: `run_caop_diag.py --savename gs-` saves the ground state, and
+`run_caop_spectrum.py --loadname gs-` or `variance.py --state gs-` reads it, with the same
+Hamiltonian file and the ground-state energy. Each later run must match the solve's
+`--system_size`, `--bit_length`, `--b_comm_size` and `--complex`, which the saved files do
+not record. See [Green's function](#greens-function) for a worked example, and the
+[lattice and spin workflow](../README.md#lattice-and-spin-models-caop) for all three in
+order.
+
+**The options are upstream's, with the same names and meanings:** see each app's README,
+linked above, and upstream's `gen_ham.py` and `gen_bits.py` for writing input files. This
+page covers what differs in the Python drivers, and the checks they add.
 
 ## Differences from upstream's app
 
