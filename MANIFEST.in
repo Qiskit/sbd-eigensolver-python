@@ -3,10 +3,10 @@ include README.md
 include pyproject.toml
 include setup.py
 
-# C++ sources and headers under python/. setuptools ships the .py files in
+# C++ sources and headers under src/sbd/. setuptools ships the .py files in
 # the `sbd` package automatically but not these.
-include python/bindings.cpp
-include python/sbd_nvhpc_compat.h
+include src/sbd/bindings.cpp
+include src/sbd/sbd_nvhpc_compat.h
 
 # Vendored upstream SBD library (git submodule vendor/sbd-upstream).
 # setuptools does not traverse submodules, so this must be explicit or the

@@ -19,8 +19,8 @@ outer Python loop, and between calls takes the solved wavefunction's dominant
 determinant pairs, expands them via qiskit_addon_sqd.fermion's own
 enlarge_batch_from_transitions (single excitations, both spin channels), and
 feeds the result forward as next round's include_configurations. That is the
-same general idea as SBD's own --sbd_carryover_type 2/3 (see
-run_sbd_selected_ci.py in python/experimental/), implemented instead with
+same general idea as SBD's own --sbd_carryover_type 2/3 (see "SBD-selected
+carryover" in README.md here), implemented instead with
 qiskit-addon-sqd's own excitation-generation utility, so it works with any
 sci_solver, not just SBD, and needs only plain upstream SBD when SBD is used
 as the solver here.

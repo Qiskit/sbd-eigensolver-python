@@ -18,11 +18,9 @@ import re
 import sys
 from importlib.metadata import version as metadata_version
 
-# Note there is deliberately no `sys.path` manipulation here. The import name of this
-# package (`sbd`) does not match the directory it lives in (`python/`); the mapping is
-# declared as `package-dir = {sbd = "python"}` in pyproject.toml and only setuptools
-# knows about it. Autodoc therefore needs the package genuinely *installed*, which is
-# also what makes the `metadata_version` call below work.
+# Note there is deliberately no `sys.path` manipulation here. Autodoc needs the package
+# genuinely *installed*, with its compiled extension modules, which is also what makes
+# the `metadata_version` call below work.
 
 project = "Selected Basis Diagonalization (SBD)"
 project_copyright = "2026, IBM Quantum"
@@ -98,11 +96,10 @@ intersphinx_mapping = {
 # Source code links
 # ----------------------------------------------------------------------------------
 
-# The package is imported as `sbd` but stored in the repository under `python/`, so the
-# two halves of a source link need different spellings: the installed file path is
-# split on one, and the URL is built with the other.
+# The package is imported as `sbd` and stored in the repository under `src/sbd/`: the
+# installed file path is split on the one, and the URL is built with the other.
 _IMPORT_NAME = "sbd"
-_REPO_SUBDIR = "python"
+_REPO_SUBDIR = "src/sbd"
 
 
 def determine_github_branch() -> str:

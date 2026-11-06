@@ -73,7 +73,7 @@ Issues = "https://github.com/Qiskit/sbd-eigensolver-python/issues"
 # The extension modules (and their MPI/BLAS/NVHPC build logic) are declared
 # imperatively in setup.py; everything else lives in [project] above.
 packages = ["sbd"]
-package-dir = {sbd = "python"}
+package-dir = {"" = "src"}
 zip-safe = false
 
 [tool.pytest.ini_options]
