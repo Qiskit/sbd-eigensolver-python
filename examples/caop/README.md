@@ -159,7 +159,8 @@ mpirun -np 4 python run_caop_spectrum.py --hamfile hub2.txt --sites 4 --loadname
     --wavefunction-shards 4 --reference-energy <E0 from step 1> --orbitals 0,2 \
     --channel addition --extra-detfile add_basis.txt --save-coefficients add.coeff \
     --output add.csv --omega-min -6 --omega-max 8 --points 141 --eta 0.1
-# 4. a narrower broadening from the saved coefficients, without rerunning: one process
+# 4. a narrower broadening from the saved coefficients, without rerunning: as upstream's
+#    app, this reads neither the Hamiltonian nor the state, so it is one process
 python run_caop_spectrum.py --read-coefficients add.coeff --output narrow.csv \
     --omega-min -6 --omega-max 8 --points 281 --eta 0.05
 ```
@@ -180,12 +181,27 @@ long as `--wavefunction-shards` is the number of files step 1 wrote. Here that i
 
 ## MPI
 
-The ranks form a grid `ranks = h × b × t`. **b** (`--b_comm_size`) splits the basis and
-every vector, and is the only one that divides memory. **t** (`--t_comm_size`) and
+The solve, the variance and the Green's function each run with MPI and OpenMP: ranks
+split the basis and the work, and OpenMP threads share each rank's part. Give each
+rank its threads with `OMP_NUM_THREADS` (and, under a scheduler, the cores to match).
+Each step may use its own rank count, as long as the variance and the Green's function
+are told how many files the solve wrote (`--shards`, `--wavefunction-shards`). Only
+reevaluating saved coefficients (`--read-coefficients`) is a single process, as in
+upstream: it evaluates a short list of coefficients and reads no state, so more ranks
+would only repeat it.
+
+For the solve and the Green's function, the ranks form a grid `ranks = h × b × t`. **b**
+splits the basis and every vector, and is the only one that divides memory. **t** and
 **h** split the work of applying the Hamiltonian (**h** also splits its terms), each
-holding a full copy of its basis piece. Upstream sets `h = ranks / (b × t)`. The rank
-count must be a multiple of `b × t`, and `t ≤ b` is the useful range. The simplest
-layout is `--b_comm_size` equal to the rank count.
+holding a full copy of its basis piece. The rank count must be a multiple of `b × t`,
+and `t ≤ b` is the useful range.
+
+- **Solve:** set `b` and `t` (`--b_comm_size`, `--t_comm_size`); upstream gives it
+  `h = ranks / (b × t)`. The simplest layout is `--b_comm_size` equal to the rank count.
+- **Green's function:** set `h` and `t` (`--h-comm-size`, `--t-comm-size`); the rest of
+  the ranks go to `b`. The defaults, both 1, put every rank on `b`.
+- **Variance:** set `h` (`--h_comm_size`, the Hamiltonian's terms); the state and the
+  sampling are spread over the rest. The default, 1, uses every rank for that.
 
 ## GPU
 
