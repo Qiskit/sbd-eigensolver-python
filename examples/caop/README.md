@@ -123,9 +123,13 @@ rest of that page covers how the estimate works and how to choose its settings.
 
 ## Green's function
 
-`run_caop_spectrum.py` runs with MPI + OpenMP on the CPU. The one exception, as
-upstream's, is applying the Hamiltonian on the fly, which runs on the GPU on
-`--device gpu` (Thrust, NVIDIA only):
+`run_caop_spectrum.py` continues from a saved ground state, with upstream's option names
+and CSV output; upstream's
+[`caop-spectrum` README](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop-spectrum/README.md)
+gives the options, the conventions for G⁺ and G⁻, and the method's limits.
+
+It runs with MPI + OpenMP on the CPU. The one exception, as upstream's, is applying the
+Hamiltonian on the fly, which runs on the GPU on `--device gpu` (Thrust, NVIDIA only):
 
 | `--hamiltonian-mode` | Runs on |
 |---|---|
