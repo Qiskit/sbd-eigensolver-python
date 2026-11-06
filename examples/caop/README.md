@@ -13,10 +13,6 @@ hard-core bosons, spins). For molecules, use TPB or GDB.
 for each one and for its `gen_ham.py` and `gen_bits.py`. This page covers what is
 specific to the Python driver and what we found running it.
 
-```bash
-mpirun -np 4 python run_caop_diag.py --b_comm_size 4    # upstream's 8-site boson chain
-```
-
 ## Differences from upstream's app
 
 - `--device cpu` or `gpu` (Thrust, NVIDIA only); see *GPU*.
@@ -27,6 +23,27 @@ mpirun -np 4 python run_caop_diag.py --b_comm_size 4    # upstream's 8-site boso
   `--hamfile`/`--basisfiles`, it runs upstream's example files.
 - Not exposed: `--init` (only `0`, random, exists) and `--h_comm_size` (listed upstream
   but never read; see *MPI*).
+
+## Running it
+
+```bash
+mpirun -np 4 python run_caop_diag.py --b_comm_size 4
+```
+
+With only `--b_comm_size` given, this runs with the defaults:
+
+- **Input:** upstream's example, an 8-site hard-core boson chain: `hamiltonian.txt` and
+  `basis.txt` from `vendor/sbd-upstream/apps/caop_selected_basis_diagonalization/`,
+  with `--system_size 8`. For your own model give `--hamfile`, `--basisfiles` and
+  `--system_size` together.
+- **Device:** `--device cpu`. `--device gpu` needs the Thrust build and two or more
+  OpenMP threads per rank; upstream's `run.sh` uses one, which the Thrust build refuses.
+- **Amplitudes:** real. Add `--complex` for complex coefficients or `sy`.
+- **Solver:** `--method 1` (Davidson, stored Hamiltonian) to `--tolerance 1e-4`, from a
+  random start (`--seed 0`). Converge further and fix the seed before comparing
+  energies; see *Tips*.
+- **MPI:** the basis split over all 4 ranks (`--b_comm_size` equal to the rank count),
+  the simplest layout; see *MPI*.
 
 ## Preparing the input files
 
