@@ -679,6 +679,75 @@ def tpb_diag_from_files(fcidumpfile, adetfile, sbd_data,
     )
 
 
+def _caop_backend(device):
+    """The backend module for a CAOP call, refusing one that does not bind CAOP."""
+    _ensure_initialized()
+    backend = get_backend(device)
+    if not getattr(backend, "__sbd_has_caop__", False):
+        raise ValueError(
+            f"the {backend.__name__.split('.')[-1]} backend has no CAOP solver: upstream "
+            "SBD's CAOP code has CPU and Thrust paths only. Use device='cpu', or "
+            "device='gpu' (NVHPC Thrust, NVIDIA GPUs only; there is no CAOP GPU path for "
+            "AMD GPUs)")
+    return backend
+
+
+def CAOP_SBD(device=None):
+    """Create a CAOP_SBD configuration object, for :func:`caop_diag_from_files`.
+
+    The fields are those of upstream SBD's ``caop_selected_basis_diagonalization``
+    app; ``system_size`` (the number of modes) and ``bit_length`` must be set.
+    """
+    return _caop_backend(device).CAOP_SBD()
+
+
+def caop_diag_from_files(hamfile, basisfiles, sbd_data, loadname="", savename="",
+                         complex=False, device=None):
+    """Diagonalize a creation/annihilation-operator Hamiltonian over a selected basis.
+
+    The CAOP solver of upstream SBD, as its ``caop_selected_basis_diagonalization``
+    app runs it. The Hamiltonian is read from a text file whose first non-comment line
+    selects the statistics (positive: hard-core bosons or spins; zero or negative:
+    fermions) and whose other lines are terms, a coefficient then operator-site pairs,
+    for example ``-1.0 cdag 0 c 1``. The basis is one or more files of bitstrings, one
+    per line, ``system_size`` characters each.
+
+    Args:
+        hamfile: Path to the Hamiltonian file.
+        basisfiles: Path, or list of paths, to the basis files.
+        sbd_data: CAOP_SBD configuration object.
+        loadname: Path prefix to load an initial wavefunction from (optional).
+        savename: Path prefix to save the final wavefunction to (optional).
+        complex: Solve with complex amplitudes, for a Hamiltonian with complex
+            coefficients, which the file writes as ``(re,im)``, or one using ``sy``.
+            Upstream's app chooses this at compile time (``-D_COMPLEX``); here both
+            are built, and this chooses per call.
+        device: ``'cpu'`` or ``'gpu'`` (Thrust). The OpenMP-offload backend has no
+            CAOP solver and is refused.
+
+    Returns:
+        dict with ``energy`` and ``carryover_basis``, this rank's share of the basis
+        ``carryover_type`` selected, as an ``(n, words)`` array.
+
+    Raises:
+        ValueError: before any work, on every rank together, for inputs upstream
+            would get wrong silently or hang on: a rank count that is not a multiple
+            of ``t_comm_size * b_comm_size``; Davidson (``method`` 0 or 1) without
+            ``1 <= max_iv < max_nb``; a ``method`` outside 0-3; on the ``gpu``
+            backend with ``method`` 0 or 2, ``t_comm_size > b_comm_size``; and a
+            Hamiltonian file that cannot be read, including a ``(re,im)``
+            coefficient without ``complex=True``. Also for an empty ``basisfiles``
+            and a backend with no CAOP solver (``gpu-omp``). See "Checks" in
+            ``examples/caop/README.md`` for what upstream does with each.
+    """
+    if isinstance(basisfiles, (str, os.PathLike)):
+        basisfiles = [basisfiles]
+    backend = _caop_backend(device)
+    return backend.caop_diag_from_files(
+        _global_comm, sbd_data, str(hamfile), [str(f) for f in basisfiles],
+        loadname, savename, complex)
+
+
 def tpb_diag(fcidump, adet, bdet, sbd_data,
              loadname="", savename="", device=None):
     """
@@ -951,6 +1020,8 @@ __all__ = [
     'sort_bitarray',
     'sort_bitarray_array',
     'tpb_diag_from_files',
+    'CAOP_SBD',
+    'caop_diag_from_files',
     'tpb_diag',
     'gdb_diag',
 

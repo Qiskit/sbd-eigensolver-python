@@ -37,7 +37,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <complex>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -212,6 +215,125 @@ static bool sbd_all_ranks_ok(bool local_ok, MPI_Comm comm) {
     MPI_Allreduce(&local, &all, 1, MPI_INT, MPI_LAND, comm);
     return all != 0;
 }
+
+/**
+ * The problem the lowest-numbered rank found, on every rank; empty if none did.
+ *
+ * For checks only some ranks can make (the one that reads a file), so every rank
+ * raises the same, informative message rather than "another rank failed".
+ */
+static std::string sbd_first_problem(const std::string& local, MPI_Comm comm) {
+    int rank = 0, size = 1;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+    int mine = local.empty() ? size : rank, first = size;
+    MPI_Allreduce(&mine, &first, 1, MPI_INT, MPI_MIN, comm);
+    if (first == size) return std::string();
+    int length = rank == first ? int(local.size()) : 0;
+    MPI_Bcast(&length, 1, MPI_INT, first, comm);
+    std::string message(rank == first ? local : std::string(size_t(length), ' '));
+    MPI_Bcast(message.data(), length, MPI_CHAR, first, comm);
+    return message;
+}
+
+#ifndef USE_OMP_OFFLOAD
+/**
+ * Read a CAOP Hamiltonian file's coefficients on every rank, as upstream's loader
+ * would, and refuse together if any cannot be read.
+ *
+ * Upstream reads the file on h-rank 0 only and sends the terms on
+ * (caop/basic/loadmodel.h:92-96), so a line it cannot read raises on that rank while
+ * the others wait for terms: the job hangs on more than one rank. This uses
+ * upstream's line rules (blank and '#' lines skipped, the first other line the
+ * statistics, then one term per line, coefficient first). A real call reads a
+ * coefficient as a double, so "(re,im)" is refused there with a pointer to
+ * complex=True.
+ */
+struct CaopFileFacts {
+    bool fermion = false;     // statistics zero or negative, as upstream's loader reads it
+    size_t max_mode = 0;      // highest mode index any term uses
+};
+
+static CaopFileFacts caop_check_hamfile(const std::string& hamfile, bool complex,
+                                        MPI_Comm comm, const char* where) {
+    std::string problem;
+    CaopFileFacts facts;
+    std::ifstream ifs(hamfile);
+    if (!ifs) {
+        problem = "cannot open the Hamiltonian file " + hamfile;
+    } else {
+        std::string line;
+        bool statistics_read = false;
+        size_t number = 0;
+        while (problem.empty() && std::getline(ifs, line)) {
+            ++number;
+            const auto first = line.find_first_not_of(" \t");
+            if (first == std::string::npos || line[first] == '#') continue;
+            std::istringstream iss(line);
+            if (!statistics_read) {
+                int statistics;
+                if (!(iss >> statistics)) {
+                    problem = "line " + std::to_string(number) + " of " + hamfile
+                        + ": the first line must be the statistics (an integer: positive "
+                          "for hard-core bosons or spins, zero or negative for fermions)";
+                }
+                facts.fermion = statistics <= 0;
+                statistics_read = true;
+                continue;
+            }
+            bool read;
+            if (complex) {
+                std::complex<double> c;
+                read = static_cast<bool>(iss >> c);
+            } else {
+                double c;
+                read = static_cast<bool>(iss >> c);
+            }
+            // The operator tokens, each followed by its mode, up to a '#' comment.
+            std::string op;
+            size_t mode = 0;
+            while (read && iss >> op && op[0] != '#') {
+                if (iss >> mode) facts.max_mode = std::max(facts.max_mode, mode);
+                else problem = "line " + std::to_string(number) + " of " + hamfile
+                         + ": operator " + op + " has no mode index after it";
+            }
+            if (!read) {
+                const bool looks_complex = line[first] == '(';
+                problem = "line " + std::to_string(number) + " of " + hamfile
+                    + ": cannot read the coefficient '"
+                    + line.substr(first, line.find_first_of(" \t", first) - first) + "'"
+                    + (looks_complex && !complex
+                        ? ". It is written as a complex number (re,im): use complex=True "
+                          "(--complex in the drivers)"
+                        : ". A coefficient is a real number, or (re,im) with complex=True");
+            }
+        }
+        if (problem.empty() && !statistics_read) {
+            problem = hamfile + " has no statistics line";
+        }
+    }
+    const std::string first = sbd_first_problem(problem, comm);
+    if (!first.empty()) {
+        throw std::invalid_argument(std::string(where) + ": " + first);
+    }
+    return facts;
+}
+
+/**
+ * Refuse, on every rank, a CAOP file whose terms use a mode at or beyond sites.
+ *
+ * Upstream checks max_index() on the h-sharded operator, so with h_comm_size > 1 only
+ * the shard holding the high mode throws and the others hang.
+ */
+static void caop_check_modes(const std::string& file, const CaopFileFacts& facts,
+                             size_t sites, const char* where) {
+    if (facts.max_mode >= sites) {
+        throw std::invalid_argument(
+            std::string(where) + ": " + file + " uses mode " + std::to_string(facts.max_mode)
+            + ", beyond sites=" + std::to_string(sites) + " (modes are 0 .. sites-1)");
+    }
+}
+#endif
 
 /**
  * Refuse a Thrust solve with one OpenMP thread, before upstream aborts the job.
@@ -1549,6 +1671,220 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
     // Version information
     // ========================================================================
     
+    // ========================================================================
+    // CAOP: selected-basis diagonalization of a creation/annihilation-operator
+    // Hamiltonian (upstream apps/caop_selected_basis_diagonalization)
+    // ========================================================================
+    //
+    // Upstream's CAOP code has CPU and Thrust paths and no OpenMP-offload one, so the
+    // offload module does not bind it; __sbd_has_caop__ says which modules do. The
+    // library is templated on the scalar type, so both real and complex
+    // Hamiltonians are bound here, chosen per call; upstream's app picks one at
+    // compile time with -D_COMPLEX.
+#ifndef USE_OMP_OFFLOAD
+    m.attr("__sbd_has_caop__") = true;
+
+    py::class_<sbd::caop::SBD>(m, "CAOP_SBD", py::module_local(),
+                               "Configuration for CAOP diagonalization")
+        .def(py::init<>())
+        .def_readwrite("t_comm_size", &sbd::caop::SBD::t_comm_size,
+                      "Task communicator size (column-wise Hamiltonian application)")
+        .def_readwrite("b_comm_size", &sbd::caop::SBD::b_comm_size,
+                      "Basis communicator size: how many shards the basis is split into")
+        // h_comm_size is deliberately NOT exposed, as on TPB_SBD and GDB_SBD.
+        // Upstream declares the field but never reads it: caop::diag derives
+        //     h_comm_size = mpi_size / (t_comm_size * b_comm_size)
+        // (caop/basic/sbdiag.h:263, :564). An attribute that silently does nothing
+        // is worse than an absent one; change the rank count or the other two
+        // sizes instead.
+        .def_readwrite("method", &sbd::caop::SBD::method,
+                      "0/1: Davidson, Hamiltonian on the fly / stored; "
+                      "2/3: Lanczos, on the fly / stored")
+        .def_readwrite("max_it", &sbd::caop::SBD::max_it, "Restart cycles")
+        .def_readwrite("max_nb", &sbd::caop::SBD::max_nb,
+                      "Largest reduced-space dimension before a restart")
+        .def_readwrite("max_iv", &sbd::caop::SBD::max_iv,
+                      "Initial vectors (initial subspace dimension) for Davidson")
+        .def_readwrite("eps", &sbd::caop::SBD::eps, "Convergence threshold on the residual")
+        .def_readwrite("init", &sbd::caop::SBD::init,
+                      "Initial vector; only 0 (random) is supported upstream")
+        .def_readwrite("initial_determinant_bitstring",
+                      &sbd::caop::SBD::initial_determinant_bitstring,
+                      "Start with unit weight on this basis bitstring (system_size "
+                      "characters) instead of init. It must occur exactly once in the "
+                      "basis. A loadname takes precedence")
+        .def_readwrite("seed", &sbd::caop::SBD::seed, "Seed for the random initial vector")
+        .def_readwrite("system_size", &sbd::caop::SBD::system_size,
+                      "Number of modes, i.e. the length of each basis bitstring")
+        .def_readwrite("bit_length", &sbd::caop::SBD::bit_length,
+                      "Bits stored per 64-bit word of a packed bitstring")
+        .def_readwrite("do_sort_basis", &sbd::caop::SBD::do_sort_basis,
+                      "Sort the basis across ranks after loading (for overlapping files)")
+        .def_readwrite("do_redist_basis", &sbd::caop::SBD::do_redist_basis,
+                      "Redistribute the basis evenly over b_comm after loading")
+        .def_readwrite("carryover_type", &sbd::caop::SBD::carryover_type,
+                      "0: none; 1: keep the largest-weight fraction; 2: deterministic "
+                      "heat-bath expansion")
+        .def_readwrite("ratio", &sbd::caop::SBD::ratio,
+                      "carryover_type 1: fraction of basis states kept")
+        .def_readwrite("heatbath_cutoff", &sbd::caop::SBD::heatbath_cutoff,
+                      "carryover_type 2: accept a term when |a_k c_j| exceeds this")
+        .def_readwrite("heatbath_truncation", &sbd::caop::SBD::heatbath_truncation,
+                      "carryover_type 2: drop a parent unless |c_j|^2 exceeds this")
+        .def_readwrite("heatbath_batch_size", &sbd::caop::SBD::heatbath_batch_size,
+                      "carryover_type 2: candidate batch size per rank")
+        .def_readwrite("heatbath_parent_distribution",
+                      &sbd::caop::SBD::heatbath_parent_distribution,
+                      "carryover_type 2: 0 keeps the basis layout for expansion, 1 "
+                      "deals parents out by weight")
+        .def("__repr__", [](const sbd::caop::SBD& s) {
+            return "CAOP_SBD(method=" + std::to_string(s.method)
+                + ", system_size=" + std::to_string(s.system_size)
+                + ", bit_length=" + std::to_string(s.bit_length)
+                + ", b_comm_size=" + std::to_string(s.b_comm_size) + ")";
+        });
+
+    m.def("caop_diag_from_files",
+        [](py::object py_comm,
+           const sbd::caop::SBD& sbd_data,
+           const std::string& hamfile,
+           const std::vector<std::string>& basisfiles,
+           const std::string& loadname,
+           const std::string& savename,
+           bool complex) {
+            MPI_Comm comm = get_mpi_comm(py_comm);
+            sbd_require_openmp_threads("caop_diag_from_files", comm);
+            int mpi_rank;
+            MPI_Comm_rank(comm, &mpi_rank);
+            int mpi_size;
+            MPI_Comm_size(comm, &mpi_size);
+
+            // ---- what upstream does not check ---------------------------------
+            // These depend only on the config and the rank count, which every rank
+            // sees identically, so every rank throws together without a vote. Each
+            // was observed upstream to return a wrong energy with exit 0, or hang.
+            const int t_comm_size = sbd_data.t_comm_size;
+            const int b_comm_size = sbd_data.b_comm_size;
+            if (t_comm_size < 1 || b_comm_size < 1) {
+                throw std::invalid_argument(
+                    "caop_diag_from_files requires t_comm_size >= 1 and b_comm_size >= 1");
+            }
+            // caop::diag derives h_comm_size = ranks / (t * b) by integer division
+            // (caop/basic/sbdiag.h:263) and setup_communicator then splits ranks into
+            // groups of t * b (helper.h:22-27). With a remainder, the last group is
+            // short, so ranks disagree on the grid (of 3 ranks with b = 2, one sees
+            // b = 1): a wrong energy, with exit 0. With fewer ranks than t * b the
+            // grid is consistent but smaller than asked (2 ranks, b = 4 run b = 2).
+            if (mpi_size % (t_comm_size * b_comm_size) != 0) {
+                throw std::invalid_argument(
+                    "caop_diag_from_files: the rank count (" + std::to_string(mpi_size)
+                    + ") must be a multiple of t_comm_size * b_comm_size ("
+                    + std::to_string(t_comm_size) + " * " + std::to_string(b_comm_size)
+                    + " = " + std::to_string(t_comm_size * b_comm_size)
+                    + "). Upstream derives the helper size as ranks / (t * b) and "
+                      "returns a wrong energy otherwise");
+            }
+            // caop::diag's dispatch is `if (method == 0 || method == 2) {...} else
+            // {...}`, so any other value silently runs a stored-Hamiltonian method.
+            if (sbd_data.method < 0 || sbd_data.method > 3) {
+                throw std::invalid_argument(
+                    "caop_diag_from_files: method must be 0-3 (0/1 Davidson, 2/3 "
+                    "Lanczos; odd stores the Hamiltonian), got "
+                    + std::to_string(sbd_data.method));
+            }
+            // Davidson (methods 0 and 1) starts from max_iv vectors and grows the
+            // reduced space up to max_nb before a restart, so it needs room to grow:
+            // max_iv == max_nb returns a wrong energy, and max_iv > max_nb or 0
+            // hangs. Lanczos (methods 2 and 3) does not use max_iv.
+            if ((sbd_data.method == 0 || sbd_data.method == 1)
+                && (sbd_data.max_iv < 1 || sbd_data.max_iv >= sbd_data.max_nb)) {
+                throw std::invalid_argument(
+                    "caop_diag_from_files: Davidson (method 0 or 1) needs "
+                    "1 <= max_iv < max_nb, got max_iv=" + std::to_string(sbd_data.max_iv)
+                    + ", max_nb=" + std::to_string(sbd_data.max_nb)
+                    + ". Upstream returns a wrong energy at max_iv == max_nb and hangs "
+                      "above it or at 0");
+            }
+#ifdef SBD_THRUST
+            // make_slide deals the b ring stations out over the t task ranks
+            // (caop/basic/helper.h:41-55), so with t > b some ranks get none. The CPU
+            // mult guards an empty slide (mult.h:19); the Thrust one returns early
+            // (mult_thrust.h:583) and skips the Allreduce the other ranks wait in, so
+            // the job hangs; the stored-Hamiltonian methods run the CPU mult. The
+            // same t <= b holds for GDB on every backend.
+            if ((sbd_data.method == 0 || sbd_data.method == 2) && t_comm_size > b_comm_size) {
+                throw std::invalid_argument(
+                    "caop_diag_from_files on the gpu (Thrust) backend with method "
+                    + std::to_string(sbd_data.method) + " needs t_comm_size <= b_comm_size, "
+                    "got t_comm_size=" + std::to_string(t_comm_size) + ", b_comm_size="
+                    + std::to_string(b_comm_size) + ": a task rank with no basis-ring "
+                    "station hangs upstream's GPU kernel. Raise b_comm_size, lower "
+                    "t_comm_size, or use device='cpu'");
+            }
+#endif
+#ifdef SBD_THRUST
+            int numDevices, myDevice;
+#ifdef __CUDACC__
+            cudaGetDeviceCount(&numDevices);
+            myDevice = mpi_rank % numDevices;
+            cudaSetDevice(myDevice);
+#else
+            hipGetDeviceCount(&numDevices);
+            myDevice = mpi_rank % numDevices;
+            hipSetDevice(myDevice);
+#endif
+#endif
+            if (basisfiles.empty()) {
+                throw std::invalid_argument("caop_diag_from_files needs at least one basis file");
+            }
+            // Upstream reads the hamfile on h-rank 0 only and sends the terms on
+            // (caop/basic/loadmodel.h:92-96), so a file it cannot read hangs the other
+            // ranks; see caop_check_hamfile.
+            // Upstream's solve does not check the terms' modes against system_size.
+            caop_check_modes(hamfile,
+                             caop_check_hamfile(hamfile, complex, comm,
+                                                "caop_diag_from_files"),
+                             sbd_data.system_size, "caop_diag_from_files");
+            // As upstream's caop-spectrum app: the stored Hamiltonian (methods 1/3) keeps
+            // per-thread slots that need a fixed OpenMP team (caop/basic/mkham.h).
+            omp_set_dynamic(0);
+            double energy = 0.0;
+            sbd::det_vector<size_t> co_basis;
+            {
+                py::gil_scoped_release release;
+                if (complex) {
+                    sbd::caop::diag<std::complex<double>>(comm, sbd_data, hamfile, basisfiles,
+                                                          loadname, savename, energy, co_basis);
+                } else {
+                    sbd::caop::diag<double>(comm, sbd_data, hamfile, basisfiles,
+                                            loadname, savename, energy, co_basis);
+                }
+            }
+            const size_t words = co_basis.empty() ? 0 : co_basis.elem_size();
+            py::array_t<size_t> co_out(std::vector<py::ssize_t>{
+                static_cast<py::ssize_t>(co_basis.size()), static_cast<py::ssize_t>(words)});
+            if (!co_basis.empty()) {
+                std::memcpy(co_out.mutable_data(), co_basis.cflat().data(),
+                            co_basis.size() * words * sizeof(size_t));
+            }
+            py::dict results;
+            results["energy"] = energy;
+            results["carryover_basis"] = co_out;
+            return results;
+        },
+        "CAOP diagonalization of a Hamiltonian file over a basis given as files, "
+        "as upstream's caop_selected_basis_diagonalization app",
+        py::arg("comm"),
+        py::arg("sbd_data"),
+        py::arg("hamfile"),
+        py::arg("basisfiles"),
+        py::arg("loadname") = "",
+        py::arg("savename") = "",
+        py::arg("complex") = false);
+#else
+    m.attr("__sbd_has_caop__") = false;
+#endif
+
     m.attr("__version__") = "1.2.0";
 }
 
