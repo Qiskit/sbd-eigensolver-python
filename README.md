@@ -66,6 +66,13 @@ python -c "import sbd; print(sbd.available_backends())"
 # AMD, default build:    ['cpu', 'gpu-omp']
 ```
 
+By default the `cpu` and `gpu` backends are also built a second time, with upstream's
+`-D_UHF`, for unrestricted (UHF) FCIDUMPs: `sbd._core_cpu_uhf` and
+`sbd._core_gpu_thrust_uhf`. A solve uses that build automatically when the FCIDUMP is
+unrestricted, so there is no device to choose. `available_backends()` does not list
+these builds; `sbd.has_uhf("cpu")` and `sbd.print_info()` report them. `gpu-omp` has no
+UHF build. `SBD_BUILD_UHF=0` skips them ([INSTALL.md](INSTALL.md)).
+
 **See [INSTALL.md](INSTALL.md)** for the rest: prerequisites per platform, installing
 from a git checkout with the submodule, every environment variable the build reads
 (GPU toolchains, architectures, MPI and BLAS selection, narrowing which backends get
