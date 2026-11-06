@@ -522,8 +522,9 @@ driver says so if it is left out.
 
 **Limits:**
 
-- **Backends:** `cpu` and `gpu` (Thrust). `gpu-omp` has no unrestricted build and refuses
-  a UHF file; `sbd.has_uhf(device)` reports whether a device has one. `SBD_BUILD_UHF=0`
+- **Backends:** `cpu` and `gpu` (Thrust). `gpu-omp` does not support UHF files: it has no
+  unrestricted build, and passing one raises an error. `sbd.has_uhf(device)` reports
+  whether a device has one. `SBD_BUILD_UHF=0`
   at install time skips the unrestricted builds.
 - **SQD:** the SQD loop (`sbd.sbd_solver.solve_sci`) is restricted only for now.
 - **RDMs:** `--rdm_output` saves `rdm1`/`rdm2` summed over spin, as upstream SBD writes
