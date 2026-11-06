@@ -1,15 +1,23 @@
 # CAOP — models written with creation and annihilation operators
 
-`run_caop_diag.py` runs upstream SBD's
-[`caop_selected_basis_diagonalization`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop_selected_basis_diagonalization)
-app from Python: the ground state of a Hamiltonian written as operator terms, over a
-selected basis of occupation bitstrings, for lattice and spin models (Hubbard,
-hard-core bosons, spins). For molecules, use TPB or GDB.
+Two drivers run upstream SBD's CAOP apps from Python, for lattice and spin models
+(Hubbard, hard-core bosons, spins) written as operator terms over a selected basis of
+occupation bitstrings. For molecules, use TPB or GDB.
 
-**The options are upstream's, with the same names and meanings;** see
-[upstream's README](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop_selected_basis_diagonalization/README.md)
-for each one and for its `gen_ham.py` and `gen_bits.py`. This page covers what is
-specific to the Python driver and what we found running it.
+- **`run_caop_diag.py`**: the ground state, as upstream's
+  [`caop_selected_basis_diagonalization`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop_selected_basis_diagonalization).
+- **`run_caop_spectrum.py`**: the Green's function of a saved ground state, as upstream's
+  [`caop-spectrum`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop-spectrum).
+
+They chain: `run_caop_diag.py --savename gs-` saves the ground state, and
+`run_caop_spectrum.py --loadname gs-` reads it, with the same Hamiltonian file and the
+ground-state energy. The second run must match the first's `--system_size`,
+`--bit_length`, `--b_comm_size` and `--complex`, which the saved files do not record. See
+[Green's function](#greens-function) for a worked example.
+
+**The options are upstream's, with the same names and meanings:** see each app's README,
+linked above, and upstream's `gen_ham.py` and `gen_bits.py` for writing input files. This
+page covers what differs in the Python drivers, and the checks they add.
 
 ## Differences from upstream's app
 
@@ -85,6 +93,61 @@ basis yourself from every alpha and beta occupation: `gen_bits.py` fixes only th
   uneven basis keeps too many.
 - **Carryover type 2** returns a grown basis; the driver prints this rank's share. Feed
   it to the next run's `--basisfiles` to iterate. The expansion runs on the CPU.
+
+## Green's function
+
+`run_caop_spectrum.py` continues from a saved ground state: upstream's
+[`caop-spectrum`](https://github.com/r-ccs-cms/sbd/tree/main/apps/caop-spectrum) app
+in Python, with its option names and CSV output; see
+[its README](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop-spectrum/README.md)
+for the options, conventions and limits.
+
+**It runs with MPI + OpenMP on the CPU.** The one exception, as upstream's, is applying
+the Hamiltonian on the fly, which runs on the GPU on `--device gpu` (Thrust, NVIDIA
+only):
+
+| `--hamiltonian-mode` | Runs on |
+|---|---|
+| `stored` (default) | CPU, also on `--device gpu` |
+| `on-the-fly` | GPU on `--device gpu`, else CPU |
+
+Everything else stays on the CPU whichever you choose: building the excitation basis,
+applying the operators to the state, the block-Lanczos vector work, and evaluating the
+Green's function from the coefficients. On `--device gpu` the driver prints which of
+the two it ran. There is no `gpu-omp` path.
+
+For the 2-site Hubbard file above:
+
+```bash
+# 0. the 2-site Hubbard file above, and its half-filling basis
+printf '%s\n' -1 '-1.0 cdag 0 c 1' '-1.0 cdag 1 c 0' '-1.0 cdag 2 c 3' '-1.0 cdag 3 c 2' \
+    '4.0 cdag 0 cdag 2 c 2 c 0' '4.0 cdag 1 cdag 3 c 3 c 1' > hub2.txt
+printf '%s\n' 0101 0110 1001 1010 > hub2_basis.txt
+# 1. ground state, saved; note the "Ground state energy:" line (10 decimals), not
+#    upstream's rounded "Energy =" log line
+python run_caop_diag.py --hamfile hub2.txt --basisfiles hub2_basis.txt --system_size 4 \
+    --tolerance 1e-10 --savename gs-
+# 2. the N+1 sector, written sorted (here 3 electrons: 2 alpha + 1 beta, or 1 + 2)
+printf '0111\n1011\n1101\n1110\n' > add_basis.txt
+# 3. G+ for alpha site 0 and beta site 0, from the saved state
+python run_caop_spectrum.py --hamfile hub2.txt --sites 4 --loadname gs- \
+    --reference-energy <E0 from step 1> --orbitals 0,2 --channel addition \
+    --extra-detfile add_basis.txt --save-coefficients add.coeff --output add.csv \
+    --omega-min -6 --omega-max 8 --points 141 --eta 0.1
+# 4. a narrower broadening from the saved coefficients, without rerunning
+python run_caop_spectrum.py --read-coefficients add.coeff --output narrow.csv \
+    --omega-min -6 --omega-max 8 --points 281 --eta 0.05
+```
+
+- **Give the whole N±1 sector as `--extra-detfile`.** Upstream builds the excitation
+  basis only from what the operators reach from the state, which is usually not
+  enough. For orbitals of both spins, include both sectors (removing an alpha or a
+  beta electron gives different sectors).
+- **Match the ground-state run:** `--sites` is its `--system_size`, `--bit-length`
+  its `--bit_length`, `--wavefunction-shards` its `--b_comm_size`, and
+  `--scalar-type complex` if it used `--complex`. The files record none of these.
+- **Add both channels** for the full retarded Green's function: run `addition` and
+  `removal` on the same orbitals and grid, and sum.
 
 ## MPI
 

@@ -172,7 +172,8 @@ CAOP: creation/annihilation-operator models
 
 For lattice and spin models written as creation and annihilation operators, over a
 selected basis, as upstream SBD's ``caop_selected_basis_diagonalization`` app. CAOP runs
-on the ``cpu`` and ``gpu`` (Thrust) backends.
+on the ``cpu`` and ``gpu`` (Thrust) backends. See :mod:`sbd.spectrum` for Green's
+functions of a CAOP ground state.
 
 .. autofunction:: CAOP_SBD
 .. autofunction:: caop_diag_from_files

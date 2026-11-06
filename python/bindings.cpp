@@ -38,8 +38,10 @@
 #include <cmath>
 #include <cstdint>
 #include <complex>
+#include <type_traits>
 #include <cstring>
 #include <fstream>
+#include <numeric>
 #include <sstream>
 
 #include <pybind11/pybind11.h>
@@ -1881,6 +1883,273 @@ PYBIND11_MODULE(SBD_MODULE_NAME, m) {
         py::arg("loadname") = "",
         py::arg("savename") = "",
         py::arg("complex") = false);
+
+    // CAOP spectrum: a Green's function of a saved CAOP ground state by block Lanczos
+    // (upstream apps/caop-spectrum). Upstream's pipeline, run in one call: read the
+    // checkpoint and the extra basis, load H, build the response coefficients with
+    // sbd::caop::spectrum::spectrum, then evaluate G(omega) on a grid.
+    m.def("caop_spectrum",
+        [](py::object py_comm,
+           const std::string& loadname,
+           size_t shards,
+           const std::string& hamfile,
+           const std::vector<size_t>& orbitals,
+           bool addition,
+           size_t sites,
+           size_t bit_length,
+           double reference_energy,
+           const std::vector<std::string>& extra_basis,
+           const std::vector<double>& omegas,
+           double eta,
+           size_t max_steps,
+           size_t h_comm_size,
+           size_t t_comm_size,
+           bool store_hamiltonian,
+           bool complex,
+           bool wavefunction_complex,
+           const std::string& save_coefficients,
+           const std::vector<std::string>& operator_files,
+           double rank_atol,
+           double rank_rtol) {
+            namespace cs = sbd::caop::spectrum;
+            const bool general = !operator_files.empty();
+            if (wavefunction_complex && !complex) {
+                throw std::invalid_argument(
+                    "caop_spectrum: a complex saved state needs complex=True");
+            }
+            MPI_Comm comm = get_mpi_comm(py_comm);
+            sbd_require_openmp_threads("caop_spectrum", comm);
+            int world = 1, rank = 0;
+            MPI_Comm_size(comm, &world);
+            MPI_Comm_rank(comm, &rank);
+            if (h_comm_size == 0 || t_comm_size == 0 || world % (h_comm_size * t_comm_size)) {
+                throw std::invalid_argument(
+                    "caop_spectrum: h_comm_size * t_comm_size must divide the rank count");
+            }
+            if (general && !orbitals.empty()) {
+                throw std::invalid_argument(
+                    "caop_spectrum: give orbitals (single-particle c/cdag) or operator "
+                    "files (general operators), not both");
+            }
+            if (!general && orbitals.empty()) {
+                throw std::invalid_argument(
+                    "caop_spectrum needs at least one orbital or operator file");
+            }
+            if (!(rank_atol >= 0) || !(rank_rtol >= 0)) {
+                throw std::invalid_argument(
+                    "caop_spectrum: rank_atol and rank_rtol must be non-negative");
+            }
+            if (sites == 0 || bit_length == 0 || bit_length > 8 * sizeof(size_t)) {
+                throw std::invalid_argument("caop_spectrum: invalid sites or bit_length");
+            }
+            // Upstream reads the hamfile on h-rank 0 only, as for the solve; see
+            // caop_check_hamfile. The operator files are read the same way.
+            const auto ham_facts = caop_check_hamfile(hamfile, complex, comm, "caop_spectrum");
+            caop_check_modes(hamfile, ham_facts, sites, "caop_spectrum");
+            // Upstream compares each operator's statistics with H on the h=t=0 ranks
+            // only, so a mismatch there would hang the rest: refuse it here, everywhere.
+            for (const auto& file : operator_files) {
+                const auto facts = caop_check_hamfile(file, complex, comm, "caop_spectrum");
+                caop_check_modes(file, facts, sites, "caop_spectrum");
+                if (facts.fermion != ham_facts.fermion) {
+                    throw std::invalid_argument(
+                        "caop_spectrum: operator file " + file
+                        + " has different statistics from the Hamiltonian");
+                }
+            }
+#ifdef SBD_THRUST
+            // make_slide deals the b ring stations over the t task ranks
+            // (caop/basic/helper.h:41-55); with t > b some get none, and upstream's
+            // Thrust mult returns early on an empty slide (mult_thrust.h:583), skipping
+            // the Allreduce the other ranks wait in. The stored mode runs the CPU mult.
+            if (!store_hamiltonian && t_comm_size > world / (h_comm_size * t_comm_size)) {
+                throw std::invalid_argument(
+                    "caop_spectrum on the gpu (Thrust) backend with the on-the-fly "
+                    "Hamiltonian needs t_comm_size <= the b ranks (ranks / (h_comm_size * "
+                    "t_comm_size)): a task rank with no basis-ring station hangs "
+                    "upstream's GPU kernel. Lower t_comm_size, store the Hamiltonian, or "
+                    "use device='cpu'");
+            }
+#endif
+            // As upstream's app: the stored Hamiltonian's per-thread slots need the
+            // same OpenMP team in every parallel region (caop/basic/mkham.h).
+            omp_set_dynamic(0);
+#ifdef SBD_THRUST
+            {
+                int numDevices = 1;
+#ifdef __CUDACC__
+                cudaGetDeviceCount(&numDevices);
+                cudaSetDevice(rank % numDevices);
+#else
+                hipGetDeviceCount(&numDevices);
+                hipSetDevice(rank % numDevices);
+#endif
+            }
+#endif
+            std::vector<std::complex<double>> g;
+            size_t basis_size = 0, steps = 0;
+            std::string stop_reason;
+            auto run = [&](auto tag) {
+                using ElemT = decltype(tag);
+                sbd::det_vector<size_t>::init_elem_size((sites + bit_length - 1) / bit_length);
+                const int b_size = int(world / h_comm_size / t_comm_size);
+                MPI_Comm h_comm, b_comm, t_comm;
+                sbd::setup_communicator(comm, int(h_comm_size), b_size, int(t_comm_size),
+                                        h_comm, b_comm, t_comm);
+                int h_rank = 0, t_rank = 0;
+                MPI_Comm_rank(h_comm, &h_rank);
+                MPI_Comm_rank(t_comm, &t_rank);
+                cs::Wavefunction<ElemT> state;
+                cs::Basis extra;
+                if (h_rank == 0 && t_rank == 0) {
+                    // Read the checkpoint as the type it was saved with (real and complex
+                    // files are not interchangeable), then promote a real state into a
+                    // complex calculation, as upstream's app does.
+                    if (wavefunction_complex) {
+                        if constexpr (std::is_same_v<ElemT, std::complex<double>>) {
+                            state = cs::ReadWavefunctionCheckpoint<ElemT>(
+                                loadname, shards, sites, bit_length, b_comm);
+                        }
+                    } else {
+                        auto real_state = cs::ReadWavefunctionCheckpoint<double>(
+                            loadname, shards, sites, bit_length, b_comm);
+                        state.basis = std::move(real_state.basis);
+                        state.coefficients.assign(real_state.coefficients.begin(),
+                                                  real_state.coefficients.end());
+                    }
+                    if (!extra_basis.empty()) {
+                        extra = cs::LoadBasis(extra_basis, sites, bit_length, b_comm);
+                    }
+                }
+                sbd::GeneralOp<ElemT> h;
+                bool fermion = false;
+                sbd::load_GeneralOp_from_file(hamfile, h, fermion, h_comm, b_comm, t_comm);
+                sbd::sparse_solver::LanczosOptions options;
+                options.max_steps = max_steps;
+                options.rank_atol = rank_atol;
+                options.rank_rtol = rank_rtol;
+                // General operators, as upstream's app: each file is a CAOP operator,
+                // read on the h=t=0 ranks with the statistics of H, observables 0..n-1,
+                // and the addition-sign resolvent <psi0| O_a^dag (w+E0-H+i eta)^-1 O_b |psi0>.
+                std::vector<sbd::GeneralOp<ElemT>> applied;
+                std::vector<size_t> observables = orbitals;
+                if (general) {
+                    observables.resize(operator_files.size());
+                    std::iota(observables.begin(), observables.end(), size_t{0});
+                    if (h_rank == 0 && t_rank == 0) {
+                        applied.resize(operator_files.size());
+                        for (size_t v = 0; v < applied.size(); ++v) {
+                            bool op_fermion = false;
+                            sbd::load_GeneralOp_from_file(operator_files[v], applied[v],
+                                                          op_fermion, MPI_COMM_SELF, b_comm,
+                                                          MPI_COMM_SELF);
+                            if (op_fermion != fermion) {
+                                throw std::invalid_argument(
+                                    "caop_spectrum: operator file " + operator_files[v]
+                                    + " has different statistics from the Hamiltonian");
+                            }
+                        }
+                    }
+                }
+                auto result = cs::spectrum<ElemT>(state, h, fermion, observables,
+                                                  general || addition, sites, bit_length,
+                                                  extra, reference_energy, h_comm, b_comm,
+                                                  t_comm, options,
+                                                  general ? &applied : nullptr,
+                                                  store_hamiltonian);
+                result.operator_files = operator_files;
+                MPI_Comm_free(&t_comm);
+                MPI_Comm_free(&b_comm);
+                MPI_Comm_free(&h_comm);
+                basis_size = result.basis_size;
+                steps = result.coefficients.A.size();
+                stop_reason = result.coefficients.stop_reason;
+                if (rank == 0 && !save_coefficients.empty()) {
+                    cs::save_coefficients(save_coefficients, result, options);
+                }
+                const size_t n = observables.size();
+                g.assign(omegas.size() * n * n, 0.0);
+                for (size_t k = 0; k < omegas.size(); ++k) {
+                    const auto gk = cs::green_function(result, omegas[k], eta);
+                    std::copy(gk.begin(), gk.end(), g.begin() + k * n * n);
+                }
+            };
+            {
+                py::gil_scoped_release release;
+                if (complex) run(std::complex<double>{});
+                else run(double{});
+            }
+            const size_t n = general ? operator_files.size() : orbitals.size();
+            py::array_t<std::complex<double>> out(std::vector<py::ssize_t>{
+                static_cast<py::ssize_t>(omegas.size()), static_cast<py::ssize_t>(n),
+                static_cast<py::ssize_t>(n)});
+            std::copy(g.begin(), g.end(), out.mutable_data());
+            py::dict results;
+            results["green_function"] = out;
+            results["basis_size"] = basis_size;
+            results["steps"] = steps;
+            results["stop_reason"] = stop_reason;
+            return results;
+        },
+        "Green's function of a saved CAOP ground state by block Lanczos, as upstream's "
+        "caop-spectrum app",
+        py::arg("comm"), py::arg("loadname"), py::arg("shards"), py::arg("hamfile"),
+        py::arg("orbitals"), py::arg("addition"), py::arg("sites"), py::arg("bit_length"),
+        py::arg("reference_energy"), py::arg("extra_basis") = std::vector<std::string>{},
+        py::arg("omegas") = std::vector<double>{}, py::arg("eta") = 0.1,
+        py::arg("max_steps") = 100, py::arg("h_comm_size") = 1, py::arg("t_comm_size") = 1,
+        py::arg("store_hamiltonian") = true, py::arg("complex") = false,
+        py::arg("wavefunction_complex") = false, py::arg("save_coefficients") = "",
+        py::arg("operator_files") = std::vector<std::string>{},
+        py::arg("rank_atol") = 1e-13, py::arg("rank_rtol") = 1e-12);
+
+    // Upstream's --read-coefficients: evaluate saved block-Lanczos coefficients on a new
+    // frequency grid or broadening, without the Hamiltonian or the state. File-only and
+    // rank-local; the scalar type comes from the file's header.
+    m.def("caop_spectrum_from_coefficients",
+        [](const std::string& path, const std::vector<double>& omegas, double eta) {
+            namespace cs = sbd::caop::spectrum;
+            std::vector<std::complex<double>> g;
+            size_t n = 0, basis_size = 0, steps = 0;
+            bool addition = true;
+            std::string stop_reason;
+            std::vector<size_t> labels;
+            std::vector<std::string> operator_files;
+            auto evaluate = [&](auto tag) {
+                using ElemT = decltype(tag);
+                auto result = cs::load_coefficients<ElemT>(path);
+                n = result.orbitals.size();
+                labels = result.orbitals;
+                operator_files = result.operator_files;
+                basis_size = result.basis_size;
+                steps = result.coefficients.A.size();
+                stop_reason = result.coefficients.stop_reason;
+                addition = result.addition;
+                g.assign(omegas.size() * n * n, 0.0);
+                for (size_t k = 0; k < omegas.size(); ++k) {
+                    const auto gk = cs::green_function(result, omegas[k], eta);
+                    std::copy(gk.begin(), gk.end(), g.begin() + k * n * n);
+                }
+            };
+            if (cs::complex_coefficient_file(path)) evaluate(std::complex<double>{});
+            else evaluate(double{});
+            py::array_t<std::complex<double>> out(std::vector<py::ssize_t>{
+                static_cast<py::ssize_t>(omegas.size()), static_cast<py::ssize_t>(n),
+                static_cast<py::ssize_t>(n)});
+            std::copy(g.begin(), g.end(), out.mutable_data());
+            py::dict results;
+            results["green_function"] = out;
+            results["basis_size"] = basis_size;
+            results["steps"] = steps;
+            results["stop_reason"] = stop_reason;
+            results["addition"] = addition;
+            results["orbitals"] = labels;
+            results["operator_files"] = operator_files;
+            return results;
+        },
+        "Green's function from coefficients saved by caop_spectrum, on a new grid, as "
+        "upstream's caop-spectrum --read-coefficients",
+        py::arg("path"), py::arg("omegas"), py::arg("eta"));
 #else
     m.attr("__sbd_has_caop__") = false;
 #endif
