@@ -211,6 +211,22 @@ python -c "import sbd; print(sbd.available_backends())"
 # OMP-offload-only install:       ['gpu-omp']
 ```
 
+`available_backends()` lists the backends only. By default the `cpu` and `gpu` backends
+are each also built with upstream's `-D_UHF`, as a second module
+(`sbd._core_cpu_uhf`, `sbd._core_gpu_thrust_uhf`) that a solve uses automatically for an
+unrestricted (UHF) FCIDUMP. To see which backends have one:
+
+```bash
+python -c "import sbd; print({d: sbd.has_uhf(d) for d in sbd.available_backends()})"
+# CPU only:                       {'cpu': True}
+# NVIDIA, default build:          {'cpu': True, 'gpu': True, 'gpu-omp': False}
+# with SBD_BUILD_UHF=0:           every value False
+```
+
+`gpu-omp` never has one: its offload kernels read only the restricted integral layout.
+`sbd.print_info()` prints the same, as a `UHF builds:` line next to the compiled
+backends.
+
 On a GPU build, confirm which vendor and architecture the offload backend
 targets — one `'gpu-omp'` device serves both vendors, so the name alone does not
 say:
@@ -229,8 +245,6 @@ cuobjdump --list-elf <the built _core_gpu_thrust*.so>          # NVIDIA
 llvm-objdump --offloading <the built _core_gpu_omp_offload*.so>   # AMD
 ```
 
-`sbd.print_info()` also lists the unrestricted (UHF) builds, which
-`available_backends()` does not.
 
 ## See Also
 
