@@ -294,3 +294,53 @@ def test_uhf_variance_with_the_state_over_every_rank(uhf_available):
         comm.Barrier()
         if rank == 0:
             shutil.rmtree(path, ignore_errors=True)
+
+
+MIXED = r"""
+import json, sys
+import sbd
+from sbd import analysis
+device, uhf_file, alpha_file, beta_file, h2o_dir, prefix, solve_uhf = sys.argv[1:8]
+sbd.init(device=device)
+config = sbd.TPB_SBD()
+config.eps, config.max_it, config.max_nb, config.bit_length = 1e-10, 100, 10, 20
+half = lambda path, n: sbd.sort_bitarray(
+    [sbd.from_string(s, 20, n) for s in open(path).read().split()])
+if solve_uhf == "1":
+    # An unrestricted solve first, which loads that build into this process.
+    sbd.tpb_diag(sbd.LoadFCIDump(uhf_file), half(alpha_file, 3), half(beta_file, 3), config)
+f = sbd.LoadFCIDump(f"{h2o_dir}/fcidump.txt")
+strings = open(f"{h2o_dir}/h2o-1em3-alpha.txt").read().split()[:6]
+det = sbd.sort_bitarray([sbd.from_string(s, 20, 24) for s in strings])
+energy = sbd.tpb_diag(f, det, det, config, savename=prefix)["energy"]
+r = analysis.variance(prefix, f, energy, method="stochastic", bit_length=20,
+                      samples=500, batches=2, seed=7)
+print("RESULT " + json.dumps([energy, r.variance, r.pt2]))
+"""
+
+
+def test_a_restricted_state_after_an_unrestricted_solve(backend, data_dir, tmp_path):
+    """A UHF solve leaves its build loaded; variance of a restricted state after it must
+    still pick a restricted evaluator, and give the answer it gives without the UHF solve.
+
+    ``loaded_backends()`` lists the unrestricted builds, which are not device names, and
+    the evaluator search used to pass them to ``get_backend``. One process, as a user
+    session would run it: the UHF fixture and h2o are both one word at bit_length 20.
+    """
+    device = sbd.get_device()
+    if not sbd.has_uhf(device):
+        pytest.skip(f"no unrestricted build of {device!r}")
+    uhf = REPO / "test" / "data" / "uhf"
+    results = {}
+    for solve_uhf in ("0", "1"):
+        args = [device, str(uhf / "h3_uhf.fcidump"), str(uhf / "h3_alpha.txt"),
+                str(uhf / "h3_beta.txt"), str(data_dir / "h2o"),
+                str(tmp_path / f"h2o{solve_uhf}-"), solve_uhf]
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("PMI_", "PMIX_", "OMPI_"))}
+        env.setdefault("OMP_NUM_THREADS", "2")
+        done = subprocess.run([sys.executable, "-c", MIXED, *args],
+                              capture_output=True, text=True, timeout=600, env=env)
+        assert done.returncode == 0, f"{done.stdout[-3000:]}\n{done.stderr[-3000:]}"
+        line = [l for l in done.stdout.splitlines() if l.startswith("RESULT ")][-1]
+        results[solve_uhf] = json.loads(line[len("RESULT "):])
+    assert results["1"] == pytest.approx(results["0"], rel=1e-10)

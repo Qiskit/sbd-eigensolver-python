@@ -410,6 +410,18 @@ def _uhf_evaluator_backend(device):
     return get_backend("cpu", uhf=True)
 
 
+def _restricted(names):
+    """The restricted devices among ``loaded_backends()``.
+
+    It also lists the unrestricted builds ('cpu-uhf', 'gpu-uhf'), which are separate
+    modules but not device names, so ``get_backend`` refuses them; a restricted state is
+    evaluated by a restricted module in any case.
+    """
+    from . import _UHF_BASE
+
+    return [name for name in names if name not in _UHF_BASE]
+
+
 def _evaluator_backend(device):
     """A backend module that has the evaluator; it runs on CPU whichever is chosen.
 
@@ -429,7 +441,7 @@ def _evaluator_backend(device):
                 f"'cpu' or 'gpu-omp'.")
         return backend
     loaded = loaded_backends()
-    for name in loaded:
+    for name in _restricted(loaded):
         backend = get_backend(name)
         if getattr(backend, "__sbd_has_evaluator__", False):
             return backend
@@ -788,7 +800,7 @@ def _caop_evaluator_backend(device):
                              "(NVHPC Thrust, NVIDIA GPUs only; there is no CAOP GPU path "
                              "for AMD GPUs)")
         return backend
-    for name in loaded_backends():
+    for name in _restricted(loaded_backends()):
         backend = get_backend(name)
         if getattr(backend, "__sbd_has_caop__", False):
             return backend

@@ -451,10 +451,15 @@ def test_the_evaluator_backend_is_chosen_without_mixing_backends(monkeypatch):
                "gpu": types.SimpleNamespace(__sbd_has_evaluator__=False),
                "gpu-omp": types.SimpleNamespace(__sbd_has_evaluator__=True)}
 
+    def get_backend(d=None):
+        if d not in modules:      # as the real one: 'cpu-uhf' and 'gpu-uhf' are not devices
+            raise ValueError(f"{d!r} is not a device name")
+        return modules[d]
+
     def scenario(built, loaded):
         monkeypatch.setattr(package, "available_backends", lambda: list(built))
         monkeypatch.setattr(package, "loaded_backends", lambda: list(loaded))
-        monkeypatch.setattr(package, "get_backend", lambda d=None: modules[d])
+        monkeypatch.setattr(package, "get_backend", get_backend)
         try:
             chosen = analysis._evaluator_backend(None)
         except RuntimeError as exc:
@@ -467,6 +472,10 @@ def test_the_evaluator_backend_is_chosen_without_mixing_backends(monkeypatch):
     assert scenario(["gpu-omp"], []) == "gpu-omp"
     assert "Thrust backend does not" in scenario(["gpu"], ["gpu"])         # Thrust-only build
     assert "Thrust backend does not" in scenario(["gpu", "gpu-omp"], ["gpu"])   # no omp beside Thrust
+    # An unrestricted build loaded by an earlier UHF solve is not a device, and is skipped.
+    assert scenario(["cpu", "gpu"], ["gpu-uhf"]) == "cpu"
+    assert scenario(["cpu", "gpu"], ["cpu-uhf", "gpu"]) == "cpu"
+    assert scenario(["cpu", "gpu"], ["cpu-uhf", "cpu"]) == "cpu"
 
 
 def test_the_thrust_backend_has_no_evaluator_and_is_not_used_for_it(backend):
