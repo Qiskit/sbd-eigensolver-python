@@ -148,21 +148,25 @@ For the 2-site Hubbard file above:
 printf '%s\n' -1 '-1.0 cdag 0 c 1' '-1.0 cdag 1 c 0' '-1.0 cdag 2 c 3' '-1.0 cdag 3 c 2' \
     '4.0 cdag 0 cdag 2 c 2 c 0' '4.0 cdag 1 cdag 3 c 3 c 1' > hub2.txt
 printf '%s\n' 0101 0110 1001 1010 > hub2_basis.txt
-# 1. ground state, saved; note the "Ground state energy:" line (10 decimals), not
-#    upstream's rounded "Energy =" log line
-python run_caop_diag.py --hamfile hub2.txt --basisfiles hub2_basis.txt --system_size 4 \
-    --tolerance 1e-10 --savename gs-
+# 1. ground state over 4 ranks, saved as gs-000000.bin to gs-000003.bin; note the
+#    "Ground state energy:" line (10 decimals), not upstream's rounded "Energy =" line
+mpirun -np 4 python run_caop_diag.py --hamfile hub2.txt --basisfiles hub2_basis.txt \
+    --system_size 4 --b_comm_size 4 --tolerance 1e-10 --savename gs-
 # 2. the N+1 sector, written sorted (here 3 electrons: 2 alpha + 1 beta, or 1 + 2)
 printf '0111\n1011\n1101\n1110\n' > add_basis.txt
-# 3. G+ for alpha site 0 and beta site 0, from the saved state
-python run_caop_spectrum.py --hamfile hub2.txt --sites 4 --loadname gs- \
-    --reference-energy <E0 from step 1> --orbitals 0,2 --channel addition \
-    --extra-detfile add_basis.txt --save-coefficients add.coeff --output add.csv \
-    --omega-min -6 --omega-max 8 --points 141 --eta 0.1
-# 4. a narrower broadening from the saved coefficients, without rerunning
+# 3. G+ for alpha site 0 and beta site 0, from the 4 saved files, on 4 ranks
+mpirun -np 4 python run_caop_spectrum.py --hamfile hub2.txt --sites 4 --loadname gs- \
+    --wavefunction-shards 4 --reference-energy <E0 from step 1> --orbitals 0,2 \
+    --channel addition --extra-detfile add_basis.txt --save-coefficients add.coeff \
+    --output add.csv --omega-min -6 --omega-max 8 --points 141 --eta 0.1
+# 4. a narrower broadening from the saved coefficients, without rerunning: one process
 python run_caop_spectrum.py --read-coefficients add.coeff --output narrow.csv \
     --omega-min -6 --omega-max 8 --points 281 --eta 0.05
 ```
+
+The rank counts need not match: steps 1 and 3 can each use any number of ranks, as
+long as `--wavefunction-shards` is the number of files step 1 wrote. Here that is its
+`--b_comm_size`, 4.
 
 - **Give the whole N±1 sector as `--extra-detfile`.** Upstream builds the excitation
   basis only from what the operators reach from the state, which is usually not
