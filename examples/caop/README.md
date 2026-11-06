@@ -11,6 +11,13 @@ hard-core bosons, spins). For molecules, use TPB or GDB.
 for each one and for its `gen_ham.py` and `gen_bits.py`. This page covers what is
 specific to the Python driver and what we found running it.
 
+**The two drivers chain:** `run_caop_diag.py --savename gs-` solves for the ground state
+and saves it; `run_caop_spectrum.py --loadname gs-` then reads it, with the same
+Hamiltonian file and the ground-state energy, and computes its Green's function. The
+second run must match the first's `--system_size`, `--bit_length`, `--b_comm_size` and
+`--complex`, which the saved files do not record. See
+[Green's function](#greens-function) for a worked example.
+
 ## Differences from upstream's app
 
 - `--device cpu` or `gpu` (Thrust, NVIDIA only); see *GPU*.
