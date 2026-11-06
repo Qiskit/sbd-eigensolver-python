@@ -20,7 +20,7 @@ file using the SBD library directly.
 
 Usage:
     # CPU backend
-    mpirun -np 8 -x OMP_NUM_THREADS=4 python run_sbd_diag.py --device cpu
+    OMP_NUM_THREADS=4 mpirun -np 8 python run_sbd_diag.py --device cpu
 
     # GPU backend
     mpirun -np 8 python run_sbd_diag.py --device gpu

@@ -26,18 +26,17 @@ constraints. Reach for GDB when the subspace is not a product.
   `'cpu'` (host OpenMP), `'gpu'` (NVHPC Thrust/CUDA, NVIDIA only) and
   `'gpu-omp'` (OpenMP target offload, **NVIDIA or AMD**). All the backends your
   toolchain supports can be built into one install; each is imported only when
-  first used. **TPB runs on all three; GDB has Thrust kernels only**, so GDB on a
-  GPU is NVIDIA-only and `'gpu-omp'` refuses it — see
+  first used. **TPB runs on all three; GDB and CAOP have Thrust kernels only**, so on
+  a GPU they are NVIDIA-only, and `'gpu-omp'` refuses them — see
   [`examples/gdb/README.md`](examples/gdb/README.md)
 - MPI parallelization
 - Integration with [qiskit-addon-sqd](https://github.com/Qiskit/qiskit-addon-sqd) for SQD workflows
-- **Energy variance and Epstein–Nesbet PT2** of saved TPB and GDB states
+- **Creation/annihilation-operator (CAOP) models** for lattice and spin systems: the
+  ground state over a selected basis, and its Green's function (`sbd.spectrum`) — see
+  [`examples/caop/README.md`](examples/caop/README.md)
+- **Energy variance and Epstein–Nesbet PT2** of saved TPB, GDB and CAOP states
   (`sbd.analysis`), estimated with **MPI + OpenMP across multiple nodes and cores** —
   see [Energy variance and PT2](#energy-variance-and-pt2)
-
-SBD's **Creation/Annihilation operator (CAOP)** method is not supported by this
-wrapper; users who need it should reference and use the C++ CLI apps in the upstream
-submodule (`vendor/sbd-upstream/apps/`).
 
 > [!NOTE]
 > This package is newly open-sourced. The Python API follows semantic versioning, but the build configuration and GPU backends have been exercised on a limited set of platforms — please report issues.
@@ -73,17 +72,20 @@ built), building against an existing host MPI, and fuller verification.
 ## Examples
 
 Located in `examples/`, organized by basis type since the solvers take different
-subspaces and decompose over MPI differently. Each folder's README is the authoritative
-guide to what it contains, how to run it, and the backend and threading settings that
-matter for it.
+subspaces and decompose over MPI differently. [`examples/README.md`](examples/README.md)
+shows how they fit together, from a solve through its variance check to, for lattice
+models, the Green's function. Each folder's README is the authoritative guide to what
+it contains, how to run it, and the backend and threading settings that matter for it.
 
 - [`examples/tpb/`](examples/tpb/README.md) — tensor-product basis: standalone TPB
   diagonalization, the SQD loops, and the subspace-enlargement driver.
 - [`examples/gdb/`](examples/gdb/README.md) — general determinant basis: standalone
   GDB diagonalization over an explicit determinant list, and an iterative
   heatbath-expansion driver.
+- [`examples/caop/`](examples/caop/README.md) — creation/annihilation-operator models
+  (lattice and spin): the ground state and its Green's function.
 - [`examples/analysis/`](examples/analysis/README.md) — energy variance and PT2 of a
-  state saved by either solver, as a separate MPI job or at the end of the same run.
+  state saved by any solver, as a separate MPI job or at the end of the same run.
 
 ## Integration with qiskit-addon-sqd
 
@@ -165,44 +167,14 @@ keeps going past that fixed pool on its own and converges to
 
 ## Energy variance and PT2
 
-A diagonalization gives the best energy *within its subspace*. `sbd.analysis` measures
-how far the state is from the exact one: its **energy variance**, which is zero for an
-exact eigenstate, and its **Epstein–Nesbet PT2** correction, so that $E + E_{\mathrm{PT2}}$
-estimates the exact energy. It works on any state saved with `savename`, from TPB or
-GDB, on any device.
-
-The default method is SBD's statistical evaluator, which **runs on CPU with MPI + OpenMP
-across multiple nodes and cores**: the state and the work are spread over all MPI ranks,
-each using OpenMP threads, and the number of ranks need not match the run that saved the
-state. It samples determinants from the state and repeats the estimate in independent
-batches to give a mean and an error bar. For small systems an exact method (PySCF, single
-process) is also available.
-
-```bash
-# 1. diagonalize, saving the state
-mpirun -np 4 python examples/gdb/run_gdb_diag.py --device gpu --b_comm_size 4 \
-    --bit_length 62 --savename /path/to/run/fe4s4-
-
-# 2. its variance and PT2: a separate CPU job, on as many nodes and cores as you like
-mpirun -np 32 -x OMP_NUM_THREADS=2 python examples/analysis/variance.py \
-    --fcidump vendor/sbd-upstream/apps/chemistry_gdb_selected_basis_diagonalization/fcidump_Fe4S4.txt \
-    --state /path/to/run/fe4s4- --bit_length 62
-```
-
-or from Python, under `mpirun`:
-
-```python
-from sbd import analysis
-
-result = analysis.variance("/path/to/run/fe4s4-", sbd.LoadFCIDump("fcidump.txt"),
-                           bit_length=62)
-print(result.variance, result.variance_error, result.energy_pt2)
-```
-
-The files under one prefix must all come from one run; this is checked, and anything
-else raises rather than being combined. [`examples/analysis/README.md`](examples/analysis/README.md)
-covers how the method works, running it in the same job as the diagonalization, and
-choosing samples, batches and the rank/thread layout.
+A diagonalization gives the best energy *within its subspace*. `sbd.analysis` says how
+far a saved state is from the exact one: its **energy variance**, zero for an exact
+eigenstate, and its **Epstein–Nesbet PT2** correction, so that E + PT2 estimates the
+exact energy. It takes any state saved with `savename`, from TPB, GDB or CAOP, and
+runs on CPU with MPI + OpenMP over as many nodes as you like.
+[`examples/README.md`](examples/README.md) shows where it fits after a solve, and
+[`examples/analysis/README.md`](examples/analysis/README.md) how it works and how to
+choose its settings.
 
 ## Backend Architecture
 
@@ -212,7 +184,7 @@ choosing samples, batches and the rank/thread layout.
     SBD_THRUST_SAFE_MPI_ALLREDUCE=1  stage only the allreduce (a subset of the above)
     ```
     Both make the Thrust path stage device buffers through host memory instead of handing MPI device pointers, so they add copies whose cost grows with how much data crosses MPI. Treat them as a compatibility fallback rather than a tuning knob: reach for them when a GPU backend crashes inside the MPI itself rather than in SBD.
-- GPU device assignment: `gpu_id = mpi_rank % num_gpus` (set per `tpb_diag()` call in `bindings.cpp`); same logic for both Thrust and OMP-offload paths.
+- GPU device assignment: `gpu_id = mpi_rank % num_gpus`, set on each solver call, on both the Thrust and OMP-offload paths.
 - **`'gpu-omp'` is vendor-neutral by design:** one module, one device string, for both NVIDIA and AMD. It is the same source with the same macros and only the compiler differs, and since no wheels are published — every install compiles on the target machine — an install serves one GPU vendor. `__sbd_offload_target__` records which one. Aliases (`gpu-amd-omp`, `gpu-rocm-omp`, `rocm`, `gpu-nvidia-omp`, …) resolve to it so a vendor-flavoured guess lands correctly.
 - Verify what GPU architecture is supported in the binary:
   ```
@@ -290,7 +262,7 @@ communicators with a single basis communicator:
 | `seed` | 1729 | Seed for the initial vector |
 | `heatbath_cutoff` | 1e-4 | Heatbath expansion cutoff |
 | `heatbath_truncation` | 0.0 | Weight truncation applied before heatbath expansion |
-| `heatbath_batch_size` | 200000000 | Heatbath expansion batch size |
+| `heatbath_batch_size` | 1000000 | Heatbath expansion batch size |
 
 Total MPI ranks = `t_comm_size × b_comm_size × helper`, where the helper dimension is
 the derived quotient and is not settable. With `b_comm_size > 1` each rank passes its

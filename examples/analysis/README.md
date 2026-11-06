@@ -1,5 +1,7 @@
 # Analysis examples — energy variance and PT2 of a saved state
 
+> The check step of both workflows in [`../README.md`](../README.md).
+
 A diagonalization gives the energy of the best state *within its subspace*. Two numbers
 say how far that state is from the exact one:
 
@@ -85,7 +87,7 @@ cd ../analysis
 # h2o
 OMP_NUM_THREADS=2 mpirun -np 32 python variance.py \
     --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
-    --state /path/to/run1/h2o- --bit_length 20 --energy -76.2359466308
+    --state /path/to/run1/h2o- --bit_length 20 --energy -76.2359466308   # step 1's energy
 
 # Fe4S4
 OMP_NUM_THREADS=2 mpirun -np 32 python variance.py \
@@ -213,6 +215,26 @@ Things to note when reading the table:
   [Placement across `b_comm`](../gdb/README.md#placement-across-b_comm) for what each
   one balances.
 
+## CAOP states
+
+A state saved by `../caop/run_caop_diag.py --savename` goes through the same driver
+with `--hamfile` instead of `--fcidump`, plus the basis files the state was solved over
+and the run's settings, which the files do not record. After the first two steps of
+[`../caop/README.md#greens-function`](../caop/README.md#greens-function), which write
+`hub2.txt`, `hub2_basis.txt` and the state `gs-`:
+
+```bash
+mpirun -np 4 python variance.py --hamfile ../caop/hub2.txt \
+    --basisfiles ../caop/hub2_basis.txt --sites 4 --state ../caop/gs- --shards 4 \
+    --bit_length 20 --energy <E0 from the run>
+```
+
+It runs upstream's
+[`caop-stat-evaluator`](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop-stat-evaluator/README.md),
+always stochastically. `--energy` may be left out with `--observable variance`. Give
+`--complex` if the run used it and `--shards` its `--b_comm_size`: the state file does not
+record either, and a mismatch is refused. The settings above apply unchanged.
+
 ## Doing it in the same run
 
 The analysis can also run at the end of a diagonalization script, in the same MPI job,
@@ -236,6 +258,27 @@ Every rank must make the call, since it is collective. `results['energy']` is th
 energy of the state just saved, the PT2 reference; it is required, and the analysis
 does not recompute it.
 
+For a CAOP state, call `sbd.analysis.caop_variance()` with the solve's Hamiltonian file,
+basis files and settings. For example, after `sbd.caop_diag_from_files` on every rank of
+the job, with the basis split over all of them:
+
+```python
+from mpi4py import MPI
+
+from sbd import analysis
+
+nranks = MPI.COMM_WORLD.Get_size()
+config.b_comm_size = nranks           # one saved file per rank
+ground = sbd.caop_diag_from_files("hub2.txt", ["hub2_basis.txt"], config,
+                                  savename="gs-")
+v = analysis.caop_variance("gs-", "hub2.txt", ["hub2_basis.txt"], ground["energy"],
+                           sites=config.system_size, bit_length=config.bit_length,
+                           shards=nranks)
+```
+
+`shards` is the number of files the solve wrote, its `b_comm_size`; `complex=True` if
+it used `complex=True`.
+
 The state still goes through the files `savename` writes: SBD's solvers do not hand
 their eigenvector back, so the analysis reads it from disk even in the same job.
 
@@ -246,9 +289,10 @@ Things to weigh against a separate job:
   a poor one for the analysis, which prefers many ranks with few threads.
 - **Device.** The diagonalization can use any device (`cpu`, `gpu`, `gpu-omp`); the
   analysis picks a suitable backend itself. It always runs on CPU, so after a GPU
-  diagonalization the GPUs sit idle while it runs. After a `gpu` (Thrust) run it uses
-  the CPU backend, so the package must include it — the default build does; a
-  Thrust-only build (`SBD_BUILD_BACKEND=gpu`) raises an error instead.
+  diagonalization the GPUs sit idle while it runs. For TPB and GDB, after a `gpu`
+  (Thrust) run it uses the CPU backend, so the package must include it — the default
+  build does; a Thrust-only build (`SBD_BUILD_BACKEND=gpu`) raises an error instead.
+  For CAOP it uses the backend already loaded, Thrust included, still on the CPU.
 - **Memory.** The diagonalization's data is still allocated when the analysis starts,
   so the two together must fit; a separate job starts clean.
 - **Failure.** If the analysis fails or runs out of time, the job may end before
