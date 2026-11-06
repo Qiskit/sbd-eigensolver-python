@@ -79,7 +79,8 @@ def green_function(loadname, hamfile, orbitals, channel, *, sites, bit_length,
         h_comm_size, t_comm_size: Helper and task communicator sizes; their product
             must divide the rank count, and the rest of the ranks hold the basis.
         store_hamiltonian: Store H for faster application (upstream's ``stored``
-            mode), rather than applying it on the fly.
+            mode), rather than applying it on the fly. Only ``False`` uses the GPU
+            on ``device="gpu"``; the stored Hamiltonian is built and applied on the CPU.
         complex: Run with complex amplitudes, for a complex Hamiltonian.
         wavefunction_complex: The saved state has complex amplitudes, as one solved
             with ``caop_diag_from_files(..., complex=True)`` does; needs ``complex``.
@@ -94,7 +95,9 @@ def green_function(loadname, hamfile, orbitals, channel, *, sites, bit_length,
             or change the particle number.
         rank_atol, rank_rtol: Block-Lanczos deflation tolerances: a column whose norm
             falls below them is dropped. Upstream's defaults.
-        device: ``"cpu"`` or ``"gpu"`` (Thrust); there is no OpenMP-offload path.
+        device: ``"cpu"`` or ``"gpu"`` (Thrust); there is no OpenMP-offload path. On
+            ``"gpu"`` only the on-the-fly Hamiltonian application runs on the GPU; the
+            rest, as everything on ``"cpu"``, runs on the CPU with MPI and OpenMP.
 
     Returns:
         dict with ``green_function``, a complex array of shape
