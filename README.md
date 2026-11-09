@@ -36,23 +36,37 @@ reference and release notes.
 
 ## Backends
 
-Every backend your toolchain supports is built into one install, and each is loaded
-only when first used. Choose one per call with `device=`:
+Every install builds the CPU backend, and every GPU backend the toolchain supports;
+each is loaded only when first used. Choose one per call with `device=`:
 
-| `device` | Runs on | What runs |
-|---|---|---|
-| `cpu` | host, OpenMP | everything |
-| `gpu` | NVIDIA, Thrust | everything; the Green's function uses the GPU only for its on-the-fly Hamiltonian |
-| `gpu-omp` | NVIDIA or AMD, OpenMP offload | TPB with a restricted FCIDUMP only |
+- `cpu`: the host, with OpenMP.
+- `gpu`: NVIDIA GPUs, with Thrust.
+- `gpu-omp`: NVIDIA or AMD GPUs, with OpenMP offload.
 
-`gpu-omp` does not support GDB, CAOP or unrestricted (UHF) FCIDUMPs: upstream has no
-offload code for GDB and CAOP, and its offload kernels read only the restricted integral
-layout. Asking for one raises an error rather than running it on the host. Variance and
-PT2 always run on the CPU, whichever device the solve used. `gpu-omp` is one device for
-both GPU vendors: an install compiles for one, and
-`sbd.get_backend("gpu-omp").__sbd_offload_target__` says which. Vendor-flavoured
-names such as `gpu-amd-omp` or `rocm` resolve to it. The GPU backends expect a
-GPU-aware MPI; see [INSTALL.md](INSTALL.md#gpu-aware-mpi) for the fallbacks.
+What each runs:
+
+| | `cpu` | `gpu` | `gpu-omp` |
+|---|---|---|---|
+| TPB | ✅ | ✅ | ✅ |
+| GDB | ✅ | ✅ | not supported |
+| CAOP ground state | ✅ | ✅ | not supported |
+| CAOP Green's function | ✅ | ✅ (1) | not supported |
+| Unrestricted (UHF) FCIDUMPs | ✅ | ✅ | not supported |
+| Energy variance and PT2 | on the CPU (2) | on the CPU (2) | on the CPU (2) |
+
+1. Only applying the Hamiltonian on the fly (`--hamiltonian-mode on-the-fly`) uses the
+   GPU; the default stored Hamiltonian and the rest of the work run on the CPU. See
+   [`examples/caop/README.md`](examples/caop/README.md#greens-function).
+2. The analysis always runs on the CPU, with MPI and OpenMP, whichever device the
+   solve used, so it takes no `device=`.
+
+`gpu-omp` does not support GDB or CAOP because upstream has no offload code for them,
+and not UHF files because its offload kernels read only the restricted integral layout;
+asking for one raises an error rather than running it on the host. `gpu-omp` is one
+device for both GPU vendors: an install compiles for one, and
+`sbd.get_backend("gpu-omp").__sbd_offload_target__` says which. Vendor-flavoured names
+such as `gpu-amd-omp` or `rocm` resolve to it. The GPU backends expect a GPU-aware MPI;
+see [INSTALL.md](INSTALL.md#gpu-aware-mpi) for the fallbacks.
 
 ## Installation
 

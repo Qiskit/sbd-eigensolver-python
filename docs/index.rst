@@ -67,8 +67,9 @@ carry into the next iteration, by setting ``"carryover_type"`` in ``sbd_config``
 Backends
 --------
 
-Every backend your toolchain supports is built into one installation. Choose one per
-call, with ``device=`` or a :class:`~sbd.device_config.DeviceConfig`:
+Every installation builds the CPU backend, and every GPU backend the toolchain
+supports. Choose one per call, with ``device=`` or a
+:class:`~sbd.device_config.DeviceConfig`:
 
 .. list-table::
    :header-rows: 1
@@ -84,10 +85,15 @@ call, with ``device=`` or a :class:`~sbd.device_config.DeviceConfig`:
      - NVIDIA GPUs, Thrust
      - NVIDIA HPC SDK (``nvc++``)
    * - ``gpu-omp``
-     - NVIDIA or AMD GPUs, OpenMP offload. TPB only: GDB is not supported, as
-       upstream has no OpenMP-offload GDB code, and asking for it raises an error; use
-       ``cpu``, or ``gpu`` for GDB on NVIDIA GPUs
+     - NVIDIA or AMD GPUs, OpenMP offload. TPB with a restricted FCIDUMP only: GDB,
+       CAOP and unrestricted (UHF) FCIDUMPs are not supported, and asking for one raises
+       an error; use ``cpu``, or ``gpu`` on NVIDIA GPUs
      - ``nvc++`` on NVIDIA, ``amdclang++`` on AMD
+
+The energy variance and PT2 analysis always runs on the CPU, whichever device the
+solve used. The `README's backend table
+<https://github.com/Qiskit/sbd-eigensolver-python/blob/main/README.md#backends>`__ has
+what each backend runs.
 
 The GPU backends pass device memory to MPI, so they expect a GPU-aware MPI. The
 Thrust backend can instead be built to stage transfers through host memory; see

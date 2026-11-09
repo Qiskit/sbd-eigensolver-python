@@ -205,8 +205,10 @@ python -c "import sbd; print(sbd.available_backends())"
 # CPU only:                       ['cpu']
 # NVIDIA, default build:          ['cpu', 'gpu', 'gpu-omp']
 # AMD, default build:             ['cpu', 'gpu-omp']
-# OMP-offload-only install:       ['gpu-omp']
 ```
+
+For what each of these runs (TPB, GDB, CAOP, UHF FCIDUMPs, and where the variance
+analysis runs), see the [README's backend table](README.md#backends).
 
 `available_backends()` lists the backends only. The `cpu` and `gpu` backends are each
 also built with upstream's `-D_UHF`, as a second module
