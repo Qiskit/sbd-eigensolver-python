@@ -223,7 +223,8 @@ def test_a_basis_is_required(backend):
     if not getattr(backend, "__sbd_has_caop__", False):
         pytest.skip("this backend has no CAOP solver")
     with pytest.raises(ValueError, match="at least one basis file"):
-        sbd.caop_diag_from_files(CAOP_APP / "hamiltonian.txt", [], backend.CAOP_SBD())
+        sbd.caop_diag_from_files(CAOP_APP / "hamiltonian.txt", [], backend.CAOP_SBD(),
+                                 device=_device_of(backend))
 
 
 # --- the driver --------------------------------------------------------------------
@@ -322,7 +323,7 @@ def test_settings_upstream_gets_wrong_are_refused(backend, fields, match):
         pytest.skip("this backend has no CAOP solver")
     with pytest.raises(ValueError, match=match):
         sbd.caop_diag_from_files(CAOP_APP / "hamiltonian.txt", [CAOP_APP / "basis.txt"],
-                                 _caop_config(backend, **fields))
+                                 _caop_config(backend, **fields), device=_device_of(backend))
 
 
 # Upstream reads the Hamiltonian on one rank and sends the terms on, so a file it cannot
@@ -346,7 +347,8 @@ def test_a_hamiltonian_file_upstream_cannot_read_is_refused(backend, tmp_path, n
     ham = tmp_path / "ham.txt"
     ham.write_text(text)
     with pytest.raises(ValueError, match=match.replace("(", r"\(").replace(")", r"\)")):
-        sbd.caop_diag_from_files(ham, [CAOP_APP / "basis.txt"], _caop_config(backend))
+        sbd.caop_diag_from_files(ham, [CAOP_APP / "basis.txt"], _caop_config(backend),
+                                 device=_device_of(backend))
 
 
 def test_a_complex_hamiltonian_file_is_read_with_complex_amplitudes(backend, tmp_path):
@@ -360,7 +362,8 @@ def test_a_complex_hamiltonian_file_is_read_with_complex_amplitudes(backend, tmp
     basis.write_text("001\n010\n100\n")
     config = _caop_config(backend, method=1, max_it=200, max_nb=3, eps=1e-12)
     config.system_size = 3
-    energy = sbd.caop_diag_from_files(ham, [basis], config, complex=True)["energy"]
+    energy = sbd.caop_diag_from_files(ham, [basis], config, complex=True,
+                                      device=_device_of(backend))["energy"]
     assert energy == pytest.approx(_exact(ham, [1, 2, 4]), abs=1e-9)
 
 
@@ -370,11 +373,18 @@ def test_a_complex_hamiltonian_file_is_read_with_complex_amplitudes(backend, tmp
 # shares GDB's process-wide word count, and every case here is one word, so they share
 # the job's process with the TPB and GDB tests.
 
+def _device_of(backend):
+    """The device name of a backend module, so a solve runs on the module its config
+    came from rather than on the session's default device."""
+    return {"_core_cpu": "cpu", "_core_gpu_thrust": "gpu",
+            "_core_gpu_omp_offload": "gpu-omp"}[backend.__name__.rsplit(".", 1)[1]]
+
+
 def _refusal_on_every_rank(backend, comm, match, **fields):
     """Each rank calls; every rank must refuse, or one would wait in a collective."""
     try:
         sbd.caop_diag_from_files(CAOP_APP / "hamiltonian.txt", [CAOP_APP / "basis.txt"],
-                                 _caop_config(backend, **fields))
+                                 _caop_config(backend, **fields), device=_device_of(backend))
     except ValueError as e:
         outcome = str(e)
     else:
@@ -422,7 +432,7 @@ def test_the_basis_split_over_every_rank_gives_the_exact_energy(backend, caop_de
                           do_redist_basis=True, b_comm_size=comm.Get_size(),
                           initial_determinant_bitstring=start)
     config.system_size = 12
-    energy = sbd.caop_diag_from_files(ham, files, config)["energy"]
+    energy = sbd.caop_diag_from_files(ham, files, config, device=_device_of(backend))["energy"]
     energies = comm.allgather(energy)
     assert len(set(energies)) == 1, f"ranks disagree: {energies}"
     assert energy == pytest.approx(_exact(ham, states), abs=1e-9)
@@ -478,7 +488,8 @@ def test_a_hamiltonian_file_upstream_cannot_read_is_refused_on_every_rank(backen
     comm.Barrier()
     try:
         sbd.caop_diag_from_files(path / "ham.txt", [CAOP_APP / "basis.txt"],
-                                 _caop_config(backend, b_comm_size=comm.Get_size()))
+                                 _caop_config(backend, b_comm_size=comm.Get_size()),
+                                 device=_device_of(backend))
     except ValueError as e:
         outcome = str(e)
     else:
