@@ -174,8 +174,8 @@ An FCIDUMP in SBD's unrestricted layout -- ``NORB`` spatial orbitals, integrals
 indexed by interleaved spin orbitals up to ``2 * NORB`` -- runs through the same
 functions as a restricted one. Each diagonalization reads the layout from the
 integrals and uses the matching build: upstream SBD compiled with ``-D_UHF``, which
-the package builds alongside the ``cpu`` and ``gpu`` backends unless
-``SBD_BUILD_UHF=0``. ``gpu-omp`` does not support unrestricted files: it has no
+every install builds alongside the ``cpu`` and ``gpu`` backends. ``gpu-omp`` does not
+support unrestricted files: it has no
 unrestricted build, and passing one raises an error.
 ``examples/tools/make_uhf_fcidump.py`` writes such a file with PySCF, and the TPB
 example README covers the layout and running the drivers on it.

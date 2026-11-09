@@ -199,16 +199,22 @@ def _load_backend(device):
             f"This FCIDUMP is unrestricted (spin-orbital indices), and the "
             f"'{_UHF_BASE[device]}' backend has no UHF build.\n"
             f"  expected: {module_name}.*.so in the sbd package directory\n"
-            f"  fix     : rebuild without SBD_BUILD_UHF=0 (UHF builds are on by default)"
+            f"  fix     : reinstall; the UHF builds are made with every install"
         )
     if path is None:
+        if device == 'cpu':
+            fix = ("every install builds the CPU backend, so this install is incomplete: "
+                   "reinstall the package")
+        else:
+            skip_name = 'gpu' if device == 'gpu' else 'gpu_omp_offload'
+            fix = (f"reinstall where the GPU toolchain is found ("
+                   f"{'NVHPC_HOME / nvc++' if device == 'gpu' else 'NVHPC_HOME / nvc++ or ROCM_HOME / amdclang++'}"
+                   f"), without {skip_name} in SBD_SKIP_BACKENDS")
         raise RuntimeError(
             f"sbd backend '{device}' is not built.\n"
             f"  expected: {module_name}.*.so in the sbd package directory\n"
             f"  usable  : {_scan_backends() or 'none'}\n"
-            f"  fix     : rebuild, e.g. "
-            f"SBD_BUILD_BACKEND={'cpu' if device == 'cpu' else 'gpu_omp_offload' if device == 'gpu-omp' else 'gpu'}"
-            f" pip install -e . --no-build-isolation"
+            f"  fix     : {fix}"
         )
 
     if device == 'gpu-omp':
@@ -362,10 +368,9 @@ def init(device='cpu', comm_backend='mpi'):
 
     if not _scan_backends():
         raise RuntimeError(
-            "No SBD backends available. Build with:\n"
-            "  pip install -e . --no-build-isolation                 (auto: CPU + Thrust GPU)\n"
-            "  SBD_BUILD_BACKEND=gpu pip install -e . --no-build-isolation              (Thrust GPU only)\n"
-            "  SBD_BUILD_BACKEND=gpu_omp_offload pip install -e . --no-build-isolation  (OMP-offload only)"
+            "No SBD backends available: the extension modules were not built. Install "
+            "with\n  pip install -e . --no-build-isolation\nwhich builds the CPU backend and "
+            "every GPU backend the toolchain supports (see INSTALL.md)."
         )
 
     # MPI setup
@@ -481,8 +486,8 @@ def _uhf_device(device):
 def has_uhf(device=None):
     """Whether ``device`` has an unrestricted (``-D_UHF``) build installed.
 
-    Only 'cpu' and 'gpu' (Thrust) can have one; it is built alongside them
-    unless ``SBD_BUILD_UHF=0`` was set at install time.
+    Only 'cpu' and 'gpu' (Thrust) can have one, and every install builds it
+    alongside them; OpenMP offload has none.
 
     Args:
         device: A device or alias, or None for the default (see

@@ -117,21 +117,18 @@ export SBD_GPU_ARCH=cc80,cc90,cc100     # NVIDIA
 export SBD_GPU_ARCH=gfx90a              # AMD
 
 # --- optional overrides; each has a working default ---
-#     Which backends to build: defaults to CPU always, plus every GPU backend the
-#     detected toolchain supports -- Thrust AND OpenMP-offload under nvc++,
-#     OpenMP-offload only under amdclang++ (there is no rocThrust path).
-#     Set it only to narrow that:
-#       cpu               CPU only -- skip GPU even if a GPU compiler is present
-#       gpu               Thrust GPU only, no CPU -- NVIDIA only, errors on AMD
-#       gpu_omp_offload   OpenMP target-offload GPU only (either vendor)
-export SBD_BUILD_BACKEND=cpu
-
-#     Unrestricted (UHF) builds: the CPU and Thrust backends are each also built
-#     with upstream's -D_UHF, as a second module chosen automatically when an
-#     FCIDUMP is in SBD's unrestricted layout (see examples/tpb/README.md).
-#     OpenMP-offload has none. Set 0 to skip them, roughly halving CPU build time;
-#     unrestricted files are then refused with an error naming this variable.
-export SBD_BUILD_UHF=0
+#     Which backends are built: always the CPU backend, plus every GPU backend
+#     the detected toolchain supports -- Thrust AND OpenMP-offload under nvc++,
+#     OpenMP-offload only under amdclang++ (there is no rocThrust path). The CPU
+#     and Thrust backends are each also built with upstream's -D_UHF, for
+#     unrestricted (UHF) FCIDUMPs. To leave GPU backends out, name them here,
+#     comma-separated (the CPU backend cannot be skipped):
+#       gpu               the Thrust GPU backend (alias gpu_thrust)
+#       gpu_omp_offload   the OpenMP target-offload GPU backend
+#     The build ends with a summary of what was built, and why any GPU backend
+#     was not. (SBD_BUILD_BACKEND, which chose one set instead, still works for
+#     now but is deprecated; SBD_BUILD_UHF is no longer used.)
+export SBD_SKIP_BACKENDS=gpu_omp_offload
 
 #     MPI: defaults to whatever mpi4py is linked against. Set this only
 #     for layouts that cannot be inferred.
@@ -211,8 +208,8 @@ python -c "import sbd; print(sbd.available_backends())"
 # OMP-offload-only install:       ['gpu-omp']
 ```
 
-`available_backends()` lists the backends only. By default the `cpu` and `gpu` backends
-are each also built with upstream's `-D_UHF`, as a second module
+`available_backends()` lists the backends only. The `cpu` and `gpu` backends are each
+also built with upstream's `-D_UHF`, as a second module
 (`sbd._core_cpu_uhf`, `sbd._core_gpu_thrust_uhf`) that a solve uses automatically for an
 unrestricted (UHF) FCIDUMP. To see which backends have one:
 
@@ -220,7 +217,6 @@ unrestricted (UHF) FCIDUMP. To see which backends have one:
 python -c "import sbd; print({d: sbd.has_uhf(d) for d in sbd.available_backends()})"
 # CPU only:                       {'cpu': True}
 # NVIDIA, default build:          {'cpu': True, 'gpu': True, 'gpu-omp': False}
-# with SBD_BUILD_UHF=0:           every value False
 ```
 
 `gpu-omp` never has one: its offload kernels read only the restricted integral layout.

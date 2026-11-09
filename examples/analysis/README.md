@@ -290,9 +290,8 @@ Things to weigh against a separate job:
 - **Device.** The diagonalization can use any device (`cpu`, `gpu`, `gpu-omp`); the
   analysis picks a suitable backend itself. It always runs on CPU, so after a GPU
   diagonalization the GPUs sit idle while it runs. For TPB and GDB, after a `gpu`
-  (Thrust) run it uses the CPU backend, so the package must include it — the default
-  build does; a Thrust-only build (`SBD_BUILD_BACKEND=gpu`) raises an error instead.
-  For CAOP it uses the backend already loaded, Thrust included, still on the CPU.
+  (Thrust) run it uses the CPU backend, which every install includes. For CAOP it uses
+  the backend already loaded, Thrust included, still on the CPU.
 - **Memory.** The diagonalization's data is still allocated when the analysis starts,
   so the two together must fit; a separate job starts clean.
 - **Failure.** If the analysis fails or runs out of time, the job may end before

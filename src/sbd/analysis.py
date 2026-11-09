@@ -406,7 +406,7 @@ def _uhf_evaluator_backend(device):
                          f"{device!r}")
     if not has_uhf("cpu"):
         raise RuntimeError("an unrestricted FCIDUMP needs the CPU backend's unrestricted "
-                           "build; rebuild without SBD_BUILD_UHF=0")
+                           "build, which every install makes; reinstall the package")
     return get_backend("cpu", uhf=True)
 
 
@@ -456,7 +456,7 @@ def _evaluator_backend(device):
         "method='stochastic' needs SBD's evaluator, which the CPU and OpenMP-offload "
         "backends have and the Thrust backend does not"
         + (f"; this process has loaded {loaded} and no CPU backend is built" if loaded else "")
-        + ". Build the CPU backend too (SBD_BUILD_BACKEND including cpu, the default), "
+        + ". Every install builds the CPU backend: reinstall if it is missing, "
           "run the analysis as a separate job, or use method='exact' for a small system.")
 
 

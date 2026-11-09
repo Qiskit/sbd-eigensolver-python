@@ -137,7 +137,7 @@ def _assert_matches(out, variance, pt2):
 @pytest.fixture
 def uhf_available(backend):
     if not sbd.has_uhf("cpu"):
-        pytest.skip("no unrestricted CPU build (SBD_BUILD_UHF=0?)")
+        pytest.skip("no unrestricted CPU build in this install")
 
 
 def test_upstream_uhf_fixture_is_ambiguous_and_read_as_restricted(backend, tmp_path):

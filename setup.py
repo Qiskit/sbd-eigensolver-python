@@ -694,14 +694,14 @@ has_gpu_toolchain = gpu_compiler is not None
 # flags (-cuda, -gpu=), with no rocThrust configuration.
 has_nvhpc = gpu_vendor == 'nvidia'
 
-# Determine which backends to build.
-#   auto                  : cpu, plus both GPU backends when nvc++ is present
-#   all                   : same as auto, but an error when nvc++ is missing
-#   cpu                   : cpu only
-#   gpu | gpu_thrust      : thrust GPU only
-#   gpu_omp_offload       : OpenMP target offload only (nvc++ -mp=gpu)
-# `both` (cpu + thrust) was removed: it is a strict subset of `auto`, and the
-# reason to keep the GPU backends apart went away with lazy loading.
+# Which backends to build.
+#
+# The CPU backend is always built: it is the default device, and it carries the
+# energy-variance evaluator that the Thrust backend lacks. Every GPU backend the
+# detected toolchain supports is built too: Thrust and OpenMP offload under nvc++,
+# OpenMP offload under amdclang++ (there is no rocThrust path), none without a GPU
+# compiler. SBD_SKIP_BACKENDS removes GPU backends from that, as a comma-separated
+# list of `gpu` (alias `gpu_thrust`) and `gpu_omp_offload`.
 #
 # All three may now be installed side by side. They used to be kept apart on
 # the theory that they link different OpenMP runtimes; that is not what ldd
@@ -713,60 +713,73 @@ has_nvhpc = gpu_vendor == 'nvidia'
 # Python package now imports backends lazily -- one per process, on first use --
 # co-resident .so files no longer interfere, so `auto` builds everything the
 # toolchain supports.
-build_backend = os.environ.get('SBD_BUILD_BACKEND', 'auto').lower()
+_GPU_BACKENDS = {'gpu': 'gpu', 'gpu_thrust': 'gpu', 'gpu_omp_offload': 'gpu_omp_offload'}
 
-build_cpu = False
-build_gpu_thrust = False
-build_gpu_omp_offload = False
 
-if build_backend in ('auto', 'all'):
-    build_cpu = True
-    build_gpu_thrust = has_nvhpc
-    build_gpu_omp_offload = has_gpu_toolchain
-    if has_nvhpc:
-        print("\nAuto-detected nvc++ - will build CPU, Thrust GPU and "
-              "OMP-offload GPU backends")
-    elif gpu_vendor == 'amd':
-        # No Thrust here, so `auto` yields two backends rather than three.
-        print("\nAuto-detected amdclang++ - will build CPU and OMP-offload GPU "
-              "backends (Thrust is NVIDIA-only)")
-    else:
-        print("\nNo GPU compiler found - will build CPU backend only")
-    if build_backend == 'all' and not has_gpu_toolchain:
-        print("Error: SBD_BUILD_BACKEND=all requires a GPU toolchain "
-              "(NVHPC_HOME / nvc++, or ROCM_HOME / amdclang++).")
+def _parse_skip(value):
+    """The GPU backends named in SBD_SKIP_BACKENDS, normalized; exits on a bad name."""
+    names = [n.strip().lower() for n in (value or '').split(',') if n.strip()]
+    if 'cpu' in names:
+        print("Error: SBD_SKIP_BACKENDS cannot skip 'cpu'. The CPU backend is always "
+              "built: it is the default device and carries the variance evaluator.")
         sys.exit(1)
-elif build_backend == 'cpu':
-    build_cpu = True
-    print("\nBuilding CPU backend only (SBD_BUILD_BACKEND=cpu)")
-elif build_backend in ('gpu', 'gpu_thrust'):
-    build_gpu_thrust = True
-    print(f"\nBuilding Thrust GPU backend only (SBD_BUILD_BACKEND={build_backend})")
-    if gpu_vendor == 'amd':
-        # Fail rather than warn: on AMD this is not a maybe-it-links situation,
-        # there is no rocThrust configuration to build at all. Silently falling
-        # back to CPU under a name that says 'gpu' is exactly the confusion the
-        # AMD path is meant to remove.
-        print("Error: the Thrust backend is NVIDIA-only (upstream wires it to "
-              "nvc++ -cuda).\n"
-              "       On AMD use SBD_BUILD_BACKEND=gpu_omp_offload, or leave it "
-              "unset for CPU + OMP-offload.")
+    unknown = [n for n in names if n not in _GPU_BACKENDS]
+    if unknown:
+        print(f"Error: SBD_SKIP_BACKENDS has unknown backend(s) {', '.join(unknown)}. "
+              "Valid: gpu (alias gpu_thrust), gpu_omp_offload")
         sys.exit(1)
-    if not has_nvhpc:
-        print("Warning: nvc++ not found, GPU build may fail")
-elif build_backend == 'gpu_omp_offload':
-    build_gpu_omp_offload = True
-    print("\nBuilding GPU OpenMP target-offload backend only "
-          "(SBD_BUILD_BACKEND=gpu_omp_offload)")
+    return {_GPU_BACKENDS[n] for n in names}
+
+
+skip = _parse_skip(os.environ.get('SBD_SKIP_BACKENDS'))
+
+# SBD_BUILD_BACKEND chose one set of backends; it is kept for one release, mapped onto
+# the rule above. The CPU backend is built whatever it says.
+_legacy = (os.environ.get('SBD_BUILD_BACKEND') or '').strip().lower()
+if _legacy:
+    _legacy_skip = {'auto': set(), 'all': set(), 'cpu': {'gpu', 'gpu_omp_offload'},
+                    'gpu': {'gpu_omp_offload'}, 'gpu_thrust': {'gpu_omp_offload'},
+                    'gpu_omp_offload': {'gpu'}}
+    if _legacy not in _legacy_skip:
+        print(f"Error: Invalid SBD_BUILD_BACKEND='{_legacy}'. It is deprecated: use "
+              "SBD_SKIP_BACKENDS=gpu,gpu_omp_offload (either or both) to leave GPU "
+              "backends out; the CPU backend is always built.")
+        sys.exit(1)
+    skip |= _legacy_skip[_legacy]
+    print(f"\nWarning: SBD_BUILD_BACKEND is deprecated and will be removed. "
+          f"SBD_BUILD_BACKEND={_legacy} now means "
+          + (f"SBD_SKIP_BACKENDS={','.join(sorted(_legacy_skip[_legacy]))}"
+             if _legacy_skip[_legacy] else "the default, every backend the toolchain supports")
+          + "; the CPU backend is always built.")
+
+build_cpu = True
+build_gpu_thrust = has_nvhpc and 'gpu' not in skip
+build_gpu_omp_offload = has_gpu_toolchain and 'gpu_omp_offload' not in skip
+
+# Why each GPU backend is or is not built, for the summary printed after setup().
+_toolchain = (f"nvc++ at {gpu_compiler}" if gpu_vendor == 'nvidia' else
+              f"amdclang++ at {gpu_compiler}" if gpu_vendor == 'amd' else
+              "no GPU compiler found (NVHPC_HOME / nvc++, ROCM_HOME / amdclang++)")
+
+
+def _why_not(name, supported):
+    if name in skip:
+        return "skipped (SBD_SKIP_BACKENDS)"
     if not has_gpu_toolchain:
-        print("Error: gpu_omp_offload requires a GPU toolchain: NVHPC_HOME / "
-              "nvc++, or ROCM_HOME / amdclang++.")
-        sys.exit(1)
-else:
-    print(f"Error: Invalid SBD_BUILD_BACKEND='{build_backend}'")
-    print("Valid values: auto (= all backends the toolchain supports), all, "
-          "cpu, gpu (alias gpu_thrust), gpu_omp_offload")
-    sys.exit(1)
+        return "not built: no GPU compiler found"
+    if not supported:
+        return "not built: NVIDIA only, needs nvc++" if name == 'gpu' else "not built"
+    return None
+
+
+_gpu_status = {
+    'gpu': _why_not('gpu', has_nvhpc),
+    'gpu_omp_offload': _why_not('gpu_omp_offload', has_gpu_toolchain),
+}
+print(f"\nGPU toolchain: {_toolchain}")
+print("Building: cpu"
+      + (", gpu (Thrust)" if build_gpu_thrust else "")
+      + (", gpu-omp (OpenMP offload)" if build_gpu_omp_offload else ""))
 
 ext_modules = []
 
@@ -778,8 +791,11 @@ ext_modules = []
 # compiled from the same source with the same flags plus -D_UHF. The package
 # picks the twin from the FCIDUMP's format. OpenMP offload gets none: its device
 # kernels (chemistry/basic/omp_offload.h) read the restricted layout regardless
-# of _UHF. SBD_BUILD_UHF=0 skips them.
-build_uhf = os.environ.get('SBD_BUILD_UHF', '1') != '0'
+# of _UHF. They are always built, so a solve can take a restricted or an
+# unrestricted FCIDUMP in any session.
+if os.environ.get('SBD_BUILD_UHF') is not None:
+    print("\nWarning: SBD_BUILD_UHF is no longer used and will be removed; the "
+          "unrestricted (UHF) builds are always made.")
 
 
 def _uhf_twin(ext):
@@ -906,8 +922,7 @@ if build_cpu:
         extra_link_args=cpu_link_args,
     )
     ext_modules.append(cpu_ext)
-    if build_uhf:
-        ext_modules.append(_uhf_twin(cpu_ext))
+    ext_modules.append(_uhf_twin(cpu_ext))
 
 
 if build_gpu_thrust:
@@ -1021,8 +1036,7 @@ if build_gpu_thrust:
                                            '-lcudart'],
     )
     ext_modules.append(gpu_thrust_ext)
-    if build_uhf:
-        ext_modules.append(_uhf_twin(gpu_thrust_ext))
+    ext_modules.append(_uhf_twin(gpu_thrust_ext))
 
 
 if build_gpu_omp_offload:
@@ -1130,13 +1144,20 @@ setup(
 )
 
 print("\nSetup complete!")
-if build_cpu:
-    print("  - CPU backend:                    sbd._core_cpu"
-          + ("  (+ sbd._core_cpu_uhf)" if build_uhf else ""))
+print("  - CPU backend:                    sbd._core_cpu  (+ sbd._core_cpu_uhf)")
 if build_gpu_thrust:
     print("  - Thrust GPU backend:             sbd._core_gpu_thrust"
-          + ("  (+ sbd._core_gpu_thrust_uhf)" if build_uhf else ""))
+          "  (+ sbd._core_gpu_thrust_uhf)")
+else:
+    print(f"  - Thrust GPU backend:             {_gpu_status['gpu']}")
 if build_gpu_omp_offload:
     print("  - OpenMP-offload GPU backend:     sbd._core_gpu_omp_offload"
           f"  ({offload_target})")
+else:
+    print(f"  - OpenMP-offload GPU backend:     {_gpu_status['gpu_omp_offload']}")
+if not (build_gpu_thrust or build_gpu_omp_offload):
+    print("\n  No GPU backend was built; only the CPU backend is installed."
+          + (" SBD_BUILD_BACKEND=all asked for every backend, but no GPU compiler was "
+             "found: check NVHPC_HOME or ROCM_HOME, or that nvc++ / amdclang++ is on "
+             "PATH." if _legacy == 'all' and not has_gpu_toolchain else ""))
 print()

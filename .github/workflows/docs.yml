@@ -41,7 +41,7 @@ jobs:
         # CPU only: the runner has no GPU toolchain, and the API reference does not
         # depend on which backends were compiled.
         env:
-          SBD_BUILD_BACKEND: cpu
+          SBD_SKIP_BACKENDS: gpu,gpu_omp_offload
         run: |
           tox -edocs
       - name: Upload docs artifact

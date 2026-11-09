@@ -1,0 +1,26 @@
+---
+features:
+  - |
+    New build variable ``SBD_SKIP_BACKENDS`` leaves GPU backends out of an install, as a
+    comma-separated list of ``gpu`` (alias ``gpu_thrust``) and ``gpu_omp_offload``.
+    Without it, every install builds the CPU backend and every GPU backend the detected
+    toolchain supports. The build now ends with a summary of what it built and, for each
+    GPU backend it did not, why: skipped, no GPU compiler found, or NVIDIA-only.
+upgrade:
+  - |
+    The CPU backend is always built, and so are the unrestricted (UHF) builds of the CPU
+    and Thrust backends. A GPU-only install is no longer possible: the CPU backend is
+    the default device and carries the energy-variance evaluator, and without it a
+    solve with no ``device=`` failed, as did the test suite unless ``SBD_TEST_DEVICE``
+    was set (issue #73).
+  - |
+    ``SBD_BUILD_BACKEND`` is deprecated and will be removed. It still works, with a
+    warning, and is read as a skip list: ``cpu`` skips both GPU backends, ``gpu`` skips
+    the OpenMP-offload one, and ``gpu_omp_offload`` the Thrust one; ``auto`` and ``all``
+    skip nothing. Each now also builds the CPU backend. ``SBD_BUILD_BACKEND=all`` no
+    longer stops the build when no GPU compiler is found; the summary says that only the
+    CPU backend was built, and why.
+  - |
+    ``SBD_BUILD_UHF`` is no longer read; setting it prints a warning. The unrestricted
+    builds are always made, so a session can take restricted and unrestricted FCIDUMPs
+    alike.
