@@ -11,7 +11,7 @@
 // that they have been altered from the originals.
 
 /**
- * @file python/bindings.cpp
+ * @file src/sbd/bindings.cpp
  * @brief Python bindings for SBD TPB diagonalization using pybind11
  *
  * This file is compiled once per backend, with different module names + flags:

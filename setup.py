@@ -897,7 +897,7 @@ if build_cpu:
 
     cpu_ext = Extension(
         'sbd._core_cpu',
-        ['python/bindings.cpp'],
+        ['src/sbd/bindings.cpp'],
         include_dirs=cpu_inc,
         libraries=cpu_libs,
         library_dirs=cpu_lib_dirs,
@@ -965,7 +965,7 @@ if build_gpu_thrust:
 
     gpu_thrust_ext = Extension(
         'sbd._core_gpu_thrust',
-        ['python/bindings.cpp'],
+        ['src/sbd/bindings.cpp'],
         include_dirs=include_dirs,
         libraries=libraries,
         library_dirs=library_dirs,
@@ -1102,7 +1102,7 @@ if build_gpu_omp_offload:
             # -D__builtin_ffsl=__ffsll and therefore has to add -cuda to the
             # omp5 build to expose that CUDA intrinsic. The shim needs no CUDA
             # in an OpenMP-offload translation unit, so -cuda stays off here.
-            '-include', 'python/sbd_nvhpc_compat.h',
+            '-include', 'src/sbd/sbd_nvhpc_compat.h',
         ]
         offload_link_args = extra_link_args + [
             '-mp=gpu',
@@ -1111,7 +1111,7 @@ if build_gpu_omp_offload:
 
     gpu_omp_offload_ext = Extension(
         'sbd._core_gpu_omp_offload',
-        ['python/bindings.cpp'],
+        ['src/sbd/bindings.cpp'],
         include_dirs=include_dirs,
         libraries=libraries,
         library_dirs=library_dirs,
