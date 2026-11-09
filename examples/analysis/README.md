@@ -288,10 +288,11 @@ Things to weigh against a separate job:
   chosen for the diagonalization — one rank per GPU with many threads, say — is often
   a poor one for the analysis, which prefers many ranks with few threads.
 - **Device.** The diagonalization can use any device (`cpu`, `gpu`, `gpu-omp`); the
-  analysis picks a suitable backend itself. It always runs on CPU, so after a GPU
-  diagonalization the GPUs sit idle while it runs. For TPB and GDB, after a `gpu`
-  (Thrust) run it uses the CPU backend, which every install includes. For CAOP it uses
-  the backend already loaded, Thrust included, still on the CPU.
+  analysis always runs on the CPU, so there is no device to choose, and after a GPU
+  diagonalization the GPUs sit idle while it runs. It uses the CPU backend, which every
+  install includes, except after a `gpu-omp` solve in the same process: there it calls
+  the same CPU code from the OpenMP-offload module, since loading the CPU backend next
+  to it would leave offload running on the host for the rest of the process.
 - **Memory.** The diagonalization's data is still allocated when the analysis starts,
   so the two together must fit; a separate job starts clean.
 - **Failure.** If the analysis fails or runs out of time, the job may end before

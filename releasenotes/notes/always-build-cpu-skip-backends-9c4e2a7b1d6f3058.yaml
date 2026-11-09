@@ -21,6 +21,12 @@ upgrade:
     longer stops the build when no GPU compiler is found; the summary says that only the
     CPU backend was built, and why.
   - |
+    :func:`sbd.analysis.variance` and :func:`sbd.analysis.caop_variance` no longer take
+    ``device``. They always run on the CPU, with MPI and OpenMP, using the CPU backend
+    that every install now has; after an OpenMP-offload solve in the same process they
+    call the same CPU code from the offload module instead, so the CPU backend is not
+    loaded next to it. Remove ``device=`` from calls to them.
+  - |
     ``SBD_BUILD_UHF`` is no longer read; setting it prints a warning. The unrestricted
     builds are always made, so a session can take restricted and unrestricted FCIDUMPs
     alike.

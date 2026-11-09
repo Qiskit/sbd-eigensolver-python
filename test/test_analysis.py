@@ -461,7 +461,7 @@ def test_the_evaluator_backend_is_chosen_without_mixing_backends(monkeypatch):
         monkeypatch.setattr(package, "loaded_backends", lambda: list(loaded))
         monkeypatch.setattr(package, "get_backend", get_backend)
         try:
-            chosen = analysis._evaluator_backend(None)
+            chosen = analysis._evaluator_backend()
         except RuntimeError as exc:
             return str(exc)
         return next(name for name, m in modules.items() if m is chosen)
@@ -469,10 +469,11 @@ def test_the_evaluator_backend_is_chosen_without_mixing_backends(monkeypatch):
     assert scenario(["cpu", "gpu", "gpu-omp"], []) == "cpu"
     assert scenario(["cpu", "gpu", "gpu-omp"], ["gpu-omp"]) == "gpu-omp"   # never add cpu
     assert scenario(["cpu", "gpu", "gpu-omp"], ["gpu"]) == "cpu"           # cpu beside Thrust
+    assert scenario(["cpu", "gpu-omp"], ["cpu"]) == "cpu"
     assert scenario(["gpu-omp"], []) == "gpu-omp"
-    assert "Thrust backend does not" in scenario(["gpu"], ["gpu"])         # Thrust-only build
-    assert "Thrust backend does not" in scenario(["gpu", "gpu-omp"], ["gpu"])   # no omp beside Thrust
-    # An unrestricted build loaded by an earlier UHF solve is not a device, and is skipped.
+    assert "in the CPU backend" in scenario(["gpu"], ["gpu"])          # no CPU backend at all
+    # An unrestricted build loaded by an earlier UHF solve is not a device, and is never
+    # passed to get_backend.
     assert scenario(["cpu", "gpu"], ["gpu-uhf"]) == "cpu"
     assert scenario(["cpu", "gpu"], ["cpu-uhf", "gpu"]) == "cpu"
     assert scenario(["cpu", "gpu"], ["cpu-uhf", "cpu"]) == "cpu"
@@ -483,9 +484,14 @@ def test_the_thrust_backend_has_no_evaluator_and_is_not_used_for_it(backend):
     for device in sbd.available_backends():
         expected = device != "gpu"
         assert sbd.get_backend(device).__sbd_has_evaluator__ is expected
-    if "gpu" in sbd.available_backends():
-        with pytest.raises(ValueError, match="no evaluator"):
-            analysis._evaluator_backend("gpu")
+
+
+def test_variance_has_no_device_to_choose():
+    """It always runs on the CPU, so neither function takes ``device``."""
+    import inspect
+
+    assert "device" not in inspect.signature(analysis.variance).parameters
+    assert "device" not in inspect.signature(analysis.caop_variance).parameters
 
 
 # --- the exact method past 63 orbitals -----------------------------------------------
