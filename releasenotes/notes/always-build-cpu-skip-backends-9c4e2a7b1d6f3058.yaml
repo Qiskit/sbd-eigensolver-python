@@ -6,6 +6,12 @@ features:
     Without it, every install builds the CPU backend and every GPU backend the detected
     toolchain supports. The build now ends with a summary of what it built and, for each
     GPU backend it did not, why: skipped, no GPU compiler found, or NVIDIA-only.
+fixes:
+  - |
+    The error for a device whose backend is missing listed the internal unrestricted
+    builds (``cpu-uhf``, ``gpu-uhf``) among the usable devices, though they cannot be
+    passed as a device. It now lists only devices, as :func:`sbd.available_backends`
+    does, and when no device was given it says the default ``cpu`` was used.
 upgrade:
   - |
     The CPU backend is always built, and so are the unrestricted (UHF) builds of the CPU

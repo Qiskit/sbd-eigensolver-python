@@ -213,7 +213,7 @@ def _load_backend(device):
         raise RuntimeError(
             f"sbd backend '{device}' is not built.\n"
             f"  expected: {module_name}.*.so in the sbd package directory\n"
-            f"  usable  : {_scan_backends() or 'none'}\n"
+            f"  usable  : {available_backends() or 'none'}\n"
             f"  fix     : {fix}"
         )
 
@@ -337,7 +337,7 @@ def _resolve_device(device):
     return _device_aliases.get(device, device)
 
 
-def init(device='cpu', comm_backend='mpi'):
+def init(device=None, comm_backend='mpi'):
     """
     Initialize SBD with MPI and set the default compute device.
 
@@ -350,8 +350,8 @@ def init(device='cpu', comm_backend='mpi'):
     ``get_backend()``.
 
     Args:
-        device: Default compute device — 'cpu', 'gpu', 'gpu-omp', or 'auto'.
-            'gpu' is the NVIDIA-only Thrust backend; 'gpu-omp' is OpenMP
+        device: Default compute device — 'cpu' (the default), 'gpu', 'gpu-omp', or
+            'auto'. 'gpu' is the NVIDIA-only Thrust backend; 'gpu-omp' is OpenMP
             target offload and serves NVIDIA and AMD alike.
             Aliases for 'gpu': 'gpu-thrust', 'gpu-nvidia', 'cuda'.
             Aliases for 'gpu-omp': 'gpu-omp-offload', 'gpu-nvhpc-omp',
@@ -362,6 +362,9 @@ def init(device='cpu', comm_backend='mpi'):
         RuntimeError: If MPI is not available or no backends are compiled.
     """
     global _default_device, _comm_backend, _comm_module, _global_comm, _initialized
+    device_given = device is not None
+    if device is None:
+        device = 'cpu'
 
     if _initialized:
         return  # already initialized — silently no-op
@@ -389,12 +392,15 @@ def init(device='cpu', comm_backend='mpi'):
 
     # Resolve default device
     resolved = _resolve_device(device)
-    usable = _scan_backends()
-    if resolved not in usable:
+    if resolved not in _scan_backends():
         why = _backend_errors.get(resolved, 'unknown reason')
+        # Name the devices a user can pass: _scan_backends() also lists the
+        # unrestricted builds ('cpu-uhf', ...), which are not devices.
+        asked = (f"Device '{resolved}' was requested, but its backend" if device_given
+                 else f"No device was given, and the default '{resolved}' backend")
         raise RuntimeError(
-            f"Device '{resolved}' requested but its backend is not usable "
-            f"({why}). Usable: {usable or 'none'}"
+            f"{asked} is not usable ({why}). "
+            f"Usable devices: {available_backends() or 'none'}"
         )
     _default_device = resolved
     _initialized = True
