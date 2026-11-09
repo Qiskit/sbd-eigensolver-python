@@ -23,9 +23,10 @@ upgrade:
     ``SBD_BUILD_BACKEND`` is deprecated and will be removed. It still works, with a
     warning, and is read as a skip list: ``cpu`` skips both GPU backends, ``gpu`` skips
     the OpenMP-offload one, and ``gpu_omp_offload`` the Thrust one; ``auto`` and ``all``
-    skip nothing. Each now also builds the CPU backend. ``SBD_BUILD_BACKEND=all`` no
-    longer stops the build when no GPU compiler is found; the summary says that only the
-    CPU backend was built, and why.
+    skip nothing. Each now also builds the CPU backend. ``SBD_BUILD_BACKEND=all`` and
+    ``gpu_omp_offload`` no longer stop the build when no GPU compiler is found, nor does
+    ``gpu`` on an AMD toolchain; the summary says that only the CPU backend was built,
+    and why.
   - |
     :func:`sbd.analysis.variance` and :func:`sbd.analysis.caop_variance` no longer take
     ``device``. They always run on the CPU, with MPI and OpenMP, using the CPU backend
