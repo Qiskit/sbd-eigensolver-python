@@ -20,6 +20,8 @@ without changing user code.
 import re
 import subprocess
 
+__all__ = ["DeviceConfig", "print_device_info"]
+
 
 class DeviceConfig:
     """
@@ -338,9 +340,11 @@ def print_device_info():
 
     Backends come first because they are what actually constrains a run: the
     hardware being present says nothing about whether a backend was compiled
-    for it. An earlier version printed "CPU Available: Always" unconditionally
-    while sbd.available_backends() returned [] -- reported as issue #9.
+    for it. A backend that is not usable is listed with the reason, as
+    :func:`sbd.backend_load_errors` gives it.
     """
+    # Backends first: an earlier version printed "CPU Available: Always" while
+    # sbd.available_backends() returned [] (issue #9).
     info = get_device_info()
 
     from . import available_backends, backend_load_errors, has_backend_conflict

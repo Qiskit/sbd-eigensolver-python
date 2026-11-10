@@ -165,6 +165,8 @@ Inputs
 .. autofunction:: LoadAlphaDets
 .. autofunction:: sort_bitarray
 .. autofunction:: from_strings
+.. autofunction:: from_string
+.. autofunction:: makestring
 .. autofunction:: sort_bitarray_array
 
 Unrestricted (UHF) integrals

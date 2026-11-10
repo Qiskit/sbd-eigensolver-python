@@ -12,3 +12,5 @@ Selects the backend a solver call runs on. Pass a :class:`DeviceConfig` as the
    :members: cpu, gpu, gpu_omp, auto
    :member-order: bysource
    :no-inherited-members:
+
+.. autofunction:: print_device_info

@@ -436,7 +436,7 @@ def state_energy(source, fcidump, *, norb=None, bit_length=None, comm=None, devi
     reported. :func:`variance` does not call it; pass it that reported energy.
 
     It runs :func:`sbd.gdb_diag`, so it needs the ``cpu`` or ``gpu`` (Thrust)
-    backend: ``gdb_diag`` refuses the OpenMP-offload one.
+    backend: ``gdb_diag`` does not support the OpenMP-offload one.
 
     The state stays distributed over the ranks; a temporary copy of it is written and
     removed afterwards. A determinant found in more than one file raises.
@@ -787,8 +787,14 @@ def caop_variance(loadname, hamfile, basisfiles, energy, *, sites, bit_length, s
         sites: Number of modes, as the state's ``system_size``.
         bit_length: Bits per packed word, as the state was saved with.
         shards: Number of files the state was saved in.
-        samples, batches, seed, cutoff, observable, first_batch,
-            minimum_abs_denominator: As for :func:`variance`'s stochastic method.
+        samples: Parent draws per batch, as for :func:`variance`.
+        batches: Stochastic batches, as for :func:`variance`.
+        seed: Sampling seed, as for :func:`variance`.
+        cutoff: Heat-bath screening, as for :func:`variance`; 0 is unbiased.
+        observable: ``"both"``, ``"variance"`` or ``"pt2"``, as for :func:`variance`.
+        first_batch: ID of the first batch, as for :func:`variance`.
+        minimum_abs_denominator: Smallest accepted PT2 denominator, as for
+            :func:`variance`.
         h_comm_size: Helper ranks the Hamiltonian is sharded over; it must divide the
             rank count.
         complex: The state was solved with complex amplitudes

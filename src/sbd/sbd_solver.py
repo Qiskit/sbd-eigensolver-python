@@ -29,6 +29,8 @@ from typing import Callable
 import numpy as np
 from mpi4py import MPI
 
+__all__ = ["assemble_rdms", "solve_sci", "solve_sci_batch"]
+
 # Bits packed into each size_t of SBD's ``std::vector<size_t>`` bitstring
 # representation. RIKEN's documented default is 20 (see the --bit_length option
 # in apps/chemistry_tpb_selected_basis_diagonalization/README.md), which is also
@@ -463,33 +465,36 @@ def _extract_carryover(results: dict, norb: int, backend, bit_length: int):
 
 
 def assemble_rdms(results: dict, norb: int) -> tuple[np.ndarray | None, np.ndarray | None]:
-    """Build spin-summed (rdm1, rdm2) from SBD's raw one_p_rdm/two_p_rdm.
-
-    Returns (None, None) when ``do_rdm`` was 0 (SBD leaves these keys as
-    empty lists in that case -- see ``sbdiag.h``'s ``do_rdm == 0`` branch,
-    which only computes the diagonal density, not the correlation
-    functions), matching SCIResult's own ``rdm1``/``rdm2`` default.
-
-    The layout conversion was verified against PySCF's ``make_rdm1`` and
-    ``make_rdm2`` on all three backends (cpu, gpu, gpu-omp), both element-wise
-    and through the energy identity
-    ``E = einsum("pr,pr->",rdm1,hcore) + 0.5*einsum("prqs,prqs->",rdm2,eri)``
-    with which ``qiskit-addon-sqd`` contracts ``SCIResult.rdm1`` and ``rdm2``.
+    """Build spin-summed (rdm1, rdm2) from SBD's raw ``one_p_rdm``/``two_p_rdm``.
 
     SBD's layout, as documented in upstream SBD's ``docs/user-guide.md``::
 
         one_p_rdm[s][i + L*j]                 = <c+_{i,s} c_{j,s}>
         two_p_rdm[s+2t][i + L*j + L^2*k + L^3*l] = <c+_{i,s} c+_{j,t} c_{l,t} c_{k,s}>
 
-    A Fortran-order reshape implements those flat-index formulas directly.
-    rdm1 needs no further transpose, and the spin-summed rdm2 is transposed
-    with axes ``(0, 2, 1, 3)`` into the "prqs" order ``SCIResult`` expects.
+    The result is in the order ``qiskit-addon-sqd``'s ``SCIResult`` expects, so that
+    ``E = einsum("pr,pr->", rdm1, hcore) + 0.5 * einsum("prqs,prqs->", rdm2, eri)``
+    plus the core energy.
+
+    Args:
+        results: The dict :func:`sbd.tpb_diag` returns.
+        norb: Spatial orbitals.
+
+    Returns:
+        ``(rdm1, rdm2)``, of shapes ``(norb, norb)`` and ``(norb,) * 4``, or
+        ``(None, None)`` when the solve ran with ``do_rdm = 0``, which computes the
+        density only.
     """
+
     one_p_rdm = results.get("one_p_rdm")
     two_p_rdm = results.get("two_p_rdm")
     if not one_p_rdm or not two_p_rdm:
         return None, None
 
+    # A Fortran-order reshape implements the flat-index formulas above directly.
+    # rdm1 needs no further transpose; the spin-summed rdm2 is transposed with axes
+    # (0, 2, 1, 3) into the "prqs" order SCIResult expects. Checked against PySCF's
+    # make_rdm1/make_rdm2, element-wise and through the energy identity.
     one_p_rdm = np.asarray(one_p_rdm)
     two_p_rdm = np.asarray(two_p_rdm)
     L = norb

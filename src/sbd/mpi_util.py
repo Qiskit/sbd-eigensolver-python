@@ -43,6 +43,9 @@ def let_output_through(seconds=0.5):
     Abort kills every rank at once, this one included, and output a rank has flushed
     can still be lost on the way to ``mpirun``: without a pause, the error that
     explains the abort went missing in about one run in four or five.
+
+    Args:
+        seconds: How long to sleep.
     """
     time.sleep(seconds)
 

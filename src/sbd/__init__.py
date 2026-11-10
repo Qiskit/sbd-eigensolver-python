@@ -603,6 +603,15 @@ def get_device_id(device=None):
     Uses the communicator rank, i.e. the same ``gpu_id = rank % num_gpus``
     convention SBD's own diagonalization applies, documented in
     ``examples/tpb/README.md``.
+
+    Args:
+        device: Backend to use: 'cpu', 'gpu' (Thrust), 'gpu-omp' (OpenMP
+            offload), or an alias accepted by :func:`init`. None uses the
+            default; see :func:`get_backend`.
+
+    Returns:
+        The device index, or ``-1`` on the CPU backend or when no device is
+        visible.
     """
     _ensure_initialized()
     return get_backend(device).planned_device_id(get_comm())
@@ -634,6 +643,14 @@ def TPB_SBD(device=None):
     """Create a TPB_SBD configuration object, for :func:`tpb_diag`.
 
     Its fields are listed in the tables below.
+
+    Args:
+        device: Backend whose configuration type to create; None uses the
+            default (see :func:`get_backend`). Pass the same device to the
+            diagonalization.
+
+    Returns:
+        A ``TPB_SBD`` object with upstream SBD's defaults.
     """
     _ensure_initialized()
     return get_backend(device).TPB_SBD()
@@ -643,6 +660,14 @@ def GDB_SBD(device=None):
     """Create a GDB_SBD configuration object, for :func:`gdb_diag`.
 
     Its fields are listed in the tables below.
+
+    Args:
+        device: Backend whose configuration type to create; None uses the
+            default (see :func:`get_backend`). Pass the same device to the
+            diagonalization.
+
+    Returns:
+        A ``GDB_SBD`` object with upstream SBD's defaults.
     """
     _ensure_initialized()
     return get_backend(device).GDB_SBD()
@@ -724,6 +749,18 @@ def makestring(config, bit_length, total_bit_length, device=None):
 
     The inverse of :func:`from_string`, and subject to the same right-to-left
     word packing, which :func:`from_strings` describes.
+
+    Args:
+        config: One packed determinant, a list of words.
+        bit_length: Bits per word it was packed with.
+        total_bit_length: Length of the string to render, the number of bits the
+            determinant holds.
+        device: Backend to use: 'cpu', 'gpu' (Thrust), 'gpu-omp' (OpenMP
+            offload), or an alias accepted by :func:`init`. None uses the
+            default; see :func:`get_backend`.
+
+    Returns:
+        The bitstring, rightmost character the least significant bit of word 0.
     """
     _ensure_initialized()
     return get_backend(device).makestring(config, bit_length, total_bit_length)
@@ -732,10 +769,21 @@ def makestring(config, bit_length, total_bit_length, device=None):
 def from_string(s, bit_length, total_bit_length, device=None):
     """Convert a binary string to SBD's packed determinant format.
 
-    Returns a list of ``size_t`` words, e.g. ``from_string("0011", 20, 4)`` is
-    ``[3]``. :func:`makestring` is the inverse. See :func:`from_strings`, the
-    bulk form, for the word-packing convention and for why it is worth
-    preferring that form outside of one-off calls.
+    For example, ``from_string("0011", 20, 4)`` is ``[3]``. :func:`makestring`
+    is the inverse. See :func:`from_strings`, the bulk form, for the
+    word-packing convention and for why it is worth preferring that form
+    outside of one-off calls.
+
+    Args:
+        s: The bitstring, ``total_bit_length`` characters of ``0`` and ``1``.
+        bit_length: Bits per packed word.
+        total_bit_length: Length of ``s``.
+        device: Backend to use: 'cpu', 'gpu' (Thrust), 'gpu-omp' (OpenMP
+            offload), or an alias accepted by :func:`init`. None uses the
+            default; see :func:`get_backend`.
+
+    Returns:
+        A list of words (``size_t``).
     """
     _ensure_initialized()
     return get_backend(device).from_string(s, bit_length, total_bit_length)
@@ -767,6 +815,18 @@ def from_strings(strings, bit_length, total_bit_length, device=None):
 
     ``bit_length`` must match the ``bit_length`` of the config passed to the
     diagonalizers, since it sets how many words each determinant occupies.
+
+    Args:
+        strings: Bitstrings, each ``total_bit_length`` characters; a string of
+            another length raises ``ValueError``.
+        bit_length: Bits per packed word.
+        total_bit_length: Length of each bitstring.
+        device: Backend to use: 'cpu', 'gpu' (Thrust), 'gpu-omp' (OpenMP
+            offload), or an alias accepted by :func:`init`. None uses the
+            default; see :func:`get_backend`.
+
+    Returns:
+        A ``uint64`` array of shape ``(len(strings), words)``, in input order.
     """
     _ensure_initialized()
     return get_backend(device).from_strings(list(strings), bit_length, total_bit_length)
@@ -777,6 +837,15 @@ def sort_bitarray_array(dets, device=None):
 
     The array form of :func:`sort_bitarray`, for a determinant list held as an
     ``(n, words)`` array. Deduplicates, like the list form.
+
+    Args:
+        dets: An ``(n, words)`` array of packed determinants.
+        device: Backend to use: 'cpu', 'gpu' (Thrust), 'gpu-omp' (OpenMP
+            offload), or an alias accepted by :func:`init`. None uses the
+            default; see :func:`get_backend`.
+
+    Returns:
+        A new ``(m, words)`` array, sorted, with ``m <= n`` after deduplication.
     """
     _ensure_initialized()
     return get_backend(device).sort_bitarray_array(dets)
@@ -788,6 +857,15 @@ def sort_bitarray(dets, device=None):
     Diagonalization requires its determinant lists to be in this order.
     :func:`gdb_diag` sorts its own input, so this reproduces the order it
     works in.
+
+    Args:
+        dets: A list of packed determinants, each a list of words.
+        device: Backend to use: 'cpu', 'gpu' (Thrust), 'gpu-omp' (OpenMP
+            offload), or an alias accepted by :func:`init`. None uses the
+            default; see :func:`get_backend`.
+
+    Returns:
+        The sorted, distinct determinants, as a new list.
     """
     _ensure_initialized()
     return get_backend(device).sort_bitarray(dets)
@@ -813,8 +891,8 @@ def tpb_diag_from_files(fcidumpfile, adetfile, sbd_data,
             default; see :func:`get_backend`.
 
     Returns:
-        dict with keys: energy, density, carryover_adet, carryover_bdet,
-        one_p_rdm, two_p_rdm.
+        A dict with keys ``energy``, ``density``, ``carryover_adet``,
+        ``carryover_bdet``, ``one_p_rdm`` and ``two_p_rdm``.
 
     Note:
         As with :func:`tpb_diag`, no amplitudes are returned in the dict; see
@@ -846,6 +924,14 @@ def CAOP_SBD(device=None):
 
     The fields are those of upstream SBD's ``caop_selected_basis_diagonalization``
     app; ``system_size`` (the number of modes) and ``bit_length`` must be set.
+
+    Args:
+        device: ``'cpu'`` or ``'gpu'`` (Thrust), or None for the default (see
+            :func:`get_backend`). Pass the same device to
+            :func:`caop_diag_from_files`.
+
+    Returns:
+        A ``CAOP_SBD`` object with upstream SBD's defaults.
     """
     return _caop_backend(device).CAOP_SBD()
 
@@ -871,12 +957,12 @@ def caop_diag_from_files(hamfile, basisfiles, sbd_data, loadname="", savename=""
             coefficients, which the file writes as ``(re,im)``, or one using ``sy``.
             Upstream's app chooses this at compile time (``-D_COMPLEX``); here both
             are built, and this chooses per call.
-        device: ``'cpu'`` or ``'gpu'`` (Thrust). The OpenMP-offload backend has no
-            CAOP solver and is refused.
+        device: ``'cpu'`` or ``'gpu'`` (Thrust). The OpenMP-offload backend is not
+            supported: it has no CAOP solver, and passing it raises ``ValueError``.
 
     Returns:
-        dict with ``energy`` and ``carryover_basis``, this rank's share of the basis
-        ``carryover_type`` selected, as an ``(n, words)`` array.
+        A dict with ``energy`` and ``carryover_basis``, this rank's share of the
+        basis ``carryover_type`` selected, as an ``(n, words)`` array.
 
     Raises:
         ValueError: before any work, on every rank together, for inputs upstream
@@ -916,8 +1002,8 @@ def tpb_diag(fcidump, adet, bdet, sbd_data,
             default; see :func:`get_backend`.
 
     Returns:
-        dict with keys: energy, density, carryover_adet, carryover_bdet,
-        one_p_rdm, two_p_rdm.
+        A dict with keys ``energy``, ``density``, ``carryover_adet``,
+        ``carryover_bdet``, ``one_p_rdm`` and ``two_p_rdm``.
 
     Note:
         The returned dict holds no wavefunction amplitudes. There are two ways
@@ -1020,9 +1106,10 @@ def gdb_diag(fcidump, det, sbd_data,
             wavefunction. GDB has no combined matrix-form dump.
         device: Backend to run on: 'cpu', 'gpu' (Thrust, NVIDIA GPUs only), or
             an alias accepted by :func:`init`. None uses the default; see
-            :func:`get_backend`. 'gpu-omp' (OpenMP offload) is refused with
-            ``ValueError``: upstream SBD has no OpenMP-offload GDB code, so it
-            would run on the host. There is no GDB GPU path for AMD GPUs.
+            :func:`get_backend`. 'gpu-omp' (OpenMP offload) is not supported,
+            and passing it raises ``ValueError``: upstream SBD has no
+            OpenMP-offload GDB code, so it would run on the host. There is no
+            GDB GPU path for AMD GPUs.
         determinant_distribution: How to place determinants across b_comm — one
             of ``input`` (keep the shards as given), ``equal-bra-a`` (default;
             equal distinct-alpha count per rank, which is what balances the
@@ -1034,7 +1121,7 @@ def gdb_diag(fcidump, det, sbd_data,
         determinant_grid_b: Grid columns; see ``determinant_grid_a``.
 
     Returns:
-        dict with keys ``energy``, ``density``, ``carryover_det``, ``one_p_rdm``,
+        A dict with keys ``energy``, ``density``, ``carryover_det``, ``one_p_rdm``,
         ``two_p_rdm``, ``local_dim``, ``global_dim`` and
         ``determinant_distribution``. What is replicated and what is sharded:
 
@@ -1171,7 +1258,6 @@ __all__ = [
     # Main API
     'TPB_SBD',
     'GDB_SBD',
-    'FCIDump',
     'LoadFCIDump',
     'fcidump_format',
     'LoadAlphaDets',
@@ -1187,7 +1273,6 @@ __all__ = [
     'gdb_diag',
 
     # Utilities
-    'available_backends',
     'print_info',
 
     # Sub-modules
