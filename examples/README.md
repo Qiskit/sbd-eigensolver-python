@@ -55,7 +55,8 @@ mpirun -np 4 python run_caop_diag.py --hamfile hub2.txt --basisfiles hub2_basis.
 # 2. how far from exact: variance and PT2, from the same files (--shards 4: the solve's
 #    --b_comm_size). Here hub2_basis.txt is the whole half-filling sector, so both are
 #    zero; over too small a basis, such as the two singly-occupied states 0110 and 1001
-#    alone, the variance is large and E + PT2 recovers most of the missing energy
+#    alone, the variance is large and E + PT2 recovers only part of the missing energy:
+#    grow the basis
 mpirun -np 4 python ../analysis/variance.py --hamfile hub2.txt --basisfiles hub2_basis.txt \
     --sites 4 --state gs- --shards 4 --bit_length 20 --energy <E0 from step 1>
 
