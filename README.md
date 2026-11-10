@@ -34,6 +34,28 @@ reference and release notes.
 - **qiskit-addon-sqd integration**, `sbd.sbd_solver`: SBD as the `sci_solver` of the
   SQD loop.
 
+## Why the bindings
+
+Upstream SBD ships each feature as its own C++ app, configured and compiled by hand,
+with the backend, unrestricted integrals and complex amplitudes fixed when it is
+compiled. The bindings bring them under one install and one API:
+
+- **One install.** `pip install` builds TPB, GDB, CAOP, the Green's function and the
+  variance evaluators together; there is no separate executable to build, configure or
+  keep in step for each.
+- **Choices per call, not per build.** The device is a `device=` argument, a UHF
+  FCIDUMP selects the unrestricted build by itself, and CAOP takes `complex=True`, so
+  changing any of them means changing an argument, not recompiling.
+- **Python in, Python out.** TPB and GDB take determinants as arrays and return the
+  energy, RDMs and next subspace as Python objects, so a loop such as SQD or heat-bath
+  rounds runs in one MPI job without files passed between programs.
+- **Inputs checked first.** Inputs that upstream would get silently wrong or hang on,
+  such as a rank count that does not fit the MPI grid or GDB shards out of order, raise
+  a `ValueError` on every rank before any work starts.
+
+The [`examples/`](examples/README.md) drivers keep the command-line workflow, for
+running from `mpirun` with options as upstream's apps do.
+
 ## Backends
 
 Every install builds the CPU backend, and every GPU backend the toolchain supports;
