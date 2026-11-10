@@ -35,7 +35,3 @@ upgrade:
     loaded next to it. :func:`sbd.spectrum.green_function_from_coefficients`, which
     reevaluates saved coefficients on the CPU, no longer takes ``device`` either.
     Remove ``device=`` from calls to them.
-  - |
-    ``SBD_BUILD_UHF`` is no longer read; setting it prints a warning. The unrestricted
-    builds are always made, so a session can take restricted and unrestricted FCIDUMPs
-    alike.
