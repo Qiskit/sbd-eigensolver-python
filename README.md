@@ -49,8 +49,10 @@ compiled. The bindings bring them under one install and one API:
 - **Python in, Python out.** TPB and GDB take determinants as arrays and return the
   energy, RDMs and next subspace as Python objects, so a loop such as SQD or heat-bath
   rounds runs in one MPI job without files passed between programs.
-- **Inputs checked first.** Inputs that upstream would get silently wrong or hang on,
-  such as a rank count that does not fit the MPI grid or GDB shards out of order, raise
+- **The right code path, or a clear error.** A feature a device does not support, such
+  as GDB on `gpu-omp`, raises an error naming the devices that do, instead of running on
+  the host; a backend that was not built says how to build it. Inputs upstream would get
+  silently wrong or hang on, such as a rank count that does not fit the MPI grid, raise
   a `ValueError` on every rank before any work starts.
 
 The [`examples/`](examples/README.md) drivers keep the command-line workflow, for
@@ -83,12 +85,10 @@ What each runs:
    solve used, so it takes no `device=`.
 
 `gpu-omp` does not support GDB or CAOP because upstream has no offload code for them,
-and not UHF files because its offload kernels read only the restricted integral layout;
-asking for one raises an error rather than running it on the host. `gpu-omp` is one
-device for both GPU vendors: an install compiles for one, and
-`sbd.get_backend("gpu-omp").__sbd_offload_target__` says which. Vendor-flavoured names
-such as `gpu-amd-omp` or `rocm` resolve to it. The GPU backends expect a GPU-aware MPI;
-see [INSTALL.md](INSTALL.md#gpu-aware-mpi) for the fallbacks.
+nor UHF files, since its kernels read only the restricted integral layout. It is one
+device for both vendors: an install compiles for one, and
+`sbd.get_backend("gpu-omp").__sbd_offload_target__` says which. The GPU backends expect
+a GPU-aware MPI; see [INSTALL.md](INSTALL.md#gpu-aware-mpi) for the fallbacks.
 
 ## Installation
 
@@ -113,11 +113,9 @@ python -c "import sbd; print(sbd.available_backends())"
 # AMD, default build:    ['cpu', 'gpu-omp']
 ```
 
-The `cpu` and `gpu` backends are also built a second time, with upstream's `-D_UHF`, for
-unrestricted (UHF) FCIDUMPs: `sbd._core_cpu_uhf` and `sbd._core_gpu_thrust_uhf`. A solve
-uses that build automatically when the FCIDUMP is unrestricted, so there is no device to
-choose. `available_backends()` does not list these builds; `sbd.has_uhf("cpu")` and
-`sbd.print_info()` report them. `gpu-omp` has no UHF build.
+`cpu` and `gpu` are also built with upstream's `-D_UHF`, for unrestricted FCIDUMPs; a
+solve picks that build from the file, so it is not a separate device.
+`sbd.print_info()` lists it.
 
 **See [INSTALL.md](INSTALL.md)** for the rest: prerequisites per platform, installing
 from a git checkout with the submodule, every environment variable the build reads
@@ -147,8 +145,9 @@ result = diagonalize_fermionic_hamiltonian(
 )
 ```
 
-Run it under `mpirun`: every rank calls the solver, and SBD spreads each
-diagonalization over them. No `sbd.init()` is needed. It requires qiskit-addon-sqd
+Run it under `mpirun`, for example `mpirun -np 8 python my_sqd.py` with one rank per
+GPU: every rank calls the solver, and SBD spreads each diagonalization over them. No
+`sbd.init()` is needed. It requires qiskit-addon-sqd
 0.13.1 or later, for this distributed (SPMD) mode; SBD-selected carryover and subspace
 policies need 0.14.0 or later.
 

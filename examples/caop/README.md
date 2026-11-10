@@ -39,10 +39,15 @@ a 2-site Hubbard model.
 `run_caop_diag.py`:
 
 ```bash
-mpirun -np 4 python run_caop_diag.py --b_comm_size 4
+# 4 ranks with OpenMP threads each, the basis split over all of them
+OMP_NUM_THREADS=8 mpirun -np 4 python run_caop_diag.py --b_comm_size 4
+
+# On 4 NVIDIA GPUs, one rank each; --method 0 applies H on the fly, on the GPU
+OMP_NUM_THREADS=8 mpirun -np 4 python run_caop_diag.py --b_comm_size 4 \
+    --device gpu --method 0
 ```
 
-With only `--b_comm_size` given, this runs with the defaults:
+With only `--b_comm_size` given, the first runs with the defaults:
 
 - **Input:** upstream's example, an 8-site hard-core boson chain: `hamiltonian.txt` and
   `basis.txt` from `vendor/sbd-upstream/apps/caop_selected_basis_diagonalization/`,
@@ -114,12 +119,9 @@ basis yourself from every alpha and beta occupation: `gen_bits.py` fixes only th
 
 ## Variance and PT2
 
-The variance and PT2 of a CAOP state go through the same driver as TPB and GDB states,
-[`../analysis/variance.py`](../analysis/README.md), with `--hamfile` and `--basisfiles`
-in place of `--fcidump`. It runs on the CPU with MPI and OpenMP, always stochastically,
-and needs the basis files the state was solved over.
-[CAOP states](../analysis/README.md#caop-states) gives the command and options; the
-rest of that page covers how the estimate works and how to choose its settings.
+The same driver as for TPB and GDB states, [`../analysis/variance.py`](../analysis/README.md),
+with `--hamfile` and `--basisfiles` in place of `--fcidump`; it runs on the CPU with MPI
+and OpenMP. [CAOP states](../analysis/README.md#caop-states) gives the command.
 
 ## Green's function
 

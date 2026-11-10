@@ -33,61 +33,30 @@ rather than a validation target.
 
 ## run_gdb_diag.py — standalone GDB diagonalization
 
-Stays on the in-memory entry point (`sbd.gdb_diag`) throughout: determinant text is
-read in Python and handed to the binding as a list. SBD's own file-based entry
-point is deliberately not used.
-
 ```bash
-# The default case: Fe4S4, upstream's four det files, 59,536 determinants.
+# The default case: Fe4S4, upstream's four det files, 59,536 determinants
 python run_gdb_diag.py
 
-# The same run with the defaults written out -- this is the --detfiles syntax to
-# copy for your own data. Files are comma-separated and concatenated in Python
-# into one in-memory list, so their combined order must be sorted and disjoint.
+# The same, with the defaults written out: the syntax for your own data. The files
+# are concatenated in order, so together they must be sorted and disjoint
 GDB=../../vendor/sbd-upstream/apps/chemistry_gdb_selected_basis_diagonalization
 python run_gdb_diag.py --fcidump $GDB/fcidump_Fe4S4.txt \
     --detfiles $GDB/det0.txt,$GDB/det1.txt,$GDB/det2.txt,$GDB/det3.txt
 
-# Shard the basis: Fe4S4's four files, one per rank. For this data that is
-# already the balanced globally-sorted split, so no redistribution is needed.
+# Shard the basis over 4 ranks
 OMP_NUM_THREADS=8 mpirun -np 4 python run_gdb_diag.py --b_comm_size 4
 
-# Spend ranks on both named dimensions (t <= b, and t*b must divide the ranks)
-mpirun -np 8 python run_gdb_diag.py --b_comm_size 4 --t_comm_size 2
-
-# Choose how determinants are placed across b_comm
-mpirun -np 4 python run_gdb_diag.py --b_comm_size 4 \
-    --determinant_distribution grid-cyclic
-
-# A subspace TPB can also express: interleave an alpha list with itself into the
-# full |A|^2 product basis. This is the cross-check against tpb_diag -- same
-# subspace, two independent solvers, energies must agree.
-python run_gdb_diag.py \
-    --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
-    --from-alpha ../../vendor/sbd-upstream/data/h2o/h2o-1em3-alpha.txt \
-    --alpha-limit 30
-
-# Grow the subspace with SBD's own heatbath expansion (one round; the expanded
-# list comes back as carryover_det)
-python run_gdb_diag.py --carryover_type 2 --heatbath_cutoff 1e-4
-
-# The same, writing the expanded list as next-000000.txt, ... (one file per rank, as
-# upstream's --carryovername does) and printing the --detfiles list for the next run
-mpirun -np 4 python run_gdb_diag.py --b_comm_size 4 --carryover_type 2 \
-    --heatbath_cutoff 1e-4 --carryovername /tmp/next-
-
-# On GPUs, use --device gpu (Thrust). It requires helper == 1, so every rank has
-# to go to t*b -- which means --b_comm_size is not optional for multi-GPU GDB.
+# On 4 GPUs: Thrust needs --b_comm_size
 mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4
 
-# One rank, one GPU is the exception: b=1 already leaves helper == 1.
-python run_gdb_diag.py --device gpu
-
-# Start Davidson from this determinant (2*NORB bits, in the order below) instead
-# of the first one in sorted order. It must be in the subspace; here, the first
-# line of the default data
+# Start Davidson from this determinant instead of the first in sorted order; it
+# must be in the subspace. Here, the first line of the default data
 python run_gdb_diag.py --initial_det "$(head -1 $GDB/det0.txt)"
 ```
+
+[MPI decomposition](#mpi-decomposition) covers `--t_comm_size` and how determinants are
+placed across ranks (`--determinant_distribution`); [On GPUs](#on-gpus) covers the
+Thrust constraints.
 
 The determinant bit order is the one the upstream app documents: reading from the
 right, alpha orbital 0, beta orbital 0, alpha orbital 1, and so on — i.e. bit
@@ -101,34 +70,28 @@ no extra machinery — `carryover_type` 2 and 3 return the parents *together wit
 new candidates, so one round's result **is** the next round's subspace.
 
 ```bash
-# Fe4S4 from upstream's shipped subspace (the default data above), one cutoff
-python run_gdb_heatbath.py --cutoffs 1e-3
+# A cutoff ladder from the default data, stopping before the subspace passes 2M
+# determinants, with the (dimension, energy) series written to ladder.json
+python run_gdb_heatbath.py --cutoffs 1e-3,1e-4,1e-5 --max_dim 2000000 --log ladder.json
 
-# A ladder, stopping before the subspace passes 2M determinants. The last cutoff
-# dominates the cost, so --max_dim is the brake.
-python run_gdb_heatbath.py --cutoffs 1e-3,1e-4,1e-5 --max_dim 2000000
-
-# The no-input null: the Hartree-Fock determinant alone. Run it serially -- one
-# determinant cannot be sharded.
+# From the Hartree-Fock determinant alone; serial, since one determinant cannot
+# be sharded. Give it every core: the 1e-4 rung is the long part
 OMP_NUM_THREADS=48 python run_gdb_heatbath.py --subspace-from hf --cutoffs 1e-3,1e-4
 
-# Sharded. At --b_comm_size == ranks with t=1 the expansion comes back already
-# sharded for the next round, so nothing has to be gathered.
+# Sharded over 4 ranks, or 4 GPUs with --device gpu
 mpirun -np 4 python run_gdb_heatbath.py --b_comm_size 4 --cutoffs 1e-3
-mpirun -np 4 python run_gdb_heatbath.py --b_comm_size 4 --device gpu --cutoffs 1e-4
-
-# Record the (dimension, energy) series for a comparison table
-python run_gdb_heatbath.py --cutoffs 1e-3,1e-4 --log ladder.json
 ```
+
+[Seeds](#seeds) compares the starting subspaces. To drive the rounds yourself,
+`run_gdb_diag.py --carryover_type 2 --heatbath_cutoff 1e-4 --carryovername PREFIX` runs
+one expansion, writes the expanded list as one file per rank and prints the
+`--detfiles` list for the next run.
 
 ### Parameters
 
-Input flags match `run_gdb_diag.py`: `--fcidump`, `--detfiles` and `--alpha-limit` are
-spelled and defaulted identically, and the alpha list is accepted as either
-`--alpha-file` or `--from-alpha` by both drivers, so a command that feeds one its data
-feeds the other. The one flag that is *not* shared is `--seed`: in
-`run_gdb_diag.py` it is the integer RNG seed for a random initial vector, and this
-driver has none — `--subspace-from` selects the starting subspace and is unrelated.
+The input flags (`--fcidump`, `--detfiles`, `--alpha-file`/`--from-alpha`,
+`--alpha-limit`) are the same as `run_gdb_diag.py`'s, so a command that feeds one its
+data feeds the other.
 
 Seed — where the starting subspace comes from:
 
@@ -157,7 +120,7 @@ Solver, MPI and output — the same meanings as in `run_gdb_diag.py`:
 
 | Parameter | What it controls | Default |
 |---|---|---|
-| `--device` | `cpu`, or `gpu` (Thrust, NVIDIA only). `gpu-omp` is refused, and so is `auto` when it resolves to `gpu-omp`; see [Choosing a backend](#choosing-a-backend) | `cpu` |
+| `--device` | `cpu`, or `gpu` (Thrust, NVIDIA only). `gpu-omp` is not supported and raises an error, as does `auto` when it resolves to `gpu-omp`; see [Choosing a backend](#choosing-a-backend) | `cpu` |
 | `--method` | 0=Davidson, 1=Davidson storing the Hamiltonian. GDB has no Lanczos | `0` |
 | `--tolerance` / `--iteration` / `--block` | Davidson residual tolerance, iteration cap, and basis-vector count. Also accepted as `--eps` / `--max_it` / `--max_nb`, matching SBD's own names | `1e-6` / `30` / `10` |
 | `--bit_length` | Bits per packed word: even, at most 62. 64 is undefined behavior in SBD's redistribution. An odd value breaks SBD's alpha/beta conversion once a determinant spans two words, so the heatbath expansion crashes or returns a wrong energy | `62` |
@@ -189,19 +152,13 @@ a `1e-3,1e-4` ladder walks the subspace out like this:
 
 `1e-3` gains ~32 mHa for 7% more determinants and then saturates — that is the fixed
 point for that cutoff, not convergence of the method. One step to `1e-4` multiplies the
-subspace by roughly nine. Use `--max_dim` to stop before a rung outgrows your memory.
+subspace by roughly nine, so the last cutoff you name dominates the run. `--max_dim`
+stops it cleanly, with a `stop_reason`, before a rung outgrows your memory.
 
 The energy is variational, so it must fall monotonically; the driver flags a rise,
 which would mean the subspace shrank or a round failed to converge. For h2o and n2 the
 FCI limits in that basis (−76.24377680 and −109.04874199) are hard ceilings a correct
 run can never cross, which makes a sparse run self-checking even without a reference.
-
-### What the rungs cost
-
-Each rung's expansion is much larger than the one before, so the last cutoff you name
-dominates the run — a rung is reachable or not rather than merely slow, since past some
-point the expansion outgrows what can be diagonalized. `--max_dim` is what makes that a
-clean stop with a `stop_reason` instead of running out of memory mid-round.
 
 ### Seeds
 
@@ -215,14 +172,9 @@ every row of a seed comparison:
 | `from-alpha` | an alpha list interleaved with itself, i.e. a TPB-shaped product space |
 | `strings` | an arbitrary bitstring file, e.g. sampled configurations |
 
-Which seed is best is system-dependent, and worth measuring rather than assuming.
-The `hf` seed is the useful baseline: it starts from a single determinant and needs no
-input subspace at all, so it shows what the classical expansion achieves on its own.
-On Fe4S4 it climbs from −326.5243550095 (the HF energy) into the same range the
-file-seeded run reaches, at a comparable dimension — so on that system the expansion
-is doing most of the work and a pre-existing subspace adds little. Whether that holds
-for your system is exactly the kind of thing to check with `--log` and a dimension
-sweep.
+Which seed is best depends on the system. `hf` is the baseline: it needs no input
+subspace, so it shows what the expansion achieves on its own. Measure the others
+against it with `--log`.
 
 Compare seeds **at matched dimension**, not at matched cutoff. Different seeds reach
 different sizes from the same cutoff, so a cutoff-matched comparison mostly reports
@@ -273,33 +225,19 @@ On the bundled 275-bitstring h2o file that is a 275-determinant sparse subspace 
 −76.0723973374, which the ladder then grows — as opposed to the 75,625-determinant
 product space TPB would build from the same samples.
 
-**Both drivers check this for you.** Every determinant's alpha and beta electron
-counts are compared against the FCIDUMP's `NELEC`/`MS2` before anything is solved, and a
-mismatch is refused with the count of offending determinants and the first one's index.
-Skipping the interleave is worth guarding because it does not fail cleanly on its own:
-the concatenated strings diagonalize to a plausible-looking number (−66.8043 for the
-file above, against −76.0724 done right) and only abort later, inside the heatbath
-expansion, with `std::out_of_range`. The occupation density cannot catch it either —
-permuting bits preserves how many are set, so it still sums to 10.
-
-The check costs about 0.04 s per million determinants, which is not measurable against
-the read and pack that precede it; `--skip-weight-check` turns it off if you are
-deliberately mixing spin sectors.
+**Both drivers check this for you.** Before solving, they compare every
+determinant's alpha and beta electron counts with the FCIDUMP's `NELEC`/`MS2`, and stop
+with the number of determinants that do not match and the first one's index. Upstream
+would not: strings left in `[beta | alpha]` order diagonalize to a plausible-looking
+wrong energy and fail only later, inside the heat-bath expansion.
+`--skip-weight-check` turns the check off, for mixing spin sectors on purpose.
 
 ### The loop needs no amplitudes
 
-A natural question, since `gdb_diag` does not return the wavefunction: the ladder never
-needs it. The amplitudes are what drive the selection — weight truncation keeps
-determinants by `|c|`, and heatbath scoring is essentially `|c_i · H_ij|` — but SBD
-consumes them internally (`WeightTruncation` then `HeatbathExpansion`, which takes the
-coefficients as an input) and hands back only the expanded determinant list. That list
-is the next subspace, so the loop closes with nothing but determinants crossing the
-Python boundary.
-
-Where amplitudes *would* be needed is Python-side selection — deciding yourself which
-determinants to expand, as `../tpb/run_sqd_enlarge_subspace_sbd.py` does for TPB. For
-GDB that means reading them back from the per-shard `savename` files, since
-`gdb::diag` has no in-memory amplitude output.
+`gdb_diag` does not return the wavefunction, and the ladder does not need it: SBD uses
+the amplitudes internally to select candidates and returns the expanded determinant
+list, which is the next subspace. To select determinants yourself, read the amplitudes
+from the `savename` files.
 
 ### `--heatbath_truncation` is not the cutoff
 
@@ -314,6 +252,14 @@ It discards **parents** by weight *before* expansion starts, and its default of 
 | h2o, first 24 alpha interleaved into a 576-determinant product basis | **-76.0588897208** | matches `tpb_diag` on the same subspace to 1.4e-14 |
 | h2o, full 275² = 75,625-determinant interleave | **-76.2359466308** | against the **-76.23594663** published for that alpha list |
 | Fe4S4, 59,536 determinants, 36 orbitals | **-326.6982518821** | measured here; upstream publishes no reference for this case |
+
+The h2o rows interleave an alpha list with itself into its product basis, which TPB
+can express too, so GDB and `tpb_diag` must agree on it:
+
+```bash
+python run_gdb_diag.py --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
+    --from-alpha ../../vendor/sbd-upstream/data/h2o/h2o-1em3-alpha.txt --alpha-limit 24
+```
 
 The h2o product-basis energy is unchanged across `b_comm_size` 1, 2 and 4, across
 `t_comm_size` 1 and 2, and across all six placement schemes. Fe4S4 is likewise
@@ -346,33 +292,14 @@ mpirun -np 1 ./gdet --adetfile AlphaDets.txt \
     --bit_length 20 --norb 36
 ```
 
-The number of output files comes from `--detfiles`, **not** from the rank count — rank
-0 writes all of them itself, splitting with `get_mpi_range`, so `-np 1` is enough
-(upstream's own `run.sh` passes `-np 4`, which works but is not required). Set
-`--norb` to the orbital count and give one file per rank you intend to run on, e.g.
-eight files for eight GPUs.
+The number of files comes from `--detfiles`, not the rank count, so `-np 1` is enough;
+give one file per rank you will run on. The files meet the shard contract below.
+`gdet` only builds the product of an alpha list, so a sparse or heat-bath-expanded list
+goes to the drivers as one file, or in memory as `run_gdb_heatbath.py` passes it.
 
-The result satisfies what `gdb_diag` requires of input shards — each shard sorted,
-shards disjoint, and the concatenation globally sorted so shard *i* sits strictly
-below shard *i+1* — because `get_mpi_range` is the same `q = N/p`
-remainder-to-the-low-ranks split the drivers use.
-
-Two gaps worth knowing. `gdet` only takes an **alpha list** and can only produce the
-alpha × beta *product*, so there is no upstream way to shard an arbitrary sparse or
-heatbath-expanded determinant list into files; feed those to the drivers as a single
-file (or in memory, which is what `run_gdb_heatbath.py` does between rounds). And
-upstream's error messages point at a `scripts/sort-basis-shards.py` that is not
-shipped — there is no `scripts/` directory in the tree.
-
-### Note on Fe4S4's shipped basis
-
-Worth knowing when reading benchmark numbers: `AlphaDets.txt` next to `gen_dets`
-holds exactly **244** alpha determinants, 244² = **59,536**, and the four det files
-total 59,536 and are byte-identical to the GDB app's. So upstream's Fe4S4 "GDB"
-benchmark subspace is the **full Cartesian product** of 244 alpha determinants with
-itself — a TPB-shaped space written out as an explicit determinant list, not a sparse
-one. TPB fed `AlphaDets.txt` returns the same −326.6982518821 that GDB returns on the
-four files.
+Upstream's Fe4S4 GDB subspace is itself such a product: the four files are the
+244 × 244 = 59,536 product of `AlphaDets.txt`, and TPB on that file returns the same
+energy.
 
 ## MPI decomposition
 
@@ -383,15 +310,9 @@ rather than TPB's `adet`/`bdet`/`task`. Only two are settable; `helper` is deriv
 helper = ranks / (t_comm_size × b_comm_size)
 ```
 
-**`t_comm_size × b_comm_size` must divide the rank count exactly.** Upstream takes
-that quotient by integer division and never checks the remainder, which silently
-produces communicators of unequal size and a rank alone in its own basis ring, so
-`gdb_diag` refuses it.
-
-These examples set `OMP_NUM_THREADS` in the shell rather than through `mpirun`, because
-the flag for that is implementation-specific — `-x VAR=VAL` on Open MPI, `-env VAR VAL`
-on MPICH, and each rejects the other's spelling. Setting it in the shell works on both
-for a single-node run.
+**`t_comm_size × b_comm_size` must divide the rank count exactly.** Upstream does not
+check the remainder and builds unequal communicators, so `gdb_diag` raises an error
+first.
 
 ### What each dimension buys
 
@@ -401,15 +322,10 @@ for a single-node run.
 | **`t_comm_size`** | the ring's stations, each task rank starting at its own offset | no — costs `t` replicas of the ket | **`t ≤ b`** |
 | **`helper`** | rows within a block (`idet % helper`), reduced by an allreduce | no — every helper rank builds the full excitation lookup | none on CPU; **must be 1 on Thrust** |
 
-`t ≤ b` is structural, not a limitation of this wrapper: the matvec rotates the ket
-around `b_comm` as a ring (`gdb/mult.h:39-41`, `:196-202`), so there are exactly
-`b_comm_size` stations and one task is one station. Upstream does not check it and a
-starved task rank dereferences an empty lookup (`gdb/helper.h:761`), so `gdb_diag`
-rejects it rather than letting it segfault.
-
-Because only `b` shards memory, `--b_comm_size 1` on many ranks means every rank
-holds the whole basis *and* the whole excitation lookup no matter how many ranks
-there are. That is the wall to watch at scale.
+`t ≤ b` is structural: the matvec rotates the ket around `b_comm` as a ring, with one
+task per station. Upstream does not check it and segfaults, so `gdb_diag` raises an
+error first. Because only `b` shards memory, `--b_comm_size 1` on many ranks keeps the
+whole basis and excitation lookup on every rank.
 
 ### The shard contract
 
@@ -451,58 +367,24 @@ already count-balanced.
 
 ### Choosing a backend
 
-`--device` selects the compute backend per run:
-
-```bash
---device cpu       # host OpenMP (default)
---device gpu       # NVHPC Thrust, NVIDIA only -- the only GPU backend with GDB kernels
-```
-
-`gpu-omp` is **refused**: upstream SBD has no OpenMP-offload GDB kernels, so it would
-diagonalize on the host while a GPU was asked for. `sbd.gdb_diag` raises `ValueError`
-on that backend, and both drivers exit with an error before reading any input. `auto`
-prefers Thrust but falls back to `gpu-omp` where Thrust is not built, and is refused
-when it does. **For GDB, pick `cpu` or `gpu` explicitly.** On AMD GPUs that means
-`cpu`: there is no Thrust build for AMD.
-
-`sbd.available_backends()` reports what this install actually built — a static scan, so
-it is safe to call outside `mpirun` — and `sbd.loaded_backends()` reports what the
-current process has imported.
-
-One interaction to know about: **`'cpu'` and `'gpu-omp'` must not be used in the same
-process.** Both link the same OpenMP runtime and the CPU module is built without offload
-support, so whichever loads first initializes that runtime; if it is the CPU backend, the
-offload backend can no longer acquire a device and silently runs on the host — right
-answers, exit 0, idle GPU. `'cpu'` and `'gpu'` (Thrust) coexist fine, since Thrust does
-not route device work through OpenMP.
+`--device cpu` (the default) or `--device gpu` (Thrust, NVIDIA). Upstream has no
+OpenMP-offload GDB code, so `gpu-omp`, and `auto` when it would pick `gpu-omp`, raise
+an error naming these two before any input is read. On AMD GPUs, GDB runs on `cpu`.
 
 ### On GPUs
 
-GDB has **Thrust kernels only** (`--device gpu`, NVIDIA). There is no `omp target`
-code under `include/sbd/chemistry/gdb/` at all, so `--device gpu-omp` is not supported:
-it raises an error rather than running on the host. AMD has no Thrust build, so AMD GDB
-is CPU-only.
+Thrust needs every rank in `t_comm_size × b_comm_size` (no helper ranks), so **multi-GPU
+GDB needs `--b_comm_size`**, e.g. `-np 4 --b_comm_size 4`; one rank on one GPU needs
+none. A rank count that leaves helper ranks raises an error up front.
 
-The Thrust path additionally requires **`helper == 1`** (`gdb/mult_thrust.h:310-314`,
-checked on every kernel launch), so every rank must go to `t_comm_size × b_comm_size`.
-Since `helper = ranks / (t × b)`, leaving the basis in one block caps GPU GDB at a
-single rank — the helper dimension absorbs every rank you add. So **multi-GPU GDB
-requires `--b_comm_size`**, e.g. `-np 4 --b_comm_size 4`. Asking for more ranks than
-`t × b` is refused up front, naming the helper dimension, rather than throwing from
-inside a kernel launch.
-
-Only the Davidson runs on the device. `gdb/expansion.h` and `gdb/carryover.h` contain
-no `thrust::` code and are included outside any `SBD_THRUST` guard (`inc_all.h:23`), so
-heatbath expansion and carryover selection run on the host with OpenMP even in a GPU
-build. Keep `OMP_NUM_THREADS` generous on GPU runs — one thread per rank throttles that
-half of every iteration — and expect less than full GPU utilisation during a ladder for
-the same reason.
+Only the Davidson runs on the GPU: the heat-bath expansion and carryover selection run
+on the host with OpenMP. Keep `OMP_NUM_THREADS` generous on GPU runs, and expect the GPU
+to idle during those steps.
 
 ### `method`
 
-Only 0 and 1. TPB's 2 and 3 select Lanczos, which GDB does not implement; `gdb_diag`
-rejects them rather than letting `gdb::diag` fall through both of its branches and
-return an uninitialized energy.
+Only 0 and 1. GDB has no Lanczos (TPB's 2 and 3); `gdb_diag` raises an error for them,
+where upstream would return an uninitialized energy.
 
 ### Outputs, and what is replicated
 
@@ -516,14 +398,9 @@ return an uninitialized energy.
 
 ### Getting the amplitudes, if you want them
 
-Usually you do not. `gdb::diag` has no in-memory output for the wavefunction, and
-nothing in the normal flow needs it: the energy, density and RDMs are returned directly,
-and a heatbath ladder takes its next subspace from `carryover_det` (see [The loop needs
-no amplitudes](#the-loop-needs-no-amplitudes)). GDB is also not wired into
-qiskit-addon-sqd, whose `SCIState` would be the usual consumer — that path is TPB-only.
-
-When you do want them — your own analysis, or a selection step written in Python — pass
-`savename` and read the files back. SBD writes one per b_comm position,
+Usually you do not: the energy, density and RDMs are returned, and a heat-bath ladder
+takes its next subspace from `carryover_det`. For your own analysis, pass `savename`
+and read the files back, or use `sbd.analysis.load_state`. SBD writes one per b_comm position,
 `f"{savename}{rank_b:06d}.bin"`: a single `…000000.bin` at `b_comm_size 1`, otherwise
 `b_comm_size` files each holding only that shard, so no single file is the whole
 wavefunction. Each is two `size_t` headers (`n_dets`, `words_per_det`), then

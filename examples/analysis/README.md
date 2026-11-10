@@ -233,7 +233,8 @@ It runs upstream's
 [`caop-stat-evaluator`](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop-stat-evaluator/README.md),
 always stochastically. `--energy` may be left out with `--observable variance`. Give
 `--complex` if the run used it and `--shards` its `--b_comm_size`: the state file does not
-record either, and a mismatch is refused. The settings above apply unchanged.
+record either, and a mismatch raises an error. The stochastic settings below apply
+unchanged.
 
 ## Doing it in the same run
 
@@ -287,12 +288,10 @@ Things to weigh against a separate job:
 - **Layout.** The analysis runs on the diagonalization's ranks and threads. A layout
   chosen for the diagonalization — one rank per GPU with many threads, say — is often
   a poor one for the analysis, which prefers many ranks with few threads.
-- **Device.** The diagonalization can use any device (`cpu`, `gpu`, `gpu-omp`); the
-  analysis always runs on the CPU, so there is no device to choose, and after a GPU
-  diagonalization the GPUs sit idle while it runs. It uses the CPU backend, which every
-  install includes, except after a `gpu-omp` solve in the same process: there it calls
-  the same CPU code from the OpenMP-offload module, since loading the CPU backend next
-  to it would leave offload running on the host for the rest of the process.
+- **Device.** The diagonalization can use any device; the analysis always runs on the
+  CPU, so there is no device to choose, and the GPUs sit idle while it runs. After a
+  `gpu-omp` solve it picks the CPU code inside the offload module by itself, so the two
+  backends are never loaded together.
 - **Memory.** The diagonalization's data is still allocated when the analysis starts,
   so the two together must fit; a separate job starts clean.
 - **Failure.** If the analysis fails or runs out of time, the job may end before
@@ -339,9 +338,8 @@ The default, 0, is unbiased. The safe cutoff depends on the system and the state
 you use one, check it against a smaller one (or 0) first.
 
 **Ranks and threads.** Prefer many ranks with few threads: most of the work is spread
-across ranks but not threaded. The analysis is a separate launch so it can use a
-different layout from the diagonalization, and it always runs on CPU, even for a state
-diagonalized on GPUs.
+across ranks but not threaded. A separate launch can use a different layout from the
+diagonalization.
 
 **Seeds and batch IDs.** `--seed` makes a run reproducible for the same rank count; a
 different rank count draws different samples. Each batch's draws also depend on its ID,

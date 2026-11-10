@@ -33,40 +33,26 @@ prints which compiler and which libomp it chose.
   ROCm's `amdgpu-arch` (e.g. `gfx90a` on MI250X, `gfx942` on MI300X). However, on a GPU-less build host, you must
   set it. see [Environment Variables](#environment-variables).
 
-Either install path compiles the C++ extension on the target machine;
-no pre-built wheels are published. The resulting binary depends on the
-local MPI and BLAS, so both must be installed first.
-
 ## Install from PyPI
 
-**A self-contained conda environment** is the quickest way to get those
-dependencies in place for the CPU backend:
+The build links the local MPI and BLAS, so install them first. A conda environment is
+the quickest way, for the CPU backend:
+
 ```bash
 conda create -y -n sbd -c conda-forge \
     python=3.13.12 pybind11 numpy setuptools wheel openblas pyscf pip mpi4py
 #   ...plus llvm-openmp on macOS
-```
-
-```bash
 conda activate sbd
-```
-
-Now install the sbd-eigensolver-python package
-```
 pip install sbd-eigensolver
 ```
 
-The published source distribution (sdist) bundles the sbd header files, so this
-needs no git checkout and no submodule step. 
+The source distribution bundles upstream's headers, so this needs no git checkout.
 
 ## Install from git checkout
 
-Here the headers come from upstream
-[r-ccs-cms/sbd](https://github.com/r-ccs-cms/sbd) via a git submodule at
-`vendor/sbd-upstream/`, **pinned at a specific upstream commit**. Run `git submodule status` to see the pinned SHA.
-
-When installing from a git checkout, it is important to make sure the
-sbd submodule is cloned, too:
+Here upstream [r-ccs-cms/sbd](https://github.com/r-ccs-cms/sbd) is a git submodule at
+`vendor/sbd-upstream/`, pinned at one commit (`git submodule status` shows it), so
+clone it too:
 
 ```bash
 git clone --recurse-submodules https://github.com/Qiskit/sbd-eigensolver-python.git
@@ -74,17 +60,14 @@ git clone --recurse-submodules https://github.com/Qiskit/sbd-eigensolver-python.
 git submodule update --init --recursive
 ```
 
-If you need a newer upstream revision (for a recently-landed GPU fix
-etc.), advance the local submodule and rebuild:
+Then install:
 
 ```bash
-git submodule update --remote vendor/sbd-upstream
-```
-
-After the upstream sbd code is cloned, run:
-```
 pip install -e . --no-build-isolation --force-reinstall --no-deps
 ```
+
+For a newer upstream revision, `git submodule update --remote vendor/sbd-upstream` and
+reinstall.
 
 ## Environment Variables
 
@@ -210,20 +193,15 @@ python -c "import sbd; print(sbd.available_backends())"
 For what each of these runs (TPB, GDB, CAOP, UHF FCIDUMPs, and where the variance
 analysis runs), see the [README's backend table](README.md#backends).
 
-`available_backends()` lists the backends only. The `cpu` and `gpu` backends are each
-also built with upstream's `-D_UHF`, as a second module
-(`sbd._core_cpu_uhf`, `sbd._core_gpu_thrust_uhf`) that a solve uses automatically for an
-unrestricted (UHF) FCIDUMP. To see which backends have one:
+The `cpu` and `gpu` backends are also built with upstream's `-D_UHF`
+(`sbd._core_cpu_uhf`, `sbd._core_gpu_thrust_uhf`), which a solve uses by itself for an
+unrestricted FCIDUMP; `gpu-omp` has none. `sbd.print_info()` lists them:
 
 ```bash
-python -c "import sbd; print({d: sbd.has_uhf(d) for d in sbd.available_backends()})"
-# CPU only:                       {'cpu': True}
-# NVIDIA, default build:          {'cpu': True, 'gpu': True, 'gpu-omp': False}
+python -c "import sbd; sbd.print_info()"
+# Compiled backends: cpu, gpu, gpu-omp
+# UHF builds: cpu, gpu
 ```
-
-`gpu-omp` never has one: its offload kernels read only the restricted integral layout.
-`sbd.print_info()` prints the same, as a `UHF builds:` line next to the compiled
-backends.
 
 On a GPU build, confirm which vendor and architecture the offload backend
 targets — one `'gpu-omp'` device serves both vendors, so the name alone does not
