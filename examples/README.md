@@ -33,7 +33,7 @@ mpirun -np 4 python variance.py --fcidump ../../vendor/sbd-upstream/data/h2o/fci
 - **Solve:** [`tpb/`](tpb/README.md) for an alpha × beta product subspace, including
   the SQD loops; [`gdb/`](gdb/README.md) for an explicit determinant list, including
   heat-bath rounds that grow the subspace.
-- **Check:** [`analysis/`](analysis/README.md#workflow).
+- **Check:** [`analysis/`](analysis/README.md#check-a-molecular-state-tpb-or-gdb).
 
 ## Lattice and spin models: CAOP
 
@@ -70,7 +70,7 @@ Each step here uses 4 ranks, one basis state each for this 4-state model; a larg
 basis spreads the same way over more ranks.
 
 - **Input files and solve:** [`caop/`](caop/README.md#preparing-the-input-files).
-- **Check:** [`analysis/`](analysis/README.md#caop-states).
+- **Check:** [`analysis/`](analysis/README.md#check-a-caop-state).
 - **Green's function:** [`caop/`](caop/README.md#greens-function).
 
 If the variance is large, the subspace is too small for the state to be trusted, for

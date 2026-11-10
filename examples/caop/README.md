@@ -121,7 +121,8 @@ basis yourself from every alpha and beta occupation: `gen_bits.py` fixes only th
 
 The same driver as for TPB and GDB states, [`../analysis/variance.py`](../analysis/README.md),
 with `--hamfile` and `--basisfiles` in place of `--fcidump`; it runs on the CPU with MPI
-and OpenMP. [CAOP states](../analysis/README.md#caop-states) gives the command.
+and OpenMP. [Check a CAOP state](../analysis/README.md#check-a-caop-state) gives the
+command.
 
 ## Green's function
 

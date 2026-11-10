@@ -8,49 +8,37 @@ say how far that state is from the exact one:
 - **Energy variance** $\sigma^2 = \sum_{a \notin V} |\langle a|H|\psi\rangle|^2$, summed
   over the determinants $a$ outside the subspace $V$. For an eigenvector of the
   subspace problem it is the full energy variance $\langle H^2\rangle - E^2$. It is
-  zero for an exact eigenstate, so it measures convergence; plotting $E$ against
-  $\sigma^2$ over a series of subspaces and extrapolating to $\sigma^2 = 0$ estimates
-  the exact energy.
+  zero for an exact eigenstate, so it measures convergence.
 - **Epstein–Nesbet PT2** $E_{\mathrm{PT2}} = \sum_{a \notin V} |\langle a|H|\psi\rangle|^2
   / (E - H_{aa})$, the second-order correction from those same determinants.
   $E + E_{\mathrm{PT2}}$ is usually much closer to the exact energy than $E$ alone.
 
-`variance.py` computes both for a state saved by either SBD driver, TPB or GDB, from a
-restricted or an unrestricted (UHF) FCIDUMP, on any number of MPI ranks: the analysis
-need not use the same ranks, or the same device, as the run that produced the state. Its default method is upstream SBD's own statistical
-evaluator, the library behind upstream's
-[`gdb-stat-evaluator`](https://github.com/r-ccs-cms/sbd/tree/main/apps/gdb-stat-evaluator)
-app, called from Python; a TPB state is passed to it as full determinants.
+## The tools
 
-## How it is computed, and why in batches
+| Tool | Does |
+|---|---|
+| `variance.py` | the variance and PT2 of one saved state |
+| `extrapolate.py` | fits a series of states' energies against PT2, to estimate the exact energy |
 
-Both sums run over every determinant outside the subspace that $H$ connects to the
-state — far too many to list for a real system. So the default method **samples**:
+`variance.py` takes a state saved with `--savename` by any of the solvers, and calls
+upstream SBD's matching evaluator from Python:
 
-1. Draw parent determinants $i$ from the state at random, with probability
-   proportional to $|c_i|$.
-2. Expand each draw into the single and double excitations it connects to outside the
-   subspace, and accumulate each one's contribution, reweighted for the sampling.
-3. Combine the contributions per outside determinant into estimates of $\sigma^2$ and
-   $E_{\mathrm{PT2}}$.
+| State saved by | Give | Upstream evaluator | Methods |
+|---|---|---|---|
+| TPB or GDB, from a restricted or an unrestricted (UHF) FCIDUMP | `--fcidump` | [`gdb-stat-evaluator`](https://github.com/r-ccs-cms/sbd/tree/main/apps/gdb-stat-evaluator); a TPB state is passed to it as full determinants | stochastic; or exact, with PySCF, for a small restricted system |
+| CAOP (`../caop/run_caop_diag.py`) | `--hamfile`, `--basisfiles` | [`caop-stat-evaluator`](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop-stat-evaluator/README.md) | stochastic |
 
-This estimate is unbiased — on average it equals the exact value — but any single one
-is random, and on its own says nothing about how far off it is. **Batches are how the
-method measures that.** It repeats steps 1–3 independently `--batches` times, with
-fresh random draws each time, and reports the mean over batches with its standard
-error (the spread between batches divided by $\sqrt{\text{batches}}$). The error bar
-shrinks as $1/\sqrt{\text{batches} \times \text{samples}}$, so more batches or more
-samples per batch both sharpen it; at least 5–10 batches are needed for the error bar
-itself to be trustworthy.
+It always runs on the CPU, with MPI and OpenMP, on any number of ranks: it need not use
+the ranks, or the device, of the run that saved the state. The same calculations are
+`sbd.analysis.variance()` and `sbd.analysis.caop_variance()` in Python.
 
-For small systems an **exact** method is also available (PySCF, single process, no
-sampling, so no batches and no error bar).
-
-## Workflow
+## Check a molecular state (TPB or GDB)
 
 **1. Diagonalize with `--savename`, and give `--bit_length` explicitly.** The analysis
 must use the same value, and the files do not record it. Note the energy the run
-prints (`Ground state energy:`): the analysis takes it as `--energy`.
+prints (`Ground state energy:`): the analysis takes it as `--energy`. Converge it
+tightly (`--tolerance`): the variance counts only what $H|\psi\rangle$ puts outside the
+subspace, not a residual an unconverged solve leaves inside it.
 
 ```bash
 # TPB (examples/tpb): h2o, 275 x 275 = 75,625 determinants, on a 2 x 2 rank grid
@@ -66,20 +54,7 @@ mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 \
 #   writes /path/to/run2/fe4s4-000000.bin ... fe4s4-000003.bin  (one per shard)
 ```
 
-**Keep one run's files per prefix.** A run writes one file per shard and overwrites
-only those, so a later run with the same prefix but fewer shards leaves the earlier
-run's extra files behind. Use a fresh prefix (or directory) per run. `variance.py`
-checks that the files it finds are one run's — one solver's kind, consecutive shard
-numbers, sizes matching their headers, no determinant in two files, and a total
-norm of 1 (SBD saves normalized states) — and stops with an error otherwise, rather
-than combining them. It always lists the files it used.
-
-Converge the diagonalization tightly (`--tolerance`). The variance counts only what
-$H|\psi\rangle$ puts outside the subspace; any residual left inside it by an
-unconverged solve is not included.
-
-**2. Analyse the state with `variance.py`,** giving the same FCIDUMP and `--bit_length`,
-and the energy from step 1 as `--energy`:
+**2. Analyse it,** with the same FCIDUMP and `--bit_length`, and step 1's energy:
 
 ```bash
 cd ../analysis
@@ -95,7 +70,7 @@ OMP_NUM_THREADS=2 mpirun -np 32 python variance.py \
     --state /path/to/run2/fe4s4- --bit_length 62 --energy <the Fe4S4 run's energy>
 ```
 
-Output for the h2o run above:
+Output for the h2o run:
 
 ```
 State:   /path/to/run1/h2o-  (TPB, 4 file(s), checked as one run)
@@ -116,30 +91,68 @@ E_var + PT2:   -76.2435721431  +- 2.19e-05  Ha
 
 The published FCI energy for this system is −76.24377680
 (`vendor/sbd-upstream/data/h2o/README.md`): $E_{\mathrm{var}}$ is 7.8 mHa above it, and
-$E_{\mathrm{var}} + E_{\mathrm{PT2}}$ 0.2 mHa.
+$E_{\mathrm{var}} + E_{\mathrm{PT2}}$ 0.2 mHa. `--json FILE` also writes the result,
+the settings and the per-batch values.
 
-`--json FILE` also writes the result, the settings and the per-batch values. The same
-calculation is available in Python as `sbd.analysis.variance()`; see the API docs.
+**Keep one run's files per prefix.** A run overwrites only its own shards, so a later
+run with the same prefix but fewer shards leaves the earlier run's extra files behind.
+`variance.py` checks that the files are one run's — one solver, consecutive shard
+numbers, sizes matching their headers, no determinant in two files, a total norm of 1 —
+and stops with an error otherwise. It lists the files it used.
 
-## Example: one Fe4S4 subspace through TPB and GDB
+## Check a CAOP state
+
+A state saved by `../caop/run_caop_diag.py --savename` takes `--hamfile` and the basis
+files it was solved over in place of `--fcidump`, and the run's settings, which the
+files do not record. After the first two steps of
+[`../caop/README.md#greens-function`](../caop/README.md#greens-function), which write
+`hub2.txt`, `hub2_basis.txt` and the state `gs-`:
+
+```bash
+mpirun -np 4 python variance.py --hamfile ../caop/hub2.txt \
+    --basisfiles ../caop/hub2_basis.txt --sites 4 --state ../caop/gs- --shards 4 \
+    --bit_length 20 --energy <E0 from the run>
+```
+
+`--shards` is the solve's `--b_comm_size`; give `--complex` if it used `--complex`. A
+mismatch with the saved state raises an error. `--energy` may be left out with
+`--observable variance`.
+
+## Estimate the exact energy from a series
+
+As a subspace grows, PT2 goes to zero and $E_{\mathrm{var}}$ to the exact energy, and
+over the last few states $E_{\mathrm{var}}$ is close to linear in PT2. `extrapolate.py`
+fits that line and reports its intercept at PT2 = 0, from the `--json` files of
+`variance.py` runs on a series of states, such as the rounds of a heat-bath ladder
+(`../gdb/run_gdb_heatbath.py`):
+
+```bash
+for r in round1 round2 round3; do
+    OMP_NUM_THREADS=2 mpirun -np 32 python variance.py --fcidump F --state $r- \
+        --bit_length 62 --energy <E of $r> --json $r-var.json
+done
+python extrapolate.py round1-var.json round2-var.json round3-var.json
+```
+
+It reports the intercept's statistical error and how far it moves when the least linear
+state is left out, which with few states is the better guide. It needs at least two
+states, and three or more for either number to mean much. `--x variance` extrapolates
+against the variance instead, a check on the PT2 fit. `--point E_VAR,PT2[,ERR]` adds a
+state from elsewhere, for the PT2 fit only.
+
+## Compare two ways of growing a subspace
 
 Upstream SBD ships one Fe4S4 subspace in both solvers' formats: `AlphaDets.txt` (244
 strings, used as alpha and beta, so $244^2 = 59{,}536$ determinants) for TPB, and
-`det0.txt`–`det3.txt` (the same 59,536 determinants) for GDB. This example solves it
-with each, has each solver build a larger subspace from its state, solves that, and
-reads both resulting states' variance and PT2.
+`det0.txt`–`det3.txt` (the same 59,536 determinants) for GDB. This example has each
+solver grow it to about the same size, then compares the two states' variance and PT2.
 
-The two solvers expand a state differently:
-
-- **TPB** keeps a product of alpha and beta strings, so it grows the subspace a string
-  at a time. `--carryover_type 3` keeps the strings of the dominant determinants and
-  adds their single excitations.
-- **GDB** keeps a list of determinants, so it grows it a determinant at a time.
+- **TPB** keeps a product of alpha and beta strings, so it grows a string at a time:
+  `--carryover_type 3` keeps the strings of the dominant determinants and adds their
+  single excitations.
+- **GDB** keeps a list of determinants, so it grows a determinant at a time:
   `--carryover_type 2` adds the determinants the heat-bath criterion connects to the
-  state, the state's own determinants included.
-
-The settings below give two next subspaces of about the same size, so their energies and
-variances can be read side by side.
+  state.
 
 ```bash
 SBD=/path/to/sbd-eigensolver-python
@@ -190,59 +203,26 @@ Measured on an 8× H100 server (Ha):
 | GDB, type 2, cutoff 2e-4 | 206,105 | −326.7583052 | 6.90e-02 ± 7.4e-04 | −4.89e-02 ± 5.8e-04 | −326.8073 ± 0.0006 |
 
 Both solvers give the same energy for the shared start, as they must for the same
-determinants. The start's row was computed with the default 10 × 20,000 samples, the
-other two with 5 × 5,000, so their error bars are wider.
+determinants; its row used the default 10 × 20,000 samples, the others 5 × 5,000.
 
-Things to note when reading the table:
+- **The variance has not converged** in any row: it is of order $10^{-2}$ Ha²
+  throughout, so all three states are far from the exact one, and PT2, which assumes a
+  small correction, is only a rough guide.
+- **Each expansion is one setting of a tunable step.** The threshold and cutoff were
+  chosen to match the two dimensions. TPB's size moves in larger jumps, since a string
+  adds a whole row and column of the product.
+- **To carry on,** repeat either step: the strings or list a run writes are the next
+  run's input, and the series goes to `extrapolate.py`.
 
-- **The variance has not converged** in any row. It is of order $10^{-2}$ Ha² throughout,
-  so all three states are far from the exact one, and PT2, which assumes a small
-  correction, is only a rough guide here.
-- **Each expansion is one setting of a tunable step.** The threshold and cutoff above
-  were chosen to match the two dimensions; other values give other sizes, and TPB's
-  size moves in larger jumps, since adding a string adds a whole row and column of the
-  product.
-- To carry on from either state, repeat its step: the strings or list a run writes are
-  the next run's input. `extrapolate.py` then fits a series of such states, from the
-  `--json` files, to estimate the energy at zero PT2.
-- **GDB's placement can be tuned.** The GDB runs above use the default
-  `--determinant_distribution equal-bra-a` (also upstream's default), which gives each
-  rank an equal number of distinct alpha strings. A heat-bath expansion puts many
-  determinants on a few alpha strings, so the expanded subspace can land unevenly across
-  the ranks. The grid schemes, `grid-cyclic` and `grid-cyclic-balanced`, spread it more
-  evenly here. A scheme changes only how the work is spread, not the energy. Which one is
-  fastest depends on the subspace and the rank count; see
-  [Placement across `b_comm`](../gdb/README.md#placement-across-b_comm) for what each
-  one balances.
+The expanded GDB subspace can land unevenly across ranks; see
+[Placement across `b_comm`](../gdb/README.md#placement-across-b_comm).
 
-## CAOP states
+## In the same job, from Python
 
-A state saved by `../caop/run_caop_diag.py --savename` goes through the same driver
-with `--hamfile` instead of `--fcidump`, plus the basis files the state was solved over
-and the run's settings, which the files do not record. After the first two steps of
-[`../caop/README.md#greens-function`](../caop/README.md#greens-function), which write
-`hub2.txt`, `hub2_basis.txt` and the state `gs-`:
-
-```bash
-mpirun -np 4 python variance.py --hamfile ../caop/hub2.txt \
-    --basisfiles ../caop/hub2_basis.txt --sites 4 --state ../caop/gs- --shards 4 \
-    --bit_length 20 --energy <E0 from the run>
-```
-
-It runs upstream's
-[`caop-stat-evaluator`](https://github.com/r-ccs-cms/sbd/blob/main/apps/caop-stat-evaluator/README.md),
-always stochastically. `--energy` may be left out with `--observable variance`. Give
-`--complex` if the run used it and `--shards` its `--b_comm_size`: the state file does not
-record either, and a mismatch raises an error. The stochastic settings below apply
-unchanged.
-
-## Doing it in the same run
-
-The analysis can also run at the end of a diagonalization script, in the same MPI job,
-instead of as a separate launch. Save the state with `savename`, then call
-`sbd.analysis.variance()` on the same prefix. For example, at the end of
-`run_sbd_diag.py` or `run_gdb_diag.py`, after the diagonalization has returned
-`results`:
+The analysis can also run at the end of a diagonalization script, in the same MPI job.
+Save the state with `savename`, then call `sbd.analysis.variance()` on the same prefix;
+every rank must make the call. For example, at the end of `run_sbd_diag.py` or
+`run_gdb_diag.py`, after the diagonalization returned `results`:
 
 ```python
 from sbd import analysis
@@ -255,13 +235,8 @@ if args.savename:
         print(f"E_var + PT2: {v.energy_pt2:.10f} +- {v.pt2_error:.2e} Ha")
 ```
 
-Every rank must make the call, since it is collective. `results['energy']` is the
-energy of the state just saved, the PT2 reference; it is required, and the analysis
-does not recompute it.
-
-For a CAOP state, call `sbd.analysis.caop_variance()` with the solve's Hamiltonian file,
-basis files and settings. For example, after `sbd.caop_diag_from_files` on every rank of
-the job, with the basis split over all of them:
+For a CAOP state, `sbd.analysis.caop_variance()` takes the solve's Hamiltonian file,
+basis files and settings:
 
 ```python
 from mpi4py import MPI
@@ -274,98 +249,89 @@ ground = sbd.caop_diag_from_files("hub2.txt", ["hub2_basis.txt"], config,
                                   savename="gs-")
 v = analysis.caop_variance("gs-", "hub2.txt", ["hub2_basis.txt"], ground["energy"],
                            sites=config.system_size, bit_length=config.bit_length,
-                           shards=nranks)
+                           shards=nranks)          # complex=True if the solve used it
 ```
 
-`shards` is the number of files the solve wrote, its `b_comm_size`; `complex=True` if
-it used `complex=True`.
+The state still goes through the saved files, since SBD's solvers do not return their
+eigenvector. Against a separate job:
 
-The state still goes through the files `savename` writes: SBD's solvers do not hand
-their eigenvector back, so the analysis reads it from disk even in the same job.
-
-Things to weigh against a separate job:
-
-- **Layout.** The analysis runs on the diagonalization's ranks and threads. A layout
-  chosen for the diagonalization — one rank per GPU with many threads, say — is often
-  a poor one for the analysis, which prefers many ranks with few threads.
-- **Device.** The diagonalization can use any device; the analysis always runs on the
-  CPU, so there is no device to choose, and the GPUs sit idle while it runs. After a
-  `gpu-omp` solve it picks the CPU code inside the offload module by itself, so the two
+- **Layout.** The analysis runs on the diagonalization's ranks and threads, and prefers
+  many ranks with few threads; a layout chosen for GPUs is often a poor one for it.
+- **Device.** It always runs on the CPU, so the GPUs sit idle while it runs. After a
+  `gpu-omp` solve it uses the CPU code inside the offload module by itself, so the two
   backends are never loaded together.
-- **Memory.** The diagonalization's data is still allocated when the analysis starts,
-  so the two together must fit; a separate job starts clean.
-- **Failure.** If the analysis fails or runs out of time, the job may end before
-  anything else after it; the saved state is already on disk, so it can be analysed
-  again separately.
+- **Memory.** The diagonalization's data is still allocated, so the two together must
+  fit.
+- **Failure.** If the analysis fails or runs out of time, the saved state is on disk
+  and can be analysed again separately.
 
-A separate job keeps the two independent, and lets you rerun the analysis with
-different settings without repeating the diagonalization.
+## How the stochastic estimate works
 
-## Choosing the method
+Both sums run over every determinant outside the subspace that $H$ connects to the
+state — far too many to list for a real system — so the default method **samples**:
+
+1. Draw parent determinants $i$ from the state at random, with probability
+   proportional to $|c_i|$.
+2. Expand each draw into the single and double excitations it connects to outside the
+   subspace, and accumulate each one's contribution, reweighted for the sampling.
+3. Combine the contributions per outside determinant into estimates of $\sigma^2$ and
+   $E_{\mathrm{PT2}}$.
+
+The estimate is unbiased, but any one is random. **Batches measure how far off it is:**
+steps 1–3 repeat independently `--batches` times, and the result is the mean over
+batches with its standard error. The error bar shrinks as
+$1/\sqrt{\text{batches} \times \text{samples}}$; at least 5–10 batches are needed for
+the error bar itself to be trustworthy.
+
+## Settings
+
+**`--method`** (TPB and GDB states):
 
 | `--method` | How | Use for |
 |---|---|---|
-| `stochastic` | The sampled, batched estimate above (SBD's statistical evaluator). MPI over all ranks, CPU only. | Anything; the only option for large systems |
-| `exact` | PySCF builds $H\lvert\psi\rangle$ over the full CI space, in one process. | Small systems, and checking the stochastic numbers |
-| `auto` (default) | `exact` when the full CI space has at most `--exact_limit` (5,000,000) determinants, else `stochastic` | |
+| `stochastic` | The sampled, batched estimate above, over all ranks | Anything; the only option for large systems and UHF FCIDUMPs |
+| `exact` | PySCF builds $H\lvert\psi\rangle$ over the full CI space, in one process; restricted FCIDUMPs only | Small systems, and checking the stochastic numbers |
+| `auto` (default) | `exact` when the full CI space has at most `--exact_limit` (5,000,000) determinants and the FCIDUMP is restricted, else `stochastic` | |
 
 h2o/cc-pVDZ above (24 orbitals, 5 + 5 electrons) has a full CI space of
-$\binom{24}{5}^2 \approx 1.8 \times 10^9$, so `auto` chose `stochastic`. The exact
-method stores vectors over the whole space; a few million determinants is a sensible
-ceiling.
+$\binom{24}{5}^2 \approx 1.8 \times 10^9$, so `auto` chose `stochastic`.
 
-## Stochastic settings
+**`--batches` and `--samples`** (defaults 10 and 20,000) set the error bar:
 
-**`--batches` and `--samples`** (defaults 10 and 20,000) set the error bar, as above.
-The defaults are a reasonable start; adjust from there:
+- **Accuracy** depends on their product: halving the error bar takes four times as
+  many draws in total.
+- **Memory** depends on `--samples` only: a batch holds every contribution its draws
+  produce, which grows quickly with the number of orbitals and electrons, and is spread
+  over the ranks. Batches run one after another, so more batches cost time, not memory.
+- **If memory is short,** use fewer samples and more batches, or more ranks.
 
-- **Accuracy** depends on the product: the error bar shrinks as
-  $1/\sqrt{\text{batches} \times \text{samples}}$, so halving it takes four times as many
-  draws in total.
-- **Memory** depends on `--samples` only. A batch holds every contribution its draws
-  produce until it is summed, so its memory grows with `--samples` and with how many
-  excitations each draw has — which grows quickly with the number of orbitals and
-  electrons — and is spread over the ranks. Batches run one after another, freeing
-  that memory in between, so more batches cost time, not memory.
-- **If memory is short, use fewer samples and more batches**, keeping their product
-  for the same accuracy; or use more ranks, which share a batch's memory.
-- **To reach a target accuracy,** start from the defaults and add batches until the
-  error bar is small enough for your purpose.
-
-**`--cutoff` (default 0).** Heat-bath screening drops small parent–child contributions.
-It is faster, but biases *both* results low, and the bias grows as the state improves.
-The default, 0, is unbiased. The safe cutoff depends on the system and the state, so if
-you use one, check it against a smaller one (or 0) first.
+**`--cutoff`** (default 0, unbiased). Heat-bath screening drops small parent–child
+contributions. It is faster, but biases *both* results low, more so as the state
+improves; check any cutoff against a smaller one first.
 
 **Ranks and threads.** Prefer many ranks with few threads: most of the work is spread
-across ranks but not threaded. A separate launch can use a different layout from the
-diagonalization.
+across ranks but not threaded.
 
-**Seeds and batch IDs.** `--seed` makes a run reproducible for the same rank count; a
-different rank count draws different samples. Each batch's draws also depend on its ID,
-counted from `--first_batch` (default 0). To add batches to an earlier run, rerun with
-the same seed and `--first_batch` set past the batches it already has: the new batches
-are independent of the old ones, and the `--json` files of both can be pooled.
+**`--seed` and `--first_batch`.** A seed makes a run reproducible for the same rank
+count. Each batch's draws also depend on its ID, counted from `--first_batch` (default
+0). To add batches to an earlier run, rerun with the same seed and `--first_batch` past
+the batches it has; the `--json` files of both can be pooled.
 
-**`--observable`** (`both`, `variance` or `pt2`) estimates only what you ask for; the
-other is left out of the output.
+**`--observable`** (`both`, `variance` or `pt2`) estimates only what you ask for.
 
 **`--minimum_abs_denominator`** (default 0) stops with an error if any PT2 denominator
-$|E - H_{aa}|$ is at or below the value given, rather than returning a PT2 dominated
-by one near-degenerate determinant. With 0, any finite nonzero denominator is accepted.
+$|E - H_{aa}|$ is at or below it, rather than returning a PT2 dominated by one
+near-degenerate determinant.
 
 ## Notes
 
-- **Memory:** the state is spread evenly over the ranks, whatever the number of files;
-  nothing is gathered onto one rank.
-- **Multi-node:** every rank must be able to read the state's files, as for the
-  FCIDUMP: put them on a shared filesystem.
-- **Energy:** `--energy` is required, as upstream's `gdb-stat-evaluator` requires
-  `--reference-energy`. It is the PT2 reference, so it must be this state's energy:
-  the one the diagonalization that saved it reported. It is not recomputed. To
-  recompute it from the files, for instance to check that a state and an FCIDUMP
-  belong together, use `sbd.analysis.state_energy()` on the `cpu` or `gpu` backend.
-- **Unrestricted (UHF) FCIDUMPs** use the stochastic method; the exact one is
-  restricted only, and `auto` picks stochastic for them.
-- **When to run it:** the analysis can cost much more than the diagonalization that
-  produced the state, so run it on the state you want to assess, not every iteration.
+- **Energy:** `--energy` is required, as upstream's evaluators require
+  `--reference-energy`. It is the PT2 reference, so it must be this state's energy, the
+  one the run that saved it reported; it is not recomputed. To recompute it from the
+  files, for instance to check that a state and an FCIDUMP belong together, use
+  `sbd.analysis.state_energy()` on the `cpu` or `gpu` backend.
+- **Memory:** the state is spread evenly over the ranks, whatever the number of files.
+- **Multi-node:** every rank must be able to read the state's files: put them on a
+  shared filesystem.
+- **When to run it:** the analysis can cost much more than the diagonalization, so run
+  it on the state you want to assess, not every iteration.
