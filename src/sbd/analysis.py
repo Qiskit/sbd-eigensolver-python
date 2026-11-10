@@ -396,69 +396,36 @@ def _fcidump_header(fcidump):
     return norb, (n_alpha, nelec - n_alpha)
 
 
-def _uhf_evaluator_backend(device):
-    """The unrestricted build with the evaluator: the CPU one, built without SBD_THRUST."""
+def _uhf_evaluator_backend():
+    """The CPU backend's unrestricted build, which carries the evaluator for UHF states."""
     from . import get_backend, has_uhf
 
-    if device not in (None, "cpu"):
-        raise ValueError(f"an unrestricted FCIDUMP is evaluated by the CPU unrestricted "
-                         f"build; it runs on CPU in any case, so omit device rather than "
-                         f"{device!r}")
     if not has_uhf("cpu"):
         raise RuntimeError("an unrestricted FCIDUMP needs the CPU backend's unrestricted "
-                           "build; rebuild without SBD_BUILD_UHF=0")
+                           "build, which every install makes; reinstall the package")
     return get_backend("cpu", uhf=True)
 
+def _evaluator_backend():
+    """The module whose evaluator to call; the evaluator runs on the CPU in any.
 
-def _restricted(names):
-    """The restricted devices among ``loaded_backends()``.
-
-    It also lists the unrestricted builds ('cpu-uhf', 'gpu-uhf'), which are separate
-    modules but not device names, so ``get_backend`` refuses them; a restricted state is
-    evaluated by a restricted module in any case.
-    """
-    from . import _UHF_BASE
-
-    return [name for name in names if name not in _UHF_BASE]
-
-
-def _evaluator_backend(device):
-    """A backend module that has the evaluator; it runs on CPU whichever is chosen.
-
-    The Thrust build omits it (upstream includes it only without SBD_THRUST). Prefer a
-    module already loaded, so a session that diagonalized on 'gpu-omp' does not load
-    _core_cpu next to it, which would demote OpenMP offload to the host for the rest
-    of the process. Otherwise the CPU module, which coexists with Thrust.
+    The CPU module, except in a process that has already loaded the OpenMP-offload
+    one: loading _core_cpu next to it would leave offload running on the host for the
+    rest of the process, so there the evaluator compiled into the offload module is
+    used. It is the same CPU code (bindings.cpp builds it into every module but the
+    Thrust one, as upstream includes it only without SBD_THRUST), with no offload.
     """
     from . import available_backends, get_backend, loaded_backends
 
-    if device is not None:
-        backend = get_backend(device)
-        if not getattr(backend, "__sbd_has_evaluator__", False):
-            raise ValueError(
-                f"the {device!r} backend has no evaluator (upstream builds it without "
-                f"SBD_THRUST only). It runs on CPU in any case: omit device, or use "
-                f"'cpu' or 'gpu-omp'.")
-        return backend
-    loaded = loaded_backends()
-    for name in _restricted(loaded):
-        backend = get_backend(name)
-        if getattr(backend, "__sbd_has_evaluator__", False):
-            return backend
-    # Nothing loaded has it. Only ever add the CPU module: it coexists with Thrust,
-    # whereas loading the OpenMP-offload module next to another backend is not a
-    # combination this package supports.
+    if "gpu-omp" in loaded_backends():
+        return get_backend("gpu-omp")
     if "cpu" in available_backends():
         return get_backend("cpu")
-    if not loaded and "gpu-omp" in available_backends():
+    if "gpu-omp" in available_backends():
         return get_backend("gpu-omp")
     raise RuntimeError(
-        "method='stochastic' needs SBD's evaluator, which the CPU and OpenMP-offload "
-        "backends have and the Thrust backend does not"
-        + (f"; this process has loaded {loaded} and no CPU backend is built" if loaded else "")
-        + ". Build the CPU backend too (SBD_BUILD_BACKEND including cpu, the default), "
-          "run the analysis as a separate job, or use method='exact' for a small system.")
-
+        "method='stochastic' needs SBD's evaluator, which is in the CPU backend; every "
+        "install builds it, so reinstall the package, or use method='exact' for a small "
+        "system.")
 
 def state_energy(source, fcidump, *, norb=None, bit_length=None, comm=None, device=None):
     """The energy of a saved state, :math:`\\langle\\psi|H|\\psi\\rangle`, computed by SBD.
@@ -665,9 +632,12 @@ def _full_space_size(norb, nelec):
 
 def variance(source, fcidump, energy, *, method="auto", norb=None, bit_length=None,
              samples=20000, batches=10, seed=1729, cutoff=0.0, comm=None,
-             exact_limit=5_000_000, device=None, observable="both", first_batch=0,
+             exact_limit=5_000_000, observable="both", first_batch=0,
              minimum_abs_denominator=0.0):
     """Energy variance and Epstein-Nesbet PT2 of a saved SBD wavefunction.
+
+    It always runs on the CPU, with MPI and OpenMP, whichever device the state was
+    solved on, so there is no device to choose.
 
     Args:
         source: A ``savename`` prefix or GDB checkpoint (see :func:`load_state`),
@@ -700,9 +670,6 @@ def variance(source, fcidump, energy, *, method="auto", norb=None, bit_length=No
         comm: MPI communicator; default ``MPI.COMM_WORLD``. The stochastic method runs
             on all its ranks; the exact one on rank 0, broadcasting the result.
         exact_limit: Largest full CI space ``"auto"`` treats exactly.
-        device: Backend for the stochastic method's C++ call. Default: one already
-            loaded that has the evaluator, else the CPU one. The evaluator always runs
-            on CPU, and the Thrust build does not include it.
         observable: ``"both"``, ``"variance"`` or ``"pt2"``: what the stochastic
             method estimates; the one not asked for is NaN in the result. The exact
             method always gives both.
@@ -766,7 +733,7 @@ def variance(source, fcidump, energy, *, method="auto", norb=None, bit_length=No
 
     # An unrestricted FCIDUMP needs the -D_UHF build, whose integrals are spin-resolved,
     # as upstream's gdb-stat-evaluator-uhf; the CPU one has the evaluator.
-    backend = _uhf_evaluator_backend(device) if uhf else _evaluator_backend(device)
+    backend = _uhf_evaluator_backend() if uhf else _evaluator_backend()
     out = backend.external_observables(
         comm, fcidump, state.det, state.coef, state.bit_length, float(energy),
         sample_count=samples, batch_count=batches, seed=seed, heatbath_cutoff=cutoff,
@@ -783,42 +750,31 @@ def variance(source, fcidump, energy, *, method="auto", norb=None, bit_length=No
                           settings=settings)
 
 
-def _caop_evaluator_backend(device):
-    """A backend module with the CAOP evaluator: the CPU or Thrust one, never offload.
+def _caop_evaluator_backend():
+    """The CPU module, whose CAOP evaluator runs on the CPU.
 
-    Upstream builds the CAOP evaluator wherever CAOP is built, which here is the CPU and
-    Thrust modules; it runs on CPU in either. Prefer a module already loaded, as
-    :func:`variance` does, else the CPU one.
+    Upstream builds the CAOP evaluator into the CPU and Thrust modules, the same CPU
+    code in both. The OpenMP-offload module has no CAOP code, and CAOP never runs in a
+    process that has loaded it, so the CPU module is always safe to load here.
     """
-    from . import available_backends, get_backend, loaded_backends
+    from . import available_backends, get_backend
 
-    if device is not None:
-        backend = get_backend(device)
-        if not getattr(backend, "__sbd_has_caop__", False):
-            raise ValueError(f"the {device!r} backend has no CAOP evaluator: upstream SBD's "
-                             "CAOP code has CPU and Thrust paths only. Use 'cpu', or 'gpu' "
-                             "(NVHPC Thrust, NVIDIA GPUs only; there is no CAOP GPU path "
-                             "for AMD GPUs)")
-        return backend
-    for name in _restricted(loaded_backends()):
-        backend = get_backend(name)
-        if getattr(backend, "__sbd_has_caop__", False):
-            return backend
     if "cpu" in available_backends():
         return get_backend("cpu")
-    raise RuntimeError("no backend with the CAOP evaluator is available; build the CPU one")
-
+    raise RuntimeError("the CAOP evaluator is in the CPU backend, which every install "
+                       "builds; reinstall the package")
 
 def caop_variance(loadname, hamfile, basisfiles, energy, *, sites, bit_length, shards=1,
                   samples=20000, batches=10, seed=1729, cutoff=0.0, observable="both",
                   first_batch=0, minimum_abs_denominator=0.0, h_comm_size=1,
-                  complex=False, comm=None, device=None):
+                  complex=False, comm=None):
     """Energy variance and Epstein-Nesbet PT2 of a saved CAOP state, stochastically.
 
     Upstream SBD's ``caop-stat-evaluator``, called from Python: the CAOP counterpart of
     :func:`variance`, for a ground state saved by :func:`sbd.caop_diag_from_files`.
     It reads the state as upstream's tool does, the basis files and then the saved
-    amplitudes onto them.
+    amplitudes onto them. It always runs on the CPU, with MPI and OpenMP, so there is no
+    device to choose.
 
     Args:
         loadname: The ``savename`` prefix the state was saved under.
@@ -839,8 +795,6 @@ def caop_variance(loadname, hamfile, basisfiles, energy, *, sites, bit_length, s
             (``caop_diag_from_files(..., complex=True)``). Upstream's saved state does
             not record its type, so this must match the solve; a mismatch is refused.
         comm: MPI communicator; default ``MPI.COMM_WORLD``.
-        device: ``"cpu"`` or ``"gpu"``; the evaluator runs on CPU in either. Default:
-            a module already loaded that has it, else the CPU one.
 
     Returns:
         A :class:`VarianceResult`, identical on every rank.
@@ -857,7 +811,7 @@ def caop_variance(loadname, hamfile, basisfiles, energy, *, sites, bit_length, s
             f"returned. Only observable='variance' does without it")
     if isinstance(basisfiles, (str, os.PathLike)):
         basisfiles = [basisfiles]
-    backend = _caop_evaluator_backend(device)
+    backend = _caop_evaluator_backend()
     out = backend.caop_external_observables(
         comm, str(hamfile), [str(f) for f in basisfiles], str(loadname), int(shards),
         int(sites), int(bit_length), float("nan") if energy is None else float(energy),

@@ -159,8 +159,8 @@ def test_caop_variance_with_the_state_over_every_rank(caop_device):
         assert ground["energy"] == pytest.approx(e, abs=1e-9)
         runs = [analysis.caop_variance(path / "gs-", ham, [basis], ground["energy"],
                                        sites=MODES, bit_length=BITS, shards=size,
-                                       samples=4000, batches=10, seed=100 + s,
-                                       device=caop_device) for s in range(8)]
+                                       samples=4000, batches=10, seed=100 + s)
+                for s in range(8)]
         assert runs[0].dimension == KEEP
         for name, exact in (("variance", variance), ("pt2", pt2)):
             values = np.array([getattr(r, name) for r in runs])

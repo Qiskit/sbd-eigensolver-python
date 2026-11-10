@@ -169,13 +169,13 @@ def test_saved_coefficients_reevaluate_without_rerunning(caop_device, tmp_path):
     _, exact, out = _run(caop_device, tmp_path)
     for channel in ("addition", "removal"):
         path = tmp_path / f"coefficients-{channel}"
-        same = green_function_from_coefficients(path, OMEGAS, ETA, device=caop_device)
+        same = green_function_from_coefficients(path, OMEGAS, ETA)
         got = np.array(out[channel]["real"]) + 1j * np.array(out[channel]["imag"])
         np.testing.assert_allclose(same["green_function"], got, atol=1e-12)
         assert same["addition"] is (channel == "addition")
     # A new broadening, against the Lehmann sum at that broadening.
     wider = green_function_from_coefficients(tmp_path / "coefficients-addition", OMEGAS,
-                                             0.3, device=caop_device)
+                                             0.3)
     np.testing.assert_allclose(wider["green_function"],
                                _exact_green(_hubbard(tmp_path)[0], eta=0.3)[1]["addition"][0],
                                atol=1e-7)

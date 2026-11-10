@@ -121,19 +121,20 @@ def green_function(loadname, hamfile, orbitals, channel, *, sites, bit_length,
         [str(f) for f in operator_files], float(rank_atol), float(rank_rtol))
 
 
-def green_function_from_coefficients(path, omegas, eta, *, device=None):
+def green_function_from_coefficients(path, omegas, eta):
     """The Green's function from coefficients saved by :func:`green_function`.
 
     Upstream's ``--read-coefficients``: the block-Lanczos coefficients fix the
     response, so a new frequency grid or broadening needs neither the Hamiltonian nor
-    the state. Rank-local. It cannot extend the Lanczos run itself.
+    the state. Rank-local, and always on the CPU, so there is no device to choose. It
+    cannot extend the Lanczos run itself.
 
     Returns:
         dict with ``green_function`` (``(len(omegas), n, n)``), ``basis_size``,
         ``steps``, ``stop_reason``, ``addition`` (the channel it was saved for), and
         the row labels: ``orbitals``, and ``operator_files`` for general operators.
     """
-    backend = sbd._caop_backend(device)
+    backend = sbd._caop_backend("cpu")
     return backend.caop_spectrum_from_coefficients(
         str(path), [float(w) for w in np.atleast_1d(omegas)], float(eta))
 

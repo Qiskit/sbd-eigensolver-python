@@ -66,8 +66,7 @@ def device(backend):
     """The device under test, which must have an unrestricted build to run these."""
     device = sbd.get_device()
     if not sbd.has_uhf(device):
-        pytest.skip(f"no unrestricted build of {device!r} (gpu-omp has none; "
-                    f"or the package was built with SBD_BUILD_UHF=0)")
+        pytest.skip(f"no unrestricted build of {device!r} (gpu-omp has none)")
     return device
 
 

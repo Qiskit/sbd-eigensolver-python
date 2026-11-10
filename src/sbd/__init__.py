@@ -199,16 +199,22 @@ def _load_backend(device):
             f"This FCIDUMP is unrestricted (spin-orbital indices), and the "
             f"'{_UHF_BASE[device]}' backend has no UHF build.\n"
             f"  expected: {module_name}.*.so in the sbd package directory\n"
-            f"  fix     : rebuild without SBD_BUILD_UHF=0 (UHF builds are on by default)"
+            f"  fix     : reinstall; the UHF builds are made with every install"
         )
     if path is None:
+        if device == 'cpu':
+            fix = ("every install builds the CPU backend, so this install is incomplete: "
+                   "reinstall the package")
+        else:
+            skip_name = 'gpu' if device == 'gpu' else 'gpu_omp_offload'
+            fix = (f"reinstall where the GPU toolchain is found ("
+                   f"{'NVHPC_HOME / nvc++' if device == 'gpu' else 'NVHPC_HOME / nvc++ or ROCM_HOME / amdclang++'}"
+                   f"), without {skip_name} in SBD_SKIP_BACKENDS")
         raise RuntimeError(
             f"sbd backend '{device}' is not built.\n"
             f"  expected: {module_name}.*.so in the sbd package directory\n"
-            f"  usable  : {_scan_backends() or 'none'}\n"
-            f"  fix     : rebuild, e.g. "
-            f"SBD_BUILD_BACKEND={'cpu' if device == 'cpu' else 'gpu_omp_offload' if device == 'gpu-omp' else 'gpu'}"
-            f" pip install -e . --no-build-isolation"
+            f"  usable  : {available_backends() or 'none'}\n"
+            f"  fix     : {fix}"
         )
 
     if device == 'gpu-omp':
@@ -331,7 +337,7 @@ def _resolve_device(device):
     return _device_aliases.get(device, device)
 
 
-def init(device='cpu', comm_backend='mpi'):
+def init(device=None, comm_backend='mpi'):
     """
     Initialize SBD with MPI and set the default compute device.
 
@@ -344,8 +350,8 @@ def init(device='cpu', comm_backend='mpi'):
     ``get_backend()``.
 
     Args:
-        device: Default compute device — 'cpu', 'gpu', 'gpu-omp', or 'auto'.
-            'gpu' is the NVIDIA-only Thrust backend; 'gpu-omp' is OpenMP
+        device: Default compute device — 'cpu' (the default), 'gpu', 'gpu-omp', or
+            'auto'. 'gpu' is the NVIDIA-only Thrust backend; 'gpu-omp' is OpenMP
             target offload and serves NVIDIA and AMD alike.
             Aliases for 'gpu': 'gpu-thrust', 'gpu-nvidia', 'cuda'.
             Aliases for 'gpu-omp': 'gpu-omp-offload', 'gpu-nvhpc-omp',
@@ -356,16 +362,18 @@ def init(device='cpu', comm_backend='mpi'):
         RuntimeError: If MPI is not available or no backends are compiled.
     """
     global _default_device, _comm_backend, _comm_module, _global_comm, _initialized
+    device_given = device is not None
+    if device is None:
+        device = 'cpu'
 
     if _initialized:
         return  # already initialized — silently no-op
 
     if not _scan_backends():
         raise RuntimeError(
-            "No SBD backends available. Build with:\n"
-            "  pip install -e . --no-build-isolation                 (auto: CPU + Thrust GPU)\n"
-            "  SBD_BUILD_BACKEND=gpu pip install -e . --no-build-isolation              (Thrust GPU only)\n"
-            "  SBD_BUILD_BACKEND=gpu_omp_offload pip install -e . --no-build-isolation  (OMP-offload only)"
+            "No SBD backends available: the extension modules were not built. Install "
+            "with\n  pip install -e . --no-build-isolation\nwhich builds the CPU backend and "
+            "every GPU backend the toolchain supports (see INSTALL.md)."
         )
 
     # MPI setup
@@ -384,12 +392,15 @@ def init(device='cpu', comm_backend='mpi'):
 
     # Resolve default device
     resolved = _resolve_device(device)
-    usable = _scan_backends()
-    if resolved not in usable:
+    if resolved not in _scan_backends():
         why = _backend_errors.get(resolved, 'unknown reason')
+        # Name the devices a user can pass: _scan_backends() also lists the
+        # unrestricted builds ('cpu-uhf', ...), which are not devices.
+        asked = (f"Device '{resolved}' was requested, but its backend" if device_given
+                 else f"No device was given, and the default '{resolved}' backend")
         raise RuntimeError(
-            f"Device '{resolved}' requested but its backend is not usable "
-            f"({why}). Usable: {usable or 'none'}"
+            f"{asked} is not usable ({why}). "
+            f"Usable devices: {available_backends() or 'none'}"
         )
     _default_device = resolved
     _initialized = True
@@ -481,8 +492,8 @@ def _uhf_device(device):
 def has_uhf(device=None):
     """Whether ``device`` has an unrestricted (``-D_UHF``) build installed.
 
-    Only 'cpu' and 'gpu' (Thrust) can have one; it is built alongside them
-    unless ``SBD_BUILD_UHF=0`` was set at install time.
+    Only 'cpu' and 'gpu' (Thrust) can have one, and every install builds it
+    alongside them; OpenMP offload has none.
 
     Args:
         device: A device or alias, or None for the default (see

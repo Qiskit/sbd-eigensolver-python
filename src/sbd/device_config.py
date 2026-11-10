@@ -143,8 +143,8 @@ class DeviceConfig:
             max_memory_gb: int | None = None) -> 'DeviceConfig':
         """Force NVHPC Thrust GPU execution. **NVIDIA only.**
 
-        Requires SBD compiled with THRUST (the ``_core_gpu_thrust`` extension,
-        i.e. ``SBD_BUILD_BACKEND=gpu``, or the default ``auto``).
+        Requires the ``_core_gpu_thrust`` extension, which every install builds when
+        NVHPC (``nvc++``) is found, unless ``gpu`` is in ``SBD_SKIP_BACKENDS``.
 
         There is no AMD equivalent: upstream SBD wires the Thrust path to
         ``nvc++ -cuda``, so no rocThrust configuration exists to build. On an AMD
@@ -158,10 +158,9 @@ class DeviceConfig:
     def gpu_omp(cls, max_memory_gb: int | None = None) -> 'DeviceConfig':
         """Force OpenMP target-offload GPU execution. Works on NVIDIA **and AMD**.
 
-        Requires SBD compiled with the OMP-offload backend (the
-        ``_core_gpu_omp_offload`` extension), which the default
-        ``SBD_BUILD_BACKEND=auto`` builds whenever a GPU compiler is present;
-        narrow it to ``gpu_omp_offload`` to build only this one.
+        Requires the ``_core_gpu_omp_offload`` extension, which every install builds
+        when a GPU compiler (``nvc++`` or ``amdclang++``) is found, unless
+        ``gpu_omp_offload`` is in ``SBD_SKIP_BACKENDS``.
 
         One module and one device string serve both vendors -- the same source
         and macros, compiled by ``nvc++ -mp=gpu`` with NVHPC's ``libnvomp``, or by
