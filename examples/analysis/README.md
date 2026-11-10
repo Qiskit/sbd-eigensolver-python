@@ -140,82 +140,10 @@ states, and three or more for either number to mean much. `--x variance` extrapo
 against the variance instead, a check on the PT2 fit. `--point E_VAR,PT2[,ERR]` adds a
 state from elsewhere, for the PT2 fit only.
 
-## Compare two ways of growing a subspace
-
-Upstream SBD ships one Fe4S4 subspace in both solvers' formats: `AlphaDets.txt` (244
-strings, used as alpha and beta, so $244^2 = 59{,}536$ determinants) for TPB, and
-`det0.txt`–`det3.txt` (the same 59,536 determinants) for GDB. This example has each
-solver grow it to about the same size, then compares the two states' variance and PT2.
-
-- **TPB** keeps a product of alpha and beta strings, so it grows a string at a time:
-  `--carryover_type 3` keeps the strings of the dominant determinants and adds their
-  single excitations.
-- **GDB** keeps a list of determinants, so it grows a determinant at a time:
-  `--carryover_type 2` adds the determinants the heat-bath criterion connects to the
-  state.
-
-```bash
-SBD=/path/to/sbd-eigensolver-python
-APPS=$SBD/vendor/sbd-upstream/apps
-FCIDUMP=$APPS/chemistry_gdb_selected_basis_diagonalization/fcidump_Fe4S4.txt
-mkdir -p /path/to/fe4s4/tpb /path/to/fe4s4/gdb
-
-# TPB: solve, and write the expanded strings
-cd $SBD/examples/tpb
-mpirun -np 4 python run_sbd_diag.py --fcidump $FCIDUMP \
-    --adetfile $APPS/chemistry_tpb_selected_basis_diagonalization/AlphaDets.txt \
-    --adet_comm_size 2 --bdet_comm_size 2 --bit_length 20 --tolerance 1e-8 \
-    --carryover_type 3 --carryover_threshold 1e-2 \
-    --carryover_adetfile /path/to/fe4s4/tpb/a.txt --carryover_bdetfile /path/to/fe4s4/tpb/b.txt
-# solve the expanded subspace, saving the state
-mpirun -np 4 python run_sbd_diag.py --fcidump $FCIDUMP --symmetrize_spin 0 \
-    --adetfile /path/to/fe4s4/tpb/a.txt --bdetfile /path/to/fe4s4/tpb/b.txt \
-    --adet_comm_size 2 --bdet_comm_size 2 --bit_length 20 --tolerance 1e-8 \
-    --savename /path/to/fe4s4/tpb/next-
-
-# GDB: solve (det0-3.txt are the driver's defaults), and write the expanded list
-cd $SBD/examples/gdb
-mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 --fcidump $FCIDUMP \
-    --bit_length 62 --tolerance 1e-8 --carryover_type 2 --heatbath_cutoff 2e-4 \
-    --carryovername /path/to/fe4s4/gdb/list-
-# solve the expanded subspace from the files the first run lists, saving the state
-mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4 --fcidump $FCIDUMP \
-    --bit_length 62 --tolerance 1e-8 --savename /path/to/fe4s4/gdb/next- \
-    --detfiles /path/to/fe4s4/gdb/list-000000.txt,/path/to/fe4s4/gdb/list-000001.txt,/path/to/fe4s4/gdb/list-000002.txt,/path/to/fe4s4/gdb/list-000003.txt
-
-# Variance and PT2 of both states. --energy is the "Ground state energy:" each
-# expanded solve above printed; the values here are the table's below
-cd $SBD/examples/analysis
-OMP_NUM_THREADS=2 mpirun -np 32 python variance.py --fcidump $FCIDUMP \
-    --state /path/to/fe4s4/tpb/next- --bit_length 20 --energy -326.7074213157 \
-    --samples 5000 --batches 5 --json tpb.json
-OMP_NUM_THREADS=2 mpirun -np 32 python variance.py --fcidump $FCIDUMP \
-    --state /path/to/fe4s4/gdb/next- --bit_length 62 --energy -326.7583051690 \
-    --samples 5000 --batches 5 --json gdb.json
-```
-
-Measured on an 8× H100 server (Ha):
-
-| | dimension | $E_{\mathrm{var}}$ | variance (Ha²) | PT2 | $E_{\mathrm{var}} + E_{\mathrm{PT2}}$ |
-|---|---|---|---|---|---|
-| Shared start, either solver | 59,536 | −326.6982519 | 7.46e-02 ± 1.0e-03 | −6.61e-02 ± 1.2e-03 | −326.7644 ± 0.0012 |
-| TPB, type 3, threshold 1e-2 | 204,304 (452 × 452) | −326.7074213 | 6.75e-02 ± 1.8e-03 | −5.78e-02 ± 2.1e-03 | −326.7652 ± 0.0021 |
-| GDB, type 2, cutoff 2e-4 | 206,105 | −326.7583052 | 6.90e-02 ± 7.4e-04 | −4.89e-02 ± 5.8e-04 | −326.8073 ± 0.0006 |
-
-Both solvers give the same energy for the shared start, as they must for the same
-determinants; its row used the default 10 × 20,000 samples, the others 5 × 5,000.
-
-- **The variance has not converged** in any row: it is of order $10^{-2}$ Ha²
-  throughout, so all three states are far from the exact one, and PT2, which assumes a
-  small correction, is only a rough guide.
-- **Each expansion is one setting of a tunable step.** The threshold and cutoff were
-  chosen to match the two dimensions. TPB's size moves in larger jumps, since a string
-  adds a whole row and column of the product.
-- **To carry on,** repeat either step: the strings or list a run writes are the next
-  run's input, and the series goes to `extrapolate.py`.
-
-The expanded GDB subspace can land unevenly across ranks; see
-[Placement across `b_comm`](../gdb/README.md#placement-across-b_comm).
+To compare subspaces built different ways, such as two seeds or two expansion
+schemes, compare them at about the same dimension and by their variance and
+$E_{\mathrm{var}} + E_{\mathrm{PT2}}$, not by $E_{\mathrm{var}}$ alone: a larger subspace
+lowers $E_{\mathrm{var}}$ whatever its quality.
 
 ## In the same job, from Python
 
