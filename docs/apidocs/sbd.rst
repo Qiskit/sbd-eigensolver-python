@@ -4,14 +4,18 @@ SBD bindings (:mod:`sbd`)
 
 .. module:: sbd
 
-Direct access to SBD's two diagonalization methods. **TPB** (tensor-product basis)
-diagonalizes in the product of an alpha and a beta determinant list. **GDB**
-(general determinant basis) diagonalizes in an explicit list of determinants, and is
-experimental. For use inside a ``qiskit-addon-sqd`` loop, see :mod:`sbd.sbd_solver`
-instead.
+Direct access to SBD's solvers. For molecules, **TPB** (tensor-product basis)
+diagonalizes in the product of an alpha and a beta determinant list, and **GDB**
+(general determinant basis) in an explicit list of determinants, which is
+experimental. For lattice and spin models, **CAOP** diagonalizes a Hamiltonian
+written as creation and annihilation operators. For use inside a ``qiskit-addon-sqd``
+loop, see :mod:`sbd.sbd_solver` instead.
 
-The backend initializes itself on first use, so :func:`init` is needed only to choose
-a device or communicator explicitly.
+The solvers, configurations and loaders take ``device=``, the backend to run on; None
+uses the default. The
+backend initializes itself on first use, so :func:`init` is needed only to choose a
+default device or communicator explicitly. A feature the chosen device does not support
+raises an error naming the devices that do.
 
 Diagonalization
 ===============
