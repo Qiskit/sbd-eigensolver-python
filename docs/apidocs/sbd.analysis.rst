@@ -5,7 +5,8 @@ Saved-state analysis (:mod:`sbd.analysis`)
 .. module:: sbd.analysis
 
 Energy variance and Epstein-Nesbet PT2 of a wavefunction saved by a diagonalization
-run with ``savename``, from either :func:`sbd.tpb_diag` or :func:`sbd.gdb_diag`. The
+run with ``savename``, from either :func:`sbd.tpb_diag` or :func:`sbd.gdb_diag`, and
+with :func:`caop_variance`, of a CAOP ground state from :func:`sbd.caop_diag_from_files`. The
 command-line front end, with a walkthrough and guidance on settings, is
 ``examples/analysis/variance.py``.
 
@@ -27,6 +28,7 @@ device diagonalized the state; the number of ranks need not match the run that s
 it. The exact method needs PySCF and runs in one process.
 
 .. autofunction:: variance
+.. autofunction:: caop_variance
 .. autofunction:: load_state
 .. autofunction:: state_energy
 .. autofunction:: load_gdb_shards

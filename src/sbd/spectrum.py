@@ -100,7 +100,7 @@ def green_function(loadname, hamfile, orbitals, channel, *, sites, bit_length,
             rest, as everything on ``"cpu"``, runs on the CPU with MPI and OpenMP.
 
     Returns:
-        dict with ``green_function``, a complex array of shape
+        A dict with ``green_function``, a complex array of shape
         ``(len(omegas), n, n)`` for ``n`` orbitals or operators; ``basis_size``, the
         excitation basis's size; ``steps``; and ``stop_reason``.
     """
@@ -129,8 +129,14 @@ def green_function_from_coefficients(path, omegas, eta):
     the state. Rank-local, and always on the CPU, so there is no device to choose. It
     cannot extend the Lanczos run itself.
 
+    Args:
+        path: The coefficient file, the ``save_coefficients`` path given to
+            :func:`green_function`.
+        omegas: Frequencies to evaluate the Green's function at.
+        eta: Broadening.
+
     Returns:
-        dict with ``green_function`` (``(len(omegas), n, n)``), ``basis_size``,
+        A dict with ``green_function`` (``(len(omegas), n, n)``), ``basis_size``,
         ``steps``, ``stop_reason``, ``addition`` (the channel it was saved for), and
         the row labels: ``orbitals``, and ``operator_files`` for general operators.
     """
@@ -144,6 +150,13 @@ def spectral_function(green):
 
     Its diagonal is ``-Im(G_aa) / pi``: peaks at the addition or removal energies,
     with the spectral weights as their areas.
+
+    Args:
+        green: A Green's function array of shape ``(..., n, n)``, such as the
+            ``green_function`` entry :func:`green_function` returns.
+
+    Returns:
+        A complex array of the same shape, Hermitian in its last two axes.
     """
     g = np.asarray(green)
     return -(g - np.conj(np.swapaxes(g, -1, -2))) / (2j * np.pi)
