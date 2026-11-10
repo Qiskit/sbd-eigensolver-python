@@ -130,10 +130,12 @@ diagonalization over them. No `sbd.init()` is needed. It requires qiskit-addon-s
 0.13.1 or later, for this distributed (SPMD) mode; SBD-selected carryover and subspace
 policies need 0.14.0 or later.
 
-- **TPB only.** The addon describes a subspace as a product: `ci_strings` is a
-  `(strings_a, strings_b)` pair and the amplitudes an `|a| × |b|` matrix, so a GDB
-  determinant list cannot be passed through it. For GDB, call `gdb_diag` directly or
-  use the drivers in [`examples/gdb/`](examples/gdb/README.md).
+- **TPB only.** qiskit-addon-sqd's fermion solver assumes the subspace is a product of
+  alpha and beta string lists, a restriction inherited from PySCF, so a GDB determinant
+  list cannot be passed through it
+  ([Qiskit/qiskit-sqd#389](https://github.com/Qiskit/qiskit-sqd/issues/389)). For
+  GDB, call `gdb_diag` directly or use the drivers in
+  [`examples/gdb/`](examples/gdb/README.md).
 - **Who chooses the next subspace.** By default qiskit-addon-sqd chooses the carryover
   from the amplitudes SBD returns. With `"carryover_type"` in `sbd_config`, SBD chooses
   it instead; see [SBD-selected carryover](examples/tpb/README.md#sbd-selected-carryover)
