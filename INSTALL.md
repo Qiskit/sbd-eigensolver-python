@@ -67,7 +67,8 @@ pip install -e . --no-build-isolation --force-reinstall --no-deps
 ```
 
 For a newer upstream revision, `git submodule update --remote vendor/sbd-upstream` and
-reinstall.
+reinstall. Only the pinned commit is tested; with any other, the functionality may be
+broken.
 
 ## Environment Variables
 
@@ -110,7 +111,7 @@ export SBD_GPU_ARCH=gfx90a              # AMD
 #       gpu_omp_offload   the OpenMP target-offload GPU backend
 #     The build ends with a summary of what was built, and why any GPU backend
 #     was not. (SBD_BUILD_BACKEND, which chose one set instead, still works for
-#     now but is deprecated; SBD_BUILD_UHF is no longer used.)
+#     now but is deprecated.)
 export SBD_SKIP_BACKENDS=gpu_omp_offload
 
 #     MPI: defaults to whatever mpi4py is linked against. Set this only

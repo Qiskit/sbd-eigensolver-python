@@ -9,6 +9,11 @@ and **PT2** say how far the saved state is from the exact one. Run them before u
 state for anything else. The same driver, [`analysis/variance.py`](analysis/README.md),
 handles every solver.
 
+> [!NOTE]
+> These examples are tested against the upstream SBD commit pinned in
+> `vendor/sbd-upstream`. With any other upstream revision, for example after
+> `git submodule update --remote`, the functionality is not tested and may be broken.
+
 ## Molecules: TPB or GDB
 
 From an FCIDUMP and a determinant subspace.
