@@ -15,9 +15,9 @@ say how far that state is from the exact one:
   / (E - H_{aa})$, the second-order correction from those same determinants.
   $E + E_{\mathrm{PT2}}$ is usually much closer to the exact energy than $E$ alone.
 
-`variance.py` computes both for a state saved by either SBD driver, TPB or GDB, on any
-number of MPI ranks: the analysis need not use the same ranks, or the same device, as
-the run that produced the state. Its default method is upstream SBD's own statistical
+`variance.py` computes both for a state saved by either SBD driver, TPB or GDB, from a
+restricted or an unrestricted (UHF) FCIDUMP, on any number of MPI ranks: the analysis
+need not use the same ranks, or the same device, as the run that produced the state. Its default method is upstream SBD's own statistical
 evaluator, the library behind upstream's
 [`gdb-stat-evaluator`](https://github.com/r-ccs-cms/sbd/tree/main/apps/gdb-stat-evaluator)
 app, called from Python; a TPB state is passed to it as full determinants.
@@ -365,6 +365,7 @@ by one near-degenerate determinant. With 0, any finite nonzero denominator is ac
   the one the diagonalization that saved it reported. It is not recomputed. To
   recompute it from the files, for instance to check that a state and an FCIDUMP
   belong together, use `sbd.analysis.state_energy()` on the `cpu` or `gpu` backend.
-- **Restricted FCIDUMPs only** for the exact method.
+- **Unrestricted (UHF) FCIDUMPs** use the stochastic method; the exact one is
+  restricted only, and `auto` picks stochastic for them.
 - **When to run it:** the analysis can cost much more than the diagonalization that
   produced the state, so run it on the state you want to assess, not every iteration.
