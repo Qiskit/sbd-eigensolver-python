@@ -1,6 +1,7 @@
 # TPB examples — SQD/SBD with a tensor-product basis
 
-Examples demonstrating SBD's capabilities for quantum chemistry calculations.
+Examples demonstrating SBD's capabilities for quantum chemistry calculations. For how
+they fit with GDB and the variance check, see the [workflows](../README.md#molecules-tpb-or-gdb).
 
 ## Overview
 
@@ -488,8 +489,10 @@ work through OpenMP, so it has no equivalent interaction.
 ## Unrestricted (UHF) FCIDUMPs
 
 TPB and GDB take a UHF FCIDUMP through the same calls and drivers as a restricted one.
-The package reads the file's layout and uses upstream SBD built with `-D_UHF`, which it
-builds next to the `cpu` and `gpu` backends.
+Each call reads the file's layout from its largest integral index (below) and, for a UHF
+file, uses the unrestricted build of the device asked for: upstream SBD built with
+`-D_UHF`, which every install builds next to the `cpu` and `gpu` backends. There is no
+option to set.
 
 **The layout** is upstream SBD's own:
 
@@ -515,6 +518,9 @@ python run_sbd_diag.py --fcidump nh2/nh2_uhf.fcidump --symmetrize_spin 0 \
     --adetfile nh2/nh2_alpha.txt --bdetfile nh2/nh2_beta.txt --tolerance 1e-8
 # Ground state energy: the e_fci in nh2/reference.json
 ```
+
+On NVIDIA GPUs the same command takes `--device gpu`, under `mpirun` as for a restricted
+file.
 
 `--symmetrize_spin 0` is needed for an open-shell system, restricted or not: the default
 reuses the alpha list as the beta one, which holds the wrong number of electrons. The

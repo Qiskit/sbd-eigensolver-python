@@ -6,7 +6,8 @@ Cartesian product of an alpha and a beta list that TPB uses. TPB's dimension is
 makes it the right solver for an arbitrary sparse subspace — a set of sampled
 bitstrings used *as sampled*, with no product completion.
 
-For TPB and the SQD loops, see [`../tpb/README.md`](../tpb/README.md).
+For TPB and the SQD loops, see [`../tpb/README.md`](../tpb/README.md); for how they fit
+with the variance check, the [workflows](../README.md#molecules-tpb-or-gdb).
 
 The FCIDUMP may be restricted (RHF, ROHF) or unrestricted (UHF): `sbd.tpb_diag`,
 `sbd.gdb_diag` and the drivers read its layout and use the matching build of SBD, with no
@@ -83,8 +84,9 @@ mpirun -np 4 python run_gdb_diag.py --device gpu --b_comm_size 4
 python run_gdb_diag.py --device gpu
 
 # Start Davidson from this determinant (2*NORB bits, in the order below) instead
-# of the first one in sorted order. It must be in the subspace
-python run_gdb_diag.py --initial_det <bitstring>
+# of the first one in sorted order. It must be in the subspace; here, the first
+# line of the default data
+python run_gdb_diag.py --initial_det "$(head -1 $GDB/det0.txt)"
 ```
 
 The determinant bit order is the one the upstream app documents: reading from the
