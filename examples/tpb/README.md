@@ -1,6 +1,7 @@
 # TPB examples — SQD/SBD with a tensor-product basis
 
-Examples demonstrating SBD's capabilities for quantum chemistry calculations.
+Examples demonstrating SBD's capabilities for quantum chemistry calculations. For how
+they fit with GDB and the variance check, see the [workflows](../README.md#molecules-tpb-or-gdb).
 
 ## Overview
 
@@ -19,52 +20,41 @@ Runs a single TPB diagonalization from an FCIDUMP file and alpha determinant
 file. No SQD loop, no Qiskit dependency.
 
 ```bash
-# H2O with 2 MPI ranks with CPU
-mpirun -np 2 python -u run_sbd_diag.py \
-    --device cpu \
-    --fcidump ../../vendor/sbd-upstream/data/h2o/fcidump.txt \
-    --adetfile ../../vendor/sbd-upstream/data/h2o/h2o-1em3-alpha.txt \
-    --adet_comm_size 2
+# H2O (the default data) on 4 CPU ranks, a 2 x 2 alpha x beta grid
+OMP_NUM_THREADS=8 mpirun -np 4 python -u run_sbd_diag.py \
+    --adet_comm_size 2 --bdet_comm_size 2
 
-# N2 with GPU
-mpirun -np 8 python -u run_sbd_diag.py \
-    --device gpu \
+# N2 on 8 GPUs, one rank each: the same command with --device gpu
+mpirun -np 8 python -u run_sbd_diag.py --device gpu \
     --fcidump ../../vendor/sbd-upstream/data/n2/fcidump.txt \
     --adetfile ../../vendor/sbd-upstream/data/n2/1em3-alpha.txt \
     --adet_comm_size 4 --bdet_comm_size 2
 
-# Retrieve the 1-/2-particle RDMs and save them to a file
-mpirun -np 2 python -u run_sbd_diag.py --rdm_output /tmp/h2o_rdms.npz
+# Also save the 1- and 2-particle RDMs
+mpirun -np 4 python -u run_sbd_diag.py --adet_comm_size 2 --bdet_comm_size 2 \
+    --rdm_output /tmp/h2o_rdms.npz
 
 # Write the carryover SBD selects, then start the next run from it
-mpirun -np 2 python -u run_sbd_diag.py --carryover_type 1 --carryover_ratio 0.5 \
+mpirun -np 4 python -u run_sbd_diag.py --adet_comm_size 2 --bdet_comm_size 2 \
+    --carryover_type 1 --carryover_ratio 0.5 \
     --carryover_adetfile /tmp/next-a.txt --carryover_bdetfile /tmp/next-b.txt
-mpirun -np 2 python -u run_sbd_diag.py --symmetrize_spin 0 \
-    --adetfile /tmp/next-a.txt --bdetfile /tmp/next-b.txt
+mpirun -np 4 python -u run_sbd_diag.py --adet_comm_size 2 --bdet_comm_size 2 \
+    --symmetrize_spin 0 --adetfile /tmp/next-a.txt --bdetfile /tmp/next-b.txt
 ```
 
-`--rdm_output` takes the file to save to (`/tmp/h2o_rdms.npz` above) and
-writes **one** `.npz` file there holding both `rdm1` and `rdm2` together
-(`data = np.load("/tmp/h2o_rdms.npz"); data["rdm1"]`, `data["rdm2"]`) —
-unlike upstream SBD's own CLI, which writes two separate files
-(`1pRDM.txt`/`2pRDM.txt`). It also prints `trace(rdm1)` and the natural
-orbital occupations. Leaving it empty (the default) skips computing RDMs
-entirely.
+`--rdm_output` writes one `.npz` holding both `rdm1` and `rdm2`
+(`np.load(path)["rdm1"]`), where upstream's CLI writes two text files, and prints
+`trace(rdm1)` and the natural occupations. Without it, RDMs are not computed.
 
-By default beta determinants are derived from `--adetfile` alone (identical
-to it, or a shuffled copy if `--shuffle` is set). `--symmetrize_spin 0`
-loads `--adetfile` and `--bdetfile` as independent, genuinely distinct
-alpha/beta determinant sets instead; `--bdetfile` is otherwise ignored
-(with a warning) since symmetric mode always derives beta from alpha.
+By default the beta list is the alpha one. `--symmetrize_spin 0` reads `--adetfile`
+and `--bdetfile` as two separate lists; without it, `--bdetfile` is ignored with a
+warning.
 
 **Key options:** `--device`, `--fcidump`, `--adetfile`, `--bdetfile`,
-`--symmetrize_spin`, `--adet_comm_size`, `--bdet_comm_size`,
-`--task_comm_size`, `--method`, `--tolerance`, `--iteration`,
-`--initial_adet`/`--initial_bdet` (start Davidson from this alpha x beta
-determinant instead of the first one in sorted order; it must be in the
-subspace), `--rdm_output`. (These keep their unprefixed names here: this driver
-*is* SBD. The SQD drivers prefix them `--sbd_*`.) Run `python run_sbd_diag.py
---help` for the full list.
+`--symmetrize_spin`, `--adet_comm_size`, `--bdet_comm_size`, `--task_comm_size`,
+`--method`, `--tolerance`, `--iteration`, `--initial_adet`/`--initial_bdet` (the
+Davidson start; it must be in the subspace), `--rdm_output`. The SQD drivers prefix
+the solver options `--sbd_*`. `python run_sbd_diag.py --help` lists them all.
 
 **Requirements:** `sbd`, `mpi4py`
 
@@ -86,11 +76,9 @@ mpirun -np 8 python -u run_sqd_sbd.py \
     --device gpu \
     --adet_comm_size 4 --bdet_comm_size 2
 
-# Custom system with random bitstrings
-mpirun -np 8 python -u run_sqd_sbd.py \
-    --fcidump /path/to/fci_dump.txt \
+# Random bitstrings for your own FCIDUMP: a plumbing check, not a result
+mpirun -np 8 python -u run_sqd_sbd.py --fcidump /path/to/fci_dump.txt --device gpu \
     --samples_per_batch 800 --num_batches 3 --max_iterations 10 \
-    --device gpu \
     --adet_comm_size 4 --bdet_comm_size 2
 ```
 
@@ -137,19 +125,12 @@ See [SQD Parameters](#sqd-parameters) below for the full reference, grouped by S
 
 ### 3. run_sqd_enlarge_subspace_sbd.py — SQD that grows its own subspace
 
-Same self-consistent SQD loop as `run_sqd_sbd.py` above (sampling,
-configuration recovery, SBD as the solver), but with one addition: between
-rounds, it expands the dominant determinant pairs from the just-solved
-wavefunction via qiskit-addon-sqd's own `enlarge_batch_from_transitions`
-(same-spin single-electron excitations, both alpha and beta), and feeds the
-result forward as the next round's `include_configurations`. Concretely,
-it calls `diagonalize_fermionic_hamiltonian` with `max_iterations=1` itself,
-in its own outer Python loop, rather than delegating the whole
-multi-iteration loop to one call the way `run_sqd_sbd.py` does -- that's
-what makes injecting a step between rounds possible. The loop stops when
-either the expanded set adds nothing new, or the energy and occupancies
-both stop moving (`--energy_tol`/`--occupancies_tol`) -- `--max_iterations`
-is a safety cap, not the expected stopping mechanism.
+The SQD loop of `run_sqd_sbd.py`, plus one step between rounds: it expands the
+dominant determinants of the state just solved with qiskit-addon-sqd's
+`enlarge_batch_from_transitions` (same-spin single excitations) and passes them to the
+next round as `include_configurations`. It runs one SQD iteration per round in its own
+loop, and stops when the expansion adds nothing new or the energy and occupancies stop
+moving (`--energy_tol`/`--occupancies_tol`); `--max_iterations` is only a cap.
 
 ```bash
 mpirun -np 8 python -u run_sqd_enlarge_subspace_sbd.py \
@@ -159,23 +140,12 @@ mpirun -np 8 python -u run_sqd_enlarge_subspace_sbd.py \
     --adet_comm_size 4 --bdet_comm_size 2 --enlarge_threshold 1e-4
 ```
 
-**A note on JAX and GPUs.** The expansion step above is JAX. Since XLA reserves 75% of a device
-on first use, one rank claims it and the rest fail with `RESOURCE_EXHAUSTED: CUDA_ERROR_OUT_OF_MEMORY`.
-On a GPU backend this driver therefore does two things for you, so the command above needs no extra environment:
-
-- assigns each rank its own device, using `sbd.get_device_id()` so JAX lands
-  on the same card SBD already selected for that rank;
-- sets `XLA_PYTHON_CLIENT_PREALLOCATE=false`, so XLA takes memory on demand
-  instead of reserving 75% of the card away from SBD. Without this, SBD's
-  Davidson basis can run out of room at large `--max_dim` and fail inside
-  `tpb_diag` with `std::bad_alloc` -- a memory error that reads as SBD's
-  fault but is caused by JAX's reservation.
-
-`XLA_PYTHON_CLIENT_PREALLOCATE` is left alone if you set it yourself, and
-`JAX_PLATFORMS=cpu` still forces the expansion onto CPU. The device assignment
-always runs, and stays correct if you pin one GPU per rank yourself: with a
-single card visible the count is 1, so every rank resolves to device 0 -- its
-own.
+**JAX on GPUs is handled for you.** The expansion step is JAX, which by default
+reserves 75% of a GPU on first use, so several ranks would collide on one card. On a
+GPU backend the driver puts each rank's JAX on the card SBD chose for it
+(`sbd.get_device_id()`) and sets `XLA_PYTHON_CLIENT_PREALLOCATE=false`, so the command
+above needs no extra environment. A value you set yourself is kept, and
+`JAX_PLATFORMS=cpu` moves the expansion to the CPU.
 
 Same bundled 275-bitstring H2O pool as `run_sqd_sbd.py`'s own example above:
 plain SQD reaches **≈ -76.236 Ha** and stops there; this driver keeps going
@@ -448,48 +418,28 @@ When using more than one rank, specify at least `--adet_comm_size`. Examples:
 
 ## Backend Selection
 
-Every backend the toolchain supported was compiled into this one install, and
-each is imported **lazily, on first use** — normally one per process. Select
-per-call via `--device`:
-
-```bash
---device cpu       # host OpenMP (default)
---device gpu       # NVHPC Thrust (requires NVIDIA GPU + HPC SDK build)
---device gpu-omp   # OpenMP target offload, NVIDIA and AMD GPUs
---device auto      # GPU if available, else CPU
-```
-
-`sbd.available_backends()` reports what this install actually has (a static scan
-— it does not import anything, so it is safe to call outside `mpirun`), and
-`sbd.loaded_backends()` reports what the current process has pulled in.
-
-Within Python, backends can be selected per call — no re-initialization needed:
+Every driver takes `--device`: `cpu` (the default), `gpu` (Thrust, NVIDIA), `gpu-omp`
+(OpenMP offload, NVIDIA or AMD), or `auto`, which takes `gpu`, then `gpu-omp`, when a
+GPU is present, and otherwise `cpu`. Only the backend asked for is loaded. From Python,
+pass `device=` to each call; no `sbd.init()` is needed:
 
 ```python
-import sbd
-
-# No init() needed — auto-initializes on first call
-result_cpu = sbd.tpb_diag(..., device='cpu')
-result_gpu = sbd.tpb_diag(..., device='gpu')     # fine alongside 'cpu'
-# result_omp = sbd.tpb_diag(..., device='gpu-omp')   # do NOT mix with 'cpu' — see below
+result_cpu = sbd.tpb_diag(fcidump, adet, bdet, config, device="cpu")
+result_gpu = sbd.tpb_diag(fcidump, adet, bdet, config, device="gpu")   # same process: fine
 ```
 
-**`'cpu'` and `'gpu-omp'` must not be used in the same process.** Both link the same
-OpenMP runtime, and `_core_cpu` is built without offload support, so whichever loads
-first initializes that runtime host-only. If it is the CPU backend, the OMP-offload
-backend can no longer acquire a device and **silently runs its target regions on the
-host**: correct energies, exit status 0, and the GPU sitting idle. There is no error to
-catch, which is why it is worth knowing rather than discovering. `sbd.loaded_backends()`
-reports what the current process has actually imported.
-
-`'cpu'` and `'gpu'` (Thrust) *can* share a process — Thrust does not route its device
-work through OpenMP, so it has no equivalent interaction.
+**Do not use `cpu` and `gpu-omp` in one process.** They share an OpenMP runtime, and
+whichever loads first decides it: if the CPU backend loads first, `gpu-omp` then runs
+on the host, with correct energies and the GPU idle. `sbd.has_backend_conflict()`
+reports it. `cpu` and `gpu` can share a process.
 
 ## Unrestricted (UHF) FCIDUMPs
 
 TPB and GDB take a UHF FCIDUMP through the same calls and drivers as a restricted one.
-The package reads the file's layout and uses upstream SBD built with `-D_UHF`, which it
-builds next to the `cpu` and `gpu` backends.
+Each call reads the file's layout from its largest integral index (below) and, for a UHF
+file, uses the unrestricted build of the device asked for: upstream SBD built with
+`-D_UHF`, which every install builds next to the `cpu` and `gpu` backends. There is no
+option to set.
 
 **The layout** is upstream SBD's own:
 
@@ -516,6 +466,9 @@ python run_sbd_diag.py --fcidump nh2/nh2_uhf.fcidump --symmetrize_spin 0 \
 # Ground state energy: the e_fci in nh2/reference.json
 ```
 
+On NVIDIA GPUs the same command takes `--device gpu`, under `mpirun` as for a restricted
+file.
+
 `--symmetrize_spin 0` is needed for an open-shell system, restricted or not: the default
 reuses the alpha list as the beta one, which holds the wrong number of electrons. The
 driver says so if it is left out.
@@ -536,8 +489,7 @@ driver says so if it is left out.
 
 ## Available Test Data
 
-Paths below are written as the drivers use them, i.e. relative to a solver folder
-such as `examples/tpb/`, which is how the drivers' own defaults are spelled.
+Paths are relative to this folder, as the drivers' defaults are.
 
 **H2O** (`../../vendor/sbd-upstream/data/h2o/`): `h2o-1em3` through `h2o-1em8` alpha determinant files.
 **N2** (`../../vendor/sbd-upstream/data/n2/`): `1em3` through `1em7` and `3em4` through `3em7` alpha determinant files.
@@ -546,20 +498,13 @@ Smaller thresholds = more determinants = higher accuracy.
 
 ## Performance Tips
 
-**CPU:** Set `OMP_NUM_THREADS` to cores per MPI rank (e.g., 8 ranks × 4 threads = 32 cores).
-
-**GPU:** One MPI rank per GPU — each rank is auto-assigned `gpu_id = rank % num_gpus`.
-Use method 0 (matrix-free Davidson) for best GPU performance.
-
-**Do not set `OMP_NUM_THREADS=1` for GPU runs.** One rank per GPU is about device
-ownership, not thread count, and a GPU build still does real work on the host: helper
-construction is host-threaded in both solvers (`tpb/helper.h`, `gdb/helper.h`), and for
-GDB the heatbath expansion and carryover selection have no device implementation at all
-(`gdb/expansion.h`, `gdb/carryover.h` carry no `thrust::` code and are compiled in
-regardless of backend). One thread per rank single-threads all of it. Divide the node's
-physical cores among the ranks exactly as for a CPU run — e.g. 96 cores with 8 ranks is
-`OMP_NUM_THREADS=12`. Expect GPU utilisation below 100% as a result; that is the host
-phases, not a fault.
+- **CPU:** set `OMP_NUM_THREADS` to the cores per rank, e.g. 8 ranks × 4 threads on 32
+  cores.
+- **GPU:** one rank per GPU; each rank takes `gpu_id = rank % num_gpus` by itself. Use
+  method 0 (matrix-free Davidson).
+- **Keep threads on GPU runs too.** Building the helper lists runs on the host, so
+  divide the cores among the ranks as for a CPU run (96 cores, 8 ranks:
+  `OMP_NUM_THREADS=12`); one thread per rank makes that part serial.
 
 ## See Also
 

@@ -34,6 +34,30 @@ reference and release notes.
 - **qiskit-addon-sqd integration**, `sbd.sbd_solver`: SBD as the `sci_solver` of the
   SQD loop.
 
+## Why the bindings
+
+Upstream SBD ships each feature as its own C++ app, configured and compiled by hand,
+with the backend, unrestricted integrals and complex amplitudes fixed when it is
+compiled. The bindings bring them under one install and one API:
+
+- **One install.** `pip install` builds TPB, GDB, CAOP, the Green's function and the
+  variance evaluators together; there is no separate executable to build, configure or
+  keep in step for each.
+- **Choices per call, not per build.** The device is a `device=` argument, a UHF
+  FCIDUMP selects the unrestricted build by itself, and CAOP takes `complex=True`, so
+  changing any of them means changing an argument, not recompiling.
+- **Python in, Python out.** TPB and GDB take determinants as arrays and return the
+  energy, RDMs and next subspace as Python objects, so a loop such as SQD or heat-bath
+  rounds runs in one MPI job without files passed between programs.
+- **The right code path, or a clear error.** A feature a device does not support, such
+  as GDB on `gpu-omp`, raises an error naming the devices that do, instead of running on
+  the host; a backend that was not built says how to build it. Inputs upstream would get
+  silently wrong or hang on, such as a rank count that does not fit the MPI grid, raise
+  a `ValueError` on every rank before any work starts.
+
+The [`examples/`](examples/README.md) drivers keep the command-line workflow, for
+running from `mpirun` with options as upstream's apps do.
+
 ## Backends
 
 Every install builds the CPU backend, and every GPU backend the toolchain supports;
@@ -61,12 +85,10 @@ What each runs:
    solve used, so it takes no `device=`.
 
 `gpu-omp` does not support GDB or CAOP because upstream has no offload code for them,
-and not UHF files because its offload kernels read only the restricted integral layout;
-asking for one raises an error rather than running it on the host. `gpu-omp` is one
-device for both GPU vendors: an install compiles for one, and
-`sbd.get_backend("gpu-omp").__sbd_offload_target__` says which. Vendor-flavoured names
-such as `gpu-amd-omp` or `rocm` resolve to it. The GPU backends expect a GPU-aware MPI;
-see [INSTALL.md](INSTALL.md#gpu-aware-mpi) for the fallbacks.
+nor UHF files, since its kernels read only the restricted integral layout. It is one
+device for both vendors: an install compiles for one, and
+`sbd.get_backend("gpu-omp").__sbd_offload_target__` says which. The GPU backends expect
+a GPU-aware MPI; see [INSTALL.md](INSTALL.md#gpu-aware-mpi) for the fallbacks.
 
 ## Installation
 
@@ -91,11 +113,9 @@ python -c "import sbd; print(sbd.available_backends())"
 # AMD, default build:    ['cpu', 'gpu-omp']
 ```
 
-The `cpu` and `gpu` backends are also built a second time, with upstream's `-D_UHF`, for
-unrestricted (UHF) FCIDUMPs: `sbd._core_cpu_uhf` and `sbd._core_gpu_thrust_uhf`. A solve
-uses that build automatically when the FCIDUMP is unrestricted, so there is no device to
-choose. `available_backends()` does not list these builds; `sbd.has_uhf("cpu")` and
-`sbd.print_info()` report them. `gpu-omp` has no UHF build.
+`cpu` and `gpu` are also built with upstream's `-D_UHF`, for unrestricted FCIDUMPs; a
+solve picks that build from the file, so it is not a separate device.
+`sbd.print_info()` lists it.
 
 **See [INSTALL.md](INSTALL.md)** for the rest: prerequisites per platform, installing
 from a git checkout with the submodule, every environment variable the build reads
@@ -125,15 +145,18 @@ result = diagonalize_fermionic_hamiltonian(
 )
 ```
 
-Run it under `mpirun`: every rank calls the solver, and SBD spreads each
-diagonalization over them. No `sbd.init()` is needed. It requires qiskit-addon-sqd
+Run it under `mpirun`, for example `mpirun -np 8 python my_sqd.py` with one rank per
+GPU: every rank calls the solver, and SBD spreads each diagonalization over them. No
+`sbd.init()` is needed. It requires qiskit-addon-sqd
 0.13.1 or later, for this distributed (SPMD) mode; SBD-selected carryover and subspace
 policies need 0.14.0 or later.
 
-- **TPB only.** The addon describes a subspace as a product: `ci_strings` is a
-  `(strings_a, strings_b)` pair and the amplitudes an `|a| × |b|` matrix, so a GDB
-  determinant list cannot be passed through it. For GDB, call `gdb_diag` directly or
-  use the drivers in [`examples/gdb/`](examples/gdb/README.md).
+- **TPB only.** qiskit-addon-sqd's fermion solver assumes the subspace is a product of
+  alpha and beta string lists, a restriction inherited from PySCF, so a GDB determinant
+  list cannot be passed through it
+  ([Qiskit/qiskit-sqd#389](https://github.com/Qiskit/qiskit-sqd/issues/389)). For
+  GDB, call `gdb_diag` directly or use the drivers in
+  [`examples/gdb/`](examples/gdb/README.md).
 - **Who chooses the next subspace.** By default qiskit-addon-sqd chooses the carryover
   from the amplitudes SBD returns. With `"carryover_type"` in `sbd_config`, SBD chooses
   it instead; see [SBD-selected carryover](examples/tpb/README.md#sbd-selected-carryover)

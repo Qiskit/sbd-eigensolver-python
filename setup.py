@@ -793,9 +793,6 @@ ext_modules = []
 # kernels (chemistry/basic/omp_offload.h) read the restricted layout regardless
 # of _UHF. They are always built, so a solve can take a restricted or an
 # unrestricted FCIDUMP in any session.
-if os.environ.get('SBD_BUILD_UHF') is not None:
-    print("\nWarning: SBD_BUILD_UHF is no longer used and will be removed; the "
-          "unrestricted (UHF) builds are always made.")
 
 
 def _uhf_twin(ext):

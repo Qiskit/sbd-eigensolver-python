@@ -25,8 +25,8 @@ features:
 upgrade:
   - |
     Installing builds the CPU and Thrust extensions twice, once restricted and
-    once with ``-D_UHF``. Set ``SBD_BUILD_UHF=0`` to skip the unrestricted
-    builds; unrestricted files are then refused with an error naming it.
+    once with ``-D_UHF``, so a session can take restricted and unrestricted
+    FCIDUMPs alike.
   - |
     A file in neither layout is now refused rather than diagonalized: an
     integral index above ``2 * NORB``, indices above ``NORB`` whose ``(ij)`` or

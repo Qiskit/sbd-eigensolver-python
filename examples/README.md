@@ -9,6 +9,11 @@ and **PT2** say how far the saved state is from the exact one. Run them before u
 state for anything else. The same driver, [`analysis/variance.py`](analysis/README.md),
 handles every solver.
 
+> [!NOTE]
+> These examples are tested against the upstream SBD commit pinned in
+> `vendor/sbd-upstream`. With any other upstream revision, for example after
+> `git submodule update --remote`, the functionality is not tested and may be broken.
+
 ## Molecules: TPB or GDB
 
 From an FCIDUMP and a determinant subspace.
@@ -28,7 +33,7 @@ mpirun -np 4 python variance.py --fcidump ../../vendor/sbd-upstream/data/h2o/fci
 - **Solve:** [`tpb/`](tpb/README.md) for an alpha × beta product subspace, including
   the SQD loops; [`gdb/`](gdb/README.md) for an explicit determinant list, including
   heat-bath rounds that grow the subspace.
-- **Check:** [`analysis/`](analysis/README.md#workflow).
+- **Check:** [`analysis/`](analysis/README.md#check-a-molecular-state-tpb-or-gdb).
 
 ## Lattice and spin models: CAOP
 
@@ -50,7 +55,8 @@ mpirun -np 4 python run_caop_diag.py --hamfile hub2.txt --basisfiles hub2_basis.
 # 2. how far from exact: variance and PT2, from the same files (--shards 4: the solve's
 #    --b_comm_size). Here hub2_basis.txt is the whole half-filling sector, so both are
 #    zero; over too small a basis, such as the two singly-occupied states 0110 and 1001
-#    alone, the variance is large and E + PT2 recovers most of the missing energy
+#    alone, the variance is large and E + PT2 recovers only part of the missing energy:
+#    grow the basis
 mpirun -np 4 python ../analysis/variance.py --hamfile hub2.txt --basisfiles hub2_basis.txt \
     --sites 4 --state gs- --shards 4 --bit_length 20 --energy <E0 from step 1>
 
@@ -65,7 +71,7 @@ Each step here uses 4 ranks, one basis state each for this 4-state model; a larg
 basis spreads the same way over more ranks.
 
 - **Input files and solve:** [`caop/`](caop/README.md#preparing-the-input-files).
-- **Check:** [`analysis/`](analysis/README.md#caop-states).
+- **Check:** [`analysis/`](analysis/README.md#check-a-caop-state).
 - **Green's function:** [`caop/`](caop/README.md#greens-function).
 
 If the variance is large, the subspace is too small for the state to be trusted, for
