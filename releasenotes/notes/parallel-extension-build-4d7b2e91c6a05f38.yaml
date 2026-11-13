@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    The extension modules now compile in parallel, all of them at once by default (up
+    to the CPU count), which shortens a full build to about the time of its slowest
+    module. ``SBD_BUILD_JOBS`` sets how many compile at once; set ``1`` on a build host
+    short of memory, since a Thrust module's compile alone needs several GB. Each
+    module builds in its own directory, since they all compile the same source file.

@@ -114,6 +114,12 @@ export SBD_GPU_ARCH=gfx90a              # AMD
 #     now but is deprecated.)
 export SBD_SKIP_BACKENDS=gpu_omp_offload
 
+#     Parallel build: how many extension modules compile at once. Leave it unset
+#     to build all of them in parallel (up to the CPU count). A Thrust module's
+#     compile alone peaks near 4 GB, so on a build host or container short of
+#     memory set a smaller number, or 1 to build them one at a time.
+# export SBD_BUILD_JOBS=1
+
 #     MPI: defaults to whatever mpi4py is linked against. Set this only
 #     for layouts that cannot be inferred.
 #     NOTE: Every GPU backend hands MPI device pointers, so use a GPU-aware MPI:

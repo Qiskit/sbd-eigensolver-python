@@ -1133,11 +1133,58 @@ if build_gpu_omp_offload:
     ext_modules.append(gpu_omp_offload_ext)
 
 
+# Build the extension modules in parallel. Each one is a single large compile of
+# src/sbd/bindings.cpp, so one at a time leaves the machine nearly idle.
+#
+# SBD_BUILD_JOBS: how many modules to compile at once. Unset, it is the number of
+# modules, capped by the CPU count; set 1 to build one at a time, for example on a
+# build host short of memory (a Thrust module's compile alone needs several GB).
+# An explicit `build_ext -j N` still wins.
+#
+# Every module compiles the SAME source file with different defines, and
+# setuptools would put all their objects at one path (build_temp/src/sbd/
+# bindings.o). In parallel they would overwrite each other's object, and a module
+# could silently link another's code -- a "UHF" module without -D_UHF, say. So each
+# module gets its own temp directory.
+from setuptools.command.build_ext import build_ext as _setuptools_build_ext
+
+
+def _build_jobs(n_modules):
+    raw = (os.environ.get('SBD_BUILD_JOBS') or '').strip()
+    if not raw:
+        return max(1, min(n_modules, os.cpu_count() or 1))
+    try:
+        jobs = int(raw)
+    except ValueError:
+        jobs = 0
+    if jobs < 1:
+        print(f"Error: SBD_BUILD_JOBS must be a positive integer, got {raw!r}.")
+        sys.exit(1)
+    return jobs
+
+
+class build_ext(_setuptools_build_ext):
+    def finalize_options(self):
+        super().finalize_options()
+        if not self.parallel:
+            self.parallel = _build_jobs(len(self.extensions or []))
+        print(f"Building {len(self.extensions or [])} extension module(s), "
+              f"{self.parallel if self.parallel is not True else os.cpu_count()} at a time "
+              "(SBD_BUILD_JOBS)")
+
+    def build_extension(self, ext):
+        import copy
+        cmd = copy.copy(self)          # same compiler and options, own object directory
+        cmd.build_temp = os.path.join(self.build_temp, ext.name)
+        _setuptools_build_ext.build_extension(cmd, ext)
+
+
 # All static metadata (name, version, dependencies, packages, etc.) is
 # declared in pyproject.toml. This setup() call only carries the imperative
 # ext_modules built above, which cannot be expressed declaratively.
 setup(
     ext_modules=ext_modules,
+    cmdclass={'build_ext': build_ext},
 )
 
 print("\nSetup complete!")
