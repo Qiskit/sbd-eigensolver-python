@@ -142,6 +142,28 @@ def test_a_file_in_neither_layout_is_refused(device, tmp_path, edit, message):
         sbd.LoadFCIDump(bad)
 
 
+# Lines that mix an alpha and a beta spin orbital, one-body and two-body.
+MIXED_LINES = "  {v} 1 2 0 0\n  {v} 1 1 1 2\n"
+
+
+@pytest.mark.parametrize("value, allowed", [("0.0", True), ("1.0e-03", False)])
+def test_a_line_mixing_spins_is_refused_only_if_nonzero(device, tmp_path, value, allowed):
+    """A zero-valued one sets no integral, so the file is still unrestricted, as upstream reads it."""
+    path = tmp_path / "mixed.fcidump"
+    path.write_text(UHF.read_text() + MIXED_LINES.format(v=value))
+    if not allowed:
+        with pytest.raises(ValueError, match="mixes an odd"):
+            sbd.fcidump_format(path)
+        with pytest.raises(ValueError, match="mixes an odd"):
+            sbd.LoadFCIDump(path)
+        return
+    assert sbd.fcidump_format(path) == "uhf"
+    fcidump = sbd.LoadFCIDump(path)
+    assert sbd.fcidump_format(fcidump) == "uhf"
+    energy = sbd.tpb_diag(fcidump, _half(ALPHA), _half(BETA), _tpb())["energy"]
+    assert energy == pytest.approx(REFERENCE["e_fci"], abs=1e-9)
+
+
 # --- energies --------------------------------------------------------------------
 
 

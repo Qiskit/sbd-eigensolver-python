@@ -525,7 +525,9 @@ static uint64_t sbd_shard_fingerprint(const sbd::det_vector<size_t>& det) {
 // a wrong energy. Restricted: indices 1..NORB. Unrestricted (makeintegrals.h):
 // NORB is still the spatial count, indices are spin orbitals 1..2*NORB, odd for
 // alpha and even for beta, and each pair (ij) and (kl) is of one spin. A file
-// that fits neither is refused rather than guessed at.
+// that fits neither is refused rather than guessed at. A line mixing spins whose
+// value is zero is allowed, as upstream's own layout check does: it sets no
+// integral, so it says nothing about the layout.
 //
 // The classification is computed from the integrals every time, not stored, so
 // it cannot go stale when a caller edits them after loading.
@@ -541,8 +543,9 @@ class SbdLayoutScan {
 public:
     explicit SbdLayoutScan(int norb) : norb_(norb) {}
 
-    void add(int i, int j, int k, int l) {
+    void add(double value, int i, int j, int k, int l) {
         max_ = std::max({max_, i, j, k, l});
+        if (value == 0.0) return;  // sets no integral, so cannot mix spins
         if (i > 0 && j > 0 && ((i ^ j) & 1)) mixed_ = true;
         if (k > 0 && l > 0 && ((k ^ l) & 1)) mixed_ = true;
     }
@@ -561,8 +564,9 @@ public:
         if (mixed_) {
             throw std::invalid_argument(
                 what + ": indices above NORB = " + n + " mark SBD's unrestricted layout, "
-                "but some (ij) or (kl) pair mixes an odd (alpha) and an even (beta) "
-                "index, which that layout never does. Check NORB in the header.");
+                "but a nonzero integral has an (ij) or (kl) pair that mixes an odd "
+                "(alpha) and an even (beta) index, which that layout never does. Check "
+                "NORB in the header.");
         }
         return true;
     }
@@ -594,7 +598,7 @@ static int sbd_fcidump_norb(const std::map<std::string, std::string>& header,
 
 static bool sbd_fcidump_is_uhf(const sbd::FCIDump& fcidump) {
     SbdLayoutScan scan(sbd_fcidump_norb(fcidump.header, "FCIDUMP"));
-    for (const auto& [v, i, j, k, l] : fcidump.integrals) scan.add(i, j, k, l);
+    for (const auto& [v, i, j, k, l] : fcidump.integrals) scan.add(v, i, j, k, l);
     return scan.uhf("FCIDUMP");
 }
 
@@ -632,10 +636,10 @@ static bool sbd_fcidump_file_is_uhf(const std::string& path) {
     while (std::getline(in, line)) {
         if (line.empty() || line[0] == '!') continue;
         char* end = nullptr;
-        std::strtod(line.c_str(), &end);
+        const double value = std::strtod(line.c_str(), &end);
         long idx[4];
         for (long& x : idx) { const char* s = end; x = std::strtol(s, &end, 10); }
-        scan.add(static_cast<int>(idx[0]), static_cast<int>(idx[1]),
+        scan.add(value, static_cast<int>(idx[0]), static_cast<int>(idx[1]),
                  static_cast<int>(idx[2]), static_cast<int>(idx[3]));
     }
     return scan.uhf(path);

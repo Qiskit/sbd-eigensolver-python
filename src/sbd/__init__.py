@@ -512,8 +512,9 @@ def fcidump_format(fcidump, device=None):
     restricted file indexes spatial orbitals, 1 to ``NORB``.
 
     A file that fits neither -- an index above ``2 * NORB``, or indices above
-    ``NORB`` with a pair mixing spins, both typically a wrong ``NORB`` -- raises
-    rather than being guessed at. So does a header with a ``UHF``/``IUHF`` flag,
+    ``NORB`` with a nonzero integral whose pair mixes spins, both typically a
+    wrong ``NORB`` -- raises rather than being guessed at. A zero-valued line
+    that mixes spins sets no integral and is allowed, as in upstream's check. So does a header with a ``UHF``/``IUHF`` flag,
     which marks another program's unrestricted layout.
 
     Args:
