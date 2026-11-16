@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    :func:`sbd.fcidump_format`, :func:`sbd.LoadFCIDump` and the diagonalizers no longer
+    refuse an unrestricted FCIDUMP that contains a zero-valued line mixing an alpha and a
+    beta spin orbital. Such a line sets no integral, and upstream SBD's own layout check
+    allows it. A nonzero mixed line is still refused.
